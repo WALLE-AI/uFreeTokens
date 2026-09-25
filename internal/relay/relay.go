@@ -219,11 +219,16 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// 成本价挂在渠道上（§6.4），只有到这里选定了 picked.Channel 才知道用哪个
+	// cost book；没配置成本价的渠道 costBook 是零值（Components 为空），
+	// computeCostAmount 会据此返回 nil，不记一个假的 0 成本。
+	costBook := snap.CostPriceBooks[picked.Channel.ID]
+
 	if stream {
-		s.handleStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, estInput, reserveOutput, trace)
+		s.handleStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, estInput, reserveOutput, trace)
 		return
 	}
-	s.handleNonStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, estInput, reserveOutput, trace)
+	s.handleNonStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, estInput, reserveOutput, trace)
 }
 
 // clientIP 尽量拿到客户端地址（去掉端口）；拿不到时原样返回 RemoteAddr，
@@ -415,7 +420,7 @@ func retryAfter(h http.Header, def, max time.Duration) time.Duration {
 }
 
 func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
-	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
 
 	ttft := time.Since(meta.start).Milliseconds()
 
@@ -442,11 +447,12 @@ func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.
 
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
-	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID)
+	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
 
 func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
-	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
 
 	ttft := time.Since(meta.start).Milliseconds()
 
@@ -483,7 +489,8 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 		log.Warn("stream ended without usage, using conservative fallback", "request_id", meta.requestID)
 	}
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
-	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID)
+	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
 
 // releaseQuietly / settleQuietly：结算失败不应该影响已经发给客户端的响应
@@ -525,7 +532,7 @@ func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requ
 // logSuccess / logFailure 把一次请求的结果异步写入 request_logs（§6.8/§7.13）。
 // s.ReqLog 为 nil 时 Write 是安全的 no-op（见 reqlog.Writer 的方法注释）。
 func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []reqlog.AttemptTraceEntry,
-	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, list, charged int64, promotionID *int64) {
+	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, list, charged int64, promotionID *int64, costAmount *int64) {
 
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
@@ -543,6 +550,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 	}
 	rec.ListAmount = &list
 	rec.ChargedAmount = &charged
+	rec.CostAmount = costAmount
 	if promotionID != nil {
 		rec.PromotionIDs = []int64{*promotionID}
 	}

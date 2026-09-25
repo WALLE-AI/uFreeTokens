@@ -265,10 +265,40 @@ type SetSellPriceInput struct {
 // internal/catalog 的快照加载器按 effective_from 取最新一条，所以这里发布之后，
 // 网关会在下一次快照刷新时（默认 TTL 10 秒）自动用上新价格，不需要重启。
 func (s *Service) SetSellPrice(ctx context.Context, in SetSellPriceInput) (int64, error) {
-	if len(in.Components) == 0 {
+	return s.setPrice(ctx, priceTarget{kind: "sell", virtualModelID: &in.VirtualModelID, tier: in.Tier, currency: "CNY"}, in.Components)
+}
+
+type SetCostPriceInput struct {
+	ChannelID  int64
+	Currency   string // 空则默认 "CNY"；非 CNY 的成本价目前不参与计算（见 catalog 包注释）
+	Components []PriceComponentInput
+}
+
+// SetCostPrice 给渠道发布一个新的成本价版本，用于计算 request_logs.cost_amount
+// （毛利可见性）。版本化规则、生效方式与 SetSellPrice 完全一致。
+func (s *Service) SetCostPrice(ctx context.Context, in SetCostPriceInput) (int64, error) {
+	currency := in.Currency
+	if currency == "" {
+		currency = "CNY"
+	}
+	return s.setPrice(ctx, priceTarget{kind: "cost", channelID: &in.ChannelID, currency: currency}, in.Components)
+}
+
+// priceTarget 描述一次价格发布的落点：sell 挂虚拟模型（可选 tier），cost 挂渠道
+// （技术方案 §6.4：售价按模型统一，成本按渠道各自结算）。
+type priceTarget struct {
+	kind           string
+	virtualModelID *int64
+	channelID      *int64
+	tier           string
+	currency       string
+}
+
+func (s *Service) setPrice(ctx context.Context, target priceTarget, components []PriceComponentInput) (int64, error) {
+	if len(components) == 0 {
 		return 0, errors.New("admin: at least one price component is required")
 	}
-	for _, c := range in.Components {
+	for _, c := range components {
 		if !validMeters[c.Meter] {
 			return 0, fmt.Errorf("admin: invalid meter %q", c.Meter)
 		}
@@ -288,14 +318,14 @@ func (s *Service) SetSellPrice(ctx context.Context, in SetSellPriceInput) (int64
 
 	var bookID int64
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO price_books (kind, virtual_model_id, tier, currency, effective_from)
-		 VALUES ('sell', $1, NULLIF($2, ''), 'CNY', now()) RETURNING id`,
-		in.VirtualModelID, in.Tier,
+		`INSERT INTO price_books (kind, virtual_model_id, channel_id, tier, currency, effective_from)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, now()) RETURNING id`,
+		target.kind, target.virtualModelID, target.channelID, target.tier, target.currency,
 	).Scan(&bookID); err != nil {
 		return 0, fmt.Errorf("admin: insert price_book: %w", err)
 	}
 
-	for _, c := range in.Components {
+	for _, c := range components {
 		tier := c.ServiceTier
 		if tier == "" {
 			tier = "default"

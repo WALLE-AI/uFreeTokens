@@ -219,6 +219,27 @@ func seedChannel(t *testing.T, pool *pgxpool.Pool, vmID, providerAccountID int64
 	return channelID
 }
 
+// seedCostPrice 给渠道种一条成本价（1 元/百万 token，input/output 各一档），
+// 用于验证 relay 结算时会把 request_logs.cost_amount 算出来。
+func seedCostPrice(t *testing.T, pool *pgxpool.Pool, channelID int64) {
+	t.Helper()
+	ctx := context.Background()
+	var bookID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO price_books (kind, channel_id, currency, effective_from) VALUES ('cost', $1, 'CNY', now() - interval '1 hour') RETURNING id`,
+		channelID,
+	).Scan(&bookID); err != nil {
+		t.Fatalf("insert cost price_book: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO price_components (price_book_id, meter, unit, service_tier, tier_min_input, unit_price)
+		 VALUES ($1,'input','per_1m_tokens','default',0,1), ($1,'output','per_1m_tokens','default',0,1)`,
+		bookID,
+	); err != nil {
+		t.Fatalf("insert cost price_components: %v", err)
+	}
+}
+
 // seedPriceDiscountPromotion 种一条对全部模型/tier 生效的打折促销（见 internal/promotion）。
 // seedPriceDiscountPromotion 种一条打折促销。scope 限定到 vmName——`go test ./...`
 // 会并发跑不同包的测试二进制，internal/promotion 的测试也在同一个真实数据库里插
@@ -797,6 +818,54 @@ func TestChatCompletions_LogsSuccessToRequestLogs(t *testing.T) {
 	}
 	if usageSource != "upstream" {
 		t.Errorf("usage_source = %q, want upstream", usageSource)
+	}
+}
+
+// TestChatCompletions_RecordsCostAmountWhenCostPriceConfigured 验证渠道配了成本价时，
+// request_logs.cost_amount 会被算出来并按 provider_accounts.cost_multiplier 打折；
+// 没配成本价的渠道（前面几乎所有测试用的都是这种）不应该记出一个具有欺骗性的 0。
+func TestChatCompletions_RecordsCostAmountWhenCostPriceConfigured(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1000, "completion_tokens": 1000}}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccount(t, pool, upstream.URL)
+	seedKey(t, pool, box, accID, "sk-mock-upstream-secret")
+	// 渠道的合同折扣是 0.5（provider_accounts.cost_multiplier 默认 1，这里手工改一下）。
+	if _, err := pool.Exec(context.Background(), `UPDATE provider_accounts SET cost_multiplier = 0.5 WHERE id = $1`, accID); err != nil {
+		t.Fatalf("set cost_multiplier: %v", err)
+	}
+	vmID, vmName := seedVirtualModel(t, pool)
+	channelID := seedChannel(t, pool, vmID, accID, 0)
+	seedCostPrice(t, pool, channelID) // 1 元/百万 token
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	reqLogW.Close()
+
+	var costAmount *int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cost_amount FROM request_logs WHERE request_id = $1`, requestID,
+	).Scan(&costAmount); err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+	// 2000 token 合计，成本单价 1 元/百万 -> 原始成本 2000 微元，× 0.5 折扣 -> 1000。
+	if costAmount == nil || *costAmount != 1000 {
+		t.Errorf("cost_amount = %v, want 1000", costAmount)
 	}
 }
 

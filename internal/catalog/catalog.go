@@ -112,6 +112,12 @@ type Snapshot struct {
 	// SellPriceBooks 按 virtual_model_id 索引，取当前生效的最新版本。
 	// 简化：暂不区分 tier（全部按默认价），tier 差异化售价留待促销引擎阶段补齐。
 	SellPriceBooks map[int64]pricing.Book
+	// CostPriceBooks 按 channel_id 索引，取当前生效的最新版本，用于计算
+	// request_logs.cost_amount（毛利可见性、§7.16 毛利守护的前置数据）。
+	// 只有 currency='CNY' 的成本价会被使用；汇率同步（§7.16.9）尚未实现，
+	// 美元等外币计价的成本暂时算不出来，relay 遇到这种渠道会跳过成本记录
+	// （不影响用户计费，只是少一条毛利可见性数据）。
+	CostPriceBooks map[int64]pricing.Book
 }
 
 // Store 负责从数据库加载 Snapshot 并做简单的 TTL 缓存。
@@ -168,6 +174,7 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 		ProviderAccounts: map[int64]*ProviderAccount{},
 		KeysByAccount:    map[int64][]*ProviderKey{},
 		SellPriceBooks:   map[int64]pricing.Book{},
+		CostPriceBooks:   map[int64]pricing.Book{},
 	}
 
 	if err := s.loadModels(ctx, snap); err != nil {
@@ -183,6 +190,9 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 	if err := s.loadSellPrices(ctx, snap); err != nil {
+		return nil, err
+	}
+	if err := s.loadCostPrices(ctx, snap); err != nil {
 		return nil, err
 	}
 	return snap, nil
@@ -284,36 +294,66 @@ func (s *Store) loadChannels(ctx context.Context, snap *Snapshot) error {
 }
 
 func (s *Store) loadSellPrices(ctx context.Context, snap *Snapshot) error {
-	// 每个虚拟模型取当前生效、effective_from 最新的一个 sell price_book。
-	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT ON (pb.virtual_model_id)
-		        pb.id, pb.virtual_model_id
-		 FROM price_books pb
-		 WHERE pb.kind = 'sell' AND pb.effective_from <= now()
-		   AND (pb.effective_to IS NULL OR pb.effective_to > now())
-		 ORDER BY pb.virtual_model_id, pb.effective_from DESC`)
+	books, err := s.loadLatestPriceBooks(ctx, "sell", "virtual_model_id")
 	if err != nil {
-		return fmt.Errorf("catalog: load sell price_books: %w", err)
+		return fmt.Errorf("catalog: load sell prices: %w", err)
 	}
-	bookIDs := map[int64]int64{} // bookID -> virtualModelID
+	snap.SellPriceBooks = books
+	return nil
+}
+
+// loadCostPrices 加载每个渠道当前生效的成本价。只保留 currency='CNY' 的版本
+// （见 Snapshot.CostPriceBooks 的注释）；非 CNY 的成本价会被加载但调用方
+// （internal/relay）在使用前还要再检查一次 Currency 字段，这里不静默丢弃，
+// 是为了让 catalog 的行为对所有价格版本保持一致、可预测。
+func (s *Store) loadCostPrices(ctx context.Context, snap *Snapshot) error {
+	books, err := s.loadLatestPriceBooks(ctx, "cost", "channel_id")
+	if err != nil {
+		return fmt.Errorf("catalog: load cost prices: %w", err)
+	}
+	snap.CostPriceBooks = books
+	return nil
+}
+
+// loadLatestPriceBooks 是 loadSellPrices/loadCostPrices 共用的实现：按 keyColumn
+// （virtual_model_id 或 channel_id）分组，取每组里 effective_from 最新、当前生效的
+// 一个 price_book 及其全部 price_components。
+func (s *Store) loadLatestPriceBooks(ctx context.Context, kind, keyColumn string) (map[int64]pricing.Book, error) {
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(
+		`SELECT DISTINCT ON (pb.%s)
+		        pb.id, pb.%s, pb.currency
+		 FROM price_books pb
+		 WHERE pb.kind = $1 AND pb.effective_from <= now()
+		   AND (pb.effective_to IS NULL OR pb.effective_to > now())
+		 ORDER BY pb.%s, pb.effective_from DESC`, keyColumn, keyColumn, keyColumn),
+		kind)
+	if err != nil {
+		return nil, fmt.Errorf("query price_books: %w", err)
+	}
+	type bookMeta struct {
+		key      int64
+		currency string
+	}
+	metaByBookID := map[int64]bookMeta{}
 	for rows.Next() {
-		var bookID, vmID int64
-		if err := rows.Scan(&bookID, &vmID); err != nil {
+		var bookID, key int64
+		var currency string
+		if err := rows.Scan(&bookID, &key, &currency); err != nil {
 			rows.Close()
-			return fmt.Errorf("catalog: scan price_book: %w", err)
+			return nil, fmt.Errorf("scan price_book: %w", err)
 		}
-		bookIDs[bookID] = vmID
+		metaByBookID[bookID] = bookMeta{key: key, currency: currency}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if len(bookIDs) == 0 {
-		return nil
+	if len(metaByBookID) == 0 {
+		return map[int64]pricing.Book{}, nil
 	}
 
-	ids := make([]int64, 0, len(bookIDs))
-	for id := range bookIDs {
+	ids := make([]int64, 0, len(metaByBookID))
+	for id := range metaByBookID {
 		ids = append(ids, id)
 	}
 
@@ -322,7 +362,7 @@ func (s *Store) loadSellPrices(ctx context.Context, snap *Snapshot) error {
 		        window_start_min, window_end_min, unit_price
 		 FROM price_components WHERE price_book_id = ANY($1)`, ids)
 	if err != nil {
-		return fmt.Errorf("catalog: load price_components: %w", err)
+		return nil, fmt.Errorf("query price_components: %w", err)
 	}
 	defer crows.Close()
 
@@ -338,22 +378,21 @@ func (s *Store) loadSellPrices(ctx context.Context, snap *Snapshot) error {
 		)
 		if err := crows.Scan(&bookID, &meter, &unit, &tier, &tierMinInput, &tierMaxInput,
 			&windowStart, &windowEnd, &unitPrice); err != nil {
-			return fmt.Errorf("catalog: scan price_component: %w", err)
+			return nil, fmt.Errorf("scan price_component: %w", err)
 		}
-		vmID := bookIDs[bookID]
-		b := books[vmID]
+		meta := metaByBookID[bookID]
+		b := books[meta.key]
 		b.ID = bookID
+		b.Currency = meta.currency
 		b.Components = append(b.Components, pricing.Component{
 			Meter: pricing.Meter(meter), Unit: pricing.Unit(unit), ServiceTier: tier,
 			TierMinInput: tierMinInput, TierMaxInput: tierMaxInput,
 			WindowStartMin: windowStart, WindowEndMin: windowEnd, UnitPrice: unitPrice,
 		})
-		books[vmID] = b
+		books[meta.key] = b
 	}
 	if err := crows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-
-	snap.SellPriceBooks = books
-	return nil
+	return books, nil
 }

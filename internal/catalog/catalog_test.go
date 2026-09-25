@@ -232,3 +232,96 @@ func TestStore_CachesWithinTTL(t *testing.T) {
 		t.Error("newly inserted model should not appear before TTL expiry")
 	}
 }
+
+// TestStore_LoadCostPrices 验证成本价（挂渠道，非 CNY 币种也会被加载——是否可用
+// 由调用方按 Currency 字段自行判断，见 internal/relay.computeCostAmount）。
+func TestStore_LoadCostPrices(t *testing.T) {
+	pool := testPool(t)
+	box := testBox(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	var providerID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO providers (code, name, protocol, status) VALUES ($1, 'Cost Test', 'openai', 'active') RETURNING id`,
+		"cost-provider-"+suffix,
+	).Scan(&providerID); err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+	var accountID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (provider_id, name, base_url, cost_multiplier, status)
+		 VALUES ($1, 'cost-account', 'https://api.example.com/v1', 0.85, 'active') RETURNING id`,
+		providerID,
+	).Scan(&accountID); err != nil {
+		t.Fatalf("insert provider_account: %v", err)
+	}
+	vmName := "cost-test-vm-" + suffix
+	var vmID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO virtual_models (name, family, type, context_window, max_output, status)
+		 VALUES ($1, 'test', 'chat', 128000, 8192, 'active') RETURNING id`,
+		vmName,
+	).Scan(&vmID); err != nil {
+		t.Fatalf("insert virtual_model: %v", err)
+	}
+	var channelID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, status)
+		 VALUES ($1, $2, 'upstream-model', 0, 100, 'active') RETURNING id`,
+		vmID, accountID,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	var bookID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO price_books (kind, channel_id, currency, effective_from)
+		 VALUES ('cost', $1, 'CNY', now() - interval '1 hour') RETURNING id`,
+		channelID,
+	).Scan(&bookID); err != nil {
+		t.Fatalf("insert cost price_book: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO price_components (price_book_id, meter, unit, service_tier, tier_min_input, unit_price)
+		 VALUES ($1, 'input', 'per_1m_tokens', 'default', 0, 4.5), ($1, 'output', 'per_1m_tokens', 'default', 0, 18)`,
+		bookID,
+	); err != nil {
+		t.Fatalf("insert cost price_components: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM price_components WHERE price_book_id = $1`, bookID)
+		_, _ = pool.Exec(ctx, `DELETE FROM price_books WHERE id = $1`, bookID)
+		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE id = $1`, channelID)
+		_, _ = pool.Exec(ctx, `DELETE FROM virtual_models WHERE id = $1`, vmID)
+		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE id = $1`, accountID)
+		_, _ = pool.Exec(ctx, `DELETE FROM providers WHERE id = $1`, providerID)
+	})
+
+	store := NewStore(pool, box, time.Hour)
+	snap, err := store.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	book, ok := snap.CostPriceBooks[channelID]
+	if !ok {
+		t.Fatal("expected a cost price book for this channel, found none")
+	}
+	if book.Currency != "CNY" {
+		t.Errorf("Currency = %q, want CNY", book.Currency)
+	}
+	if len(book.Components) != 2 {
+		t.Fatalf("got %d cost price components, want 2", len(book.Components))
+	}
+
+	// 注意：这里不去检查 snap.SellPriceBooks[channelID] 是否为空来验证"成本价没有
+	// 混进售价里"——SellPriceBooks 按 virtual_model_id 索引、CostPriceBooks 按
+	// channel_id 索引，是两个独立的 Go map 字段，这件事从类型和赋值路径上就已经
+	// 成立，不需要再用运行时断言验证；而两者的主键都来自各自独立的序列，长期运行
+	// 的开发库里 channelID 和某个不相关的 vmID 数值刚好相等完全可能发生，用它做
+	// 断言只会产生误报（第一次这么写就真的报错了，原因和这条 channel 本身毫无关系）。
+	if book.ID != bookID {
+		t.Errorf("book.ID = %d, want %d", book.ID, bookID)
+	}
+}

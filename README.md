@@ -30,10 +30,13 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 - `internal/reconcile`：内部一致性对账（§7.11 第一、二类）——钱包 cash_balance/frozen/
   bonus_balance 是否分别等于账本流水、held 预扣、未过期赠款之和；某个时间窗口内账本
   消费总额与 request_logs 计费总额是否一致。只发现问题、上报，不自动修复。
-  第三类对账（成本 vs 上游账单）依赖 catalog 加载成本价，尚未实现。
+  第三类对账（成本 vs 上游账单）还没做——不是缺数据了（渠道成本已经能算出来，
+  见下），是缺"上游账单从哪来"这一环（§7.16 的价格/账单同步，整个都还没做）。
 - `internal/secretbox`：上游 Key 的信封加密（AES-256-GCM，§7.15）。
-- `internal/catalog`：虚拟模型/渠道/价格的内存快照（带 TTL 缓存的简化版，完整的
-  LISTEN/NOTIFY 热加载见 §7.3，留作后续）。
+- `internal/catalog`：虚拟模型/渠道/售价/成本价的内存快照（带 TTL 缓存的简化版，
+  完整的 LISTEN/NOTIFY 热加载见 §7.3，留作后续）。成本价挂渠道（§6.4），只有
+  currency='CNY' 的版本会被使用——汇率同步（§7.16.9）没做，外币成本价加载了但
+  算不出来。
 - `internal/adapter`：OpenAI 兼容协议适配器（请求改写、非流式/流式响应解析、用量提取、
   错误分类，§7.4）。
 - `internal/router`：硬过滤（含熔断/冷却状态）→ 优先级分层 → 层内加权随机的渠道/Key
@@ -54,13 +57,15 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   quota=10000、20 个并发请求各申请 1000，覆盖总量精确等于 10000）。
 - `internal/relay`：把以上全部串起来的请求编排层——鉴权 → 限流 → 预扣费用 → 路由 →
   转发（失败时换 Key/换渠道重试，只在拿到上游响应之前重试，见 §7.7）→ 促销匹配 →
-  结算 → 异步写入 request_logs。
-  15 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
+  结算 → 异步写入 request_logs（含按渠道成本价算出的 cost_amount，配了合同折扣
+  `cost_multiplier` 的渠道会按折扣后的金额记——没配成本价的渠道记 `nil`，不是一个
+  会误导毛利报表的假 0）。
+  17 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
   非流式/流式计费、余额不足拒绝、模型不存在、400 不重试、429 换 Key 成功、
   5xx 换渠道回退成功、重试预算耗尽、唯一 Key 失效后无可用渠道、
   成功/失败两种场景下 request_logs 落盘的完整性（含 attempt_trace）、
   RPM 限流（带 Retry-After）、并发限流（含释放后恢复正常）、
-  打折促销降低实扣金额、免费额度促销覆盖用量。
+  打折促销降低实扣金额、免费额度促销覆盖用量、按合同折扣算出渠道成本。
 - `internal/app`：有一个"从控制面到数据面全打通"的端到端测试——账户、API Key、
   Provider、渠道、售价全部通过 `cmd/admin` 的真实 HTTP 接口创建（不写一行手工
   SQL），再用生成的 API Key 打一个真实的 `/v1/chat/completions` 请求到网关，
@@ -69,7 +74,8 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 
 尚未接入：全局重试预算限流（§7.7 的"每实例每秒重试数 ≤ 正常请求数 20%"）、
 基于实时延迟/成功率的动态路由权重（§7.5.2）、促销的 cost 面（上游免费/折扣，
-需要 catalog 加载成本价，见 internal/catalog 包注释）、`credit_grant` 类促销
+现在 catalog 已经会加载成本价了，缺的是促销引擎那边用它来联动调整路由权重
+这一步）、`credit_grant` 类促销
 （赠送余额的发放不难，但要花掉它需要 wallet.Settle 支持从 bonus_balance 扣款，
 目前只扣 cash_balance）、stackable=true 的多促销叠加（本阶段只应用命中的最高优先级
 一条）、账户级限流默认值继承（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按

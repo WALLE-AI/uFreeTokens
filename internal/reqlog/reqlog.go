@@ -51,6 +51,7 @@ type Record struct {
 	PromotionIDs  []int64 // 命中的促销 ID（本阶段最多 1 个，见 internal/promotion 包注释）
 	ListAmount    *int64
 	ChargedAmount *int64
+	CostAmount    *int64 // 平台成本（微元，CNY）；nil = 没配成本价或成本价非 CNY，见 internal/relay.computeCostAmount
 	ClientIP      string
 	UserAgent     string
 }
@@ -139,13 +140,13 @@ INSERT INTO request_logs (
     endpoint, is_stream, status, http_status, error_code, attempts, attempt_trace,
     ttft_ms, latency_ms,
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens, usage_source,
-    sell_price_book_id, promotion_ids, list_amount, charged_amount, client_ip, user_agent
+    sell_price_book_id, promotion_ids, list_amount, charged_amount, cost_amount, client_ip, user_agent
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14,
     $15, $16,
     $17, $18, $19, $20, $21, $22,
-    $23, $24, $25, $26, $27, $28
+    $23, $24, $25, $26, $27, $28, $29
 )`
 
 func (w *Writer) insertBatch(records []Record) {
@@ -169,7 +170,7 @@ func (w *Writer) insertBatch(records []Record) {
 			r.Endpoint, r.IsStream, r.Status, nullIfZero(r.HTTPStatus), nullIfEmpty(r.ErrorCode), r.Attempts, trace,
 			r.TTFTMillis, r.LatencyMillis,
 			r.Usage.InputTokens, r.Usage.CacheReadTokens, r.Usage.CacheWriteTokens, r.Usage.OutputTokens, r.Usage.ReasoningTokens, source,
-			r.SellBookID, r.PromotionIDs, r.ListAmount, r.ChargedAmount, nullIfEmpty(r.ClientIP), nullIfEmpty(r.UserAgent),
+			r.SellBookID, r.PromotionIDs, r.ListAmount, r.ChargedAmount, r.CostAmount, nullIfEmpty(r.ClientIP), nullIfEmpty(r.UserAgent),
 		)
 	}
 

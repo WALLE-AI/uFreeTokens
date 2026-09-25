@@ -3,9 +3,13 @@ package relay
 import (
 	"net/http"
 	"strconv"
+	"time"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
+	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/schema"
 )
@@ -122,6 +126,32 @@ func fallbackUsage(estInput, reserveOutput int) schema.Usage {
 		OutputTokens: int64(reserveOutput),
 		Source:       schema.UsageSourceEstimated,
 	}
+}
+
+// computeCostAmount 用渠道的成本价（costBook，可能是零值——没配置成本价）算出
+// 这次请求的平台成本（微元，CNY），乘上渠道的合同折扣系数（costMultiplier，
+// 技术方案 §6.4：渠道成本 = 挂牌价 × cost_multiplier）。返回 nil 表示"这次
+// 算不出成本"（没配成本价，或成本价币种不是 CNY——汇率同步 §7.16.9 尚未实现，
+// 外币成本暂时没法折算），而不是返回一个具有欺骗性的 0：0 成本会让毛利报表
+// 显得"每一分钱都是利润"，比"缺这条数据"更容易误导人。
+func computeCostAmount(costBook pricing.Book, costMultiplier decimal.Decimal, usage schema.Usage) *int64 {
+	if len(costBook.Components) == 0 {
+		return nil
+	}
+	if costBook.Currency != "" && costBook.Currency != "CNY" {
+		return nil
+	}
+	amount, matched := pricing.Charge(costBook, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
+	if !matched {
+		return nil
+	}
+	// costMultiplier 不做"零值当作 1"的兜底：provider_accounts.cost_multiplier
+	// 在数据库里 NOT NULL DEFAULT 1，catalog 加载的永远是管理员实际配置的值——
+	// 如果那个值就是 0（比如上游整月免费的渠道），这里就应该算出成本为 0，
+	// 而不是悄悄当成"没配置"改回 1 倍，那样会让一个真实的零成本渠道在毛利
+	// 报表上显得像是照单全价支付。
+	adjusted := decimal.NewFromInt(amount).Mul(costMultiplier).Ceil().IntPart()
+	return &adjusted
 }
 
 // clientFacingError 把上游错误类别映射为返回给客户端的状态码/错误码。

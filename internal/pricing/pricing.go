@@ -48,8 +48,13 @@ type Component struct {
 // Book 是某个价格版本下的全部计量分量（对应一条 price_books + 其下的 price_components）。
 // ID 是价格版本的标识（price_books.id），保持为 0 也不影响 Charge 计算——只在
 // 需要把"这次结算用的是哪个价格版本"写进 request_logs 时才用得到（§7.13）。
+// Currency 是这个价格版本的计价币种（"CNY"/"USD" 等）；Charge 本身对币种无感知，
+// 只是原样透传——调用方（目前是 internal/catalog 加载成本价时）需要知道它，
+// 决定是否要经过汇率换算才能和以 CNY 计价的售价放在一起比较（§7.16.9，汇率
+// 同步尚未实现，非 CNY 的成本价目前不计入 cost_amount，见 catalog 包注释）。
 type Book struct {
 	ID         int64
+	Currency   string
 	Components []Component
 }
 

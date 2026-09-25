@@ -359,3 +359,61 @@ func TestSetSellPrice_RejectsInvalidMeterOrUnit(t *testing.T) {
 		t.Error("expected error for negative unit_price")
 	}
 }
+
+func TestSetCostPrice_CreatesVersionAndDefaultsToCNY(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, err := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	acc, err := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	if err != nil {
+		t.Fatalf("CreateProviderAccount: %v", err)
+	}
+	vm, err := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Type: "chat", ContextWindow: 1000, MaxOutput: 100})
+	if err != nil {
+		t.Fatalf("CreateVirtualModel: %v", err)
+	}
+	ch, err := s.CreateChannel(ctx, CreateChannelInput{VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up"})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	bookID, err := s.SetCostPrice(ctx, SetCostPriceInput{
+		ChannelID: ch.ID,
+		Components: []PriceComponentInput{
+			{Meter: "input", Unit: "per_1m_tokens", UnitPrice: decimal.NewFromFloat(4.5)},
+			{Meter: "output", Unit: "per_1m_tokens", UnitPrice: decimal.NewFromFloat(18)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetCostPrice: %v", err)
+	}
+
+	var kind, currency string
+	var channelID int64
+	if err := pool.QueryRow(ctx, `SELECT kind, currency, channel_id FROM price_books WHERE id = $1`, bookID).
+		Scan(&kind, &currency, &channelID); err != nil {
+		t.Fatalf("query price_book: %v", err)
+	}
+	if kind != "cost" {
+		t.Errorf("kind = %q, want cost", kind)
+	}
+	if currency != "CNY" {
+		t.Errorf("currency = %q, want default CNY", currency)
+	}
+	if channelID != ch.ID {
+		t.Errorf("channel_id = %d, want %d", channelID, ch.ID)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM price_components WHERE price_book_id = $1`, bookID).Scan(&count); err != nil {
+		t.Fatalf("count price_components: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("price_components count = %d, want 2", count)
+	}
+}

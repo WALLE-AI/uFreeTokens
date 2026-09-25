@@ -53,6 +53,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Post("/virtual-models", h.createVirtualModel)
 	r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
 	r.Post("/channels", h.createChannel)
+	r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
 
 	return r
 }
@@ -307,6 +308,30 @@ func (h *adminHandlers) setSellPrice(w http.ResponseWriter, r *http.Request) {
 	}
 	bookID, err := h.svc.SetSellPrice(r.Context(), admin.SetSellPriceInput{
 		VirtualModelID: vmID, Tier: body.Tier, Components: body.Components,
+	})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
+}
+
+func (h *adminHandlers) setCostPrice(w http.ResponseWriter, r *http.Request) {
+	channelID, ok := pathInt64(r, "channelID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid channel id")
+		return
+	}
+	var body struct {
+		Currency   string                      `json:"currency"`
+		Components []admin.PriceComponentInput `json:"components"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	bookID, err := h.svc.SetCostPrice(r.Context(), admin.SetCostPriceInput{
+		ChannelID: channelID, Currency: body.Currency, Components: body.Components,
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
