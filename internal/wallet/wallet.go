@@ -67,6 +67,71 @@ func New(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
+// CreateWallet 给一个新账户初始化钱包（余额全为 0）。技术方案 §6.5 的
+// wallets 表以 account_id 为主键，每个账户有且只有一个钱包；这个方法是
+// internal/admin 创建账户时应该调用的路径，而不是直接对 wallets 表写 SQL——
+// 保持"只有 internal/wallet 写 wallets 表"这条不变式（见包文档）。
+// 幂等：账户已经有钱包时直接返回，不报错。
+func (s *Service) CreateWallet(ctx context.Context, accountID int64) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO wallets (account_id, cash_balance, bonus_balance, frozen)
+		 VALUES ($1, 0, 0, 0) ON CONFLICT (account_id) DO NOTHING`,
+		accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet: create wallet: %w", err)
+	}
+	return nil
+}
+
+// Adjust 是管理员对现金余额的手工调整（充值到账、退款、纠错等），在真正的
+// payment_orders 充值流程（技术方案 §7.11）落地之前，这是唯一合法的"给账户
+// 加钱"的入口——不允许任何代码直接 UPDATE wallets.cash_balance，必须经过这里
+// 才能同时写下 ledger_entries，保证账本和余额不会出现 §1.3 提到的那种对不上的
+// 情况。amount 可正可负（正数=入账，负数=扣减，比如撤销一笔错误的赠送）。
+// refID 建议填运营侧的工单号/操作记录 ID，方便审计时追溯这笔调整的来由。
+func (s *Service) Adjust(ctx context.Context, accountID int64, amount int64, refID string) (*Receipt, error) {
+	if amount == 0 {
+		return nil, fmt.Errorf("wallet: adjust amount must not be zero")
+	}
+	if refID == "" {
+		return nil, fmt.Errorf("wallet: adjust requires a non-empty refID for audit purposes")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("wallet: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var cashAfter, bonusAfter int64
+	if err := tx.QueryRow(ctx,
+		`UPDATE wallets SET cash_balance = cash_balance + $2, updated_at = now()
+		 WHERE account_id = $1
+		 RETURNING cash_balance, bonus_balance`,
+		accountID, amount,
+	).Scan(&cashAfter, &bonusAfter); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("wallet: adjust: account %d has no wallet", accountID)
+		}
+		return nil, fmt.Errorf("wallet: adjust: update wallet: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id)
+		 VALUES ($1, 'adjust', $2, 'cash', $3, $4, 'admin', $5)`,
+		accountID, amount, cashAfter, bonusAfter, refID,
+	); err != nil {
+		return nil, fmt.Errorf("wallet: adjust: insert ledger entry: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("wallet: adjust: commit: %w", err)
+	}
+
+	return &Receipt{RequestID: refID, AccountID: accountID, ChargedAmount: -amount, CashAfter: cashAfter, BonusAfter: bonusAfter}, nil
+}
+
 // Reserve 原子地冻结 amount 微元。可用余额 = cash_balance + bonus_balance +
 // accounts.credit_limit - frozen（技术方案 §6.5）。幂等：同一 request_id 重复调用
 // 返回首次创建的 Hold，不会重复冻结。

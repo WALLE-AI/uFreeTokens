@@ -64,6 +64,20 @@ func seedAccount(t *testing.T, pool *pgxpool.Pool, cashMicro, bonusMicro, credit
 	return accountID
 }
 
+// seedAccountOnly 只创建账户，不建钱包——用来测试 CreateWallet 本身。
+func seedAccountOnly(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var accountID int64
+	err := pool.QueryRow(context.Background(),
+		`INSERT INTO accounts (type, name, status, tier) VALUES ('personal', $1, 'active', 'free') RETURNING id`,
+		fmt.Sprintf("wallet-test-noaccount-%d", time.Now().UnixNano()),
+	).Scan(&accountID)
+	if err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	return accountID
+}
+
 func getWallet(t *testing.T, pool *pgxpool.Pool, accountID int64) (cash, bonus, frozen int64) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(),
@@ -482,5 +496,109 @@ func TestReclaimExpired_RespectsLimit(t *testing.T) {
 		if status != string(StatusReleased) {
 			t.Errorf("reservation %s status = %q, want released", id, status)
 		}
+	}
+}
+
+func TestCreateWallet_InitializesZeroBalance(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccountOnly(t, pool)
+
+	if err := svc.CreateWallet(context.Background(), acct); err != nil {
+		t.Fatalf("CreateWallet: %v", err)
+	}
+
+	cash, bonus, frozen := getWallet(t, pool, acct)
+	if cash != 0 || bonus != 0 || frozen != 0 {
+		t.Errorf("wallet = cash=%d bonus=%d frozen=%d, want all 0", cash, bonus, frozen)
+	}
+}
+
+func TestCreateWallet_IsIdempotent(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccountOnly(t, pool)
+
+	if err := svc.CreateWallet(context.Background(), acct); err != nil {
+		t.Fatalf("first CreateWallet: %v", err)
+	}
+	// 手工把余额改成非零，验证第二次调用不会把它压回 0（ON CONFLICT DO NOTHING）。
+	if _, err := pool.Exec(context.Background(), `UPDATE wallets SET cash_balance = 500 WHERE account_id = $1`, acct); err != nil {
+		t.Fatalf("manual balance bump: %v", err)
+	}
+	if err := svc.CreateWallet(context.Background(), acct); err != nil {
+		t.Fatalf("second CreateWallet: %v", err)
+	}
+
+	cash, _, _ := getWallet(t, pool, acct)
+	if cash != 500 {
+		t.Errorf("cash_balance = %d, want 500 (second CreateWallet must not reset an existing wallet)", cash)
+	}
+}
+
+func TestAdjust_PositiveAmountCreditsBalance(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 0, 0, 0)
+
+	receipt, err := svc.Adjust(context.Background(), acct, 500_000, "admin-op-"+newRequestID(t))
+	if err != nil {
+		t.Fatalf("Adjust: %v", err)
+	}
+	if receipt.CashAfter != 500_000 {
+		t.Errorf("CashAfter = %d, want 500_000", receipt.CashAfter)
+	}
+
+	cash, _, _ := getWallet(t, pool, acct)
+	if cash != 500_000 {
+		t.Errorf("cash_balance = %d, want 500_000", cash)
+	}
+
+	var ledgerType, refType string
+	var ledgerAmount int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT type, amount, ref_type FROM ledger_entries WHERE account_id = $1 AND type = 'adjust'`, acct,
+	).Scan(&ledgerType, &ledgerAmount, &refType); err != nil {
+		t.Fatalf("query ledger entry: %v", err)
+	}
+	if ledgerType != "adjust" || ledgerAmount != 500_000 || refType != "admin" {
+		t.Errorf("ledger entry = type=%s amount=%d ref_type=%s, want adjust/500000/admin", ledgerType, ledgerAmount, refType)
+	}
+}
+
+func TestAdjust_NegativeAmountDebitsBalance(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	if _, err := svc.Adjust(context.Background(), acct, -300_000, "admin-op-"+newRequestID(t)); err != nil {
+		t.Fatalf("Adjust: %v", err)
+	}
+
+	cash, _, _ := getWallet(t, pool, acct)
+	if cash != 700_000 {
+		t.Errorf("cash_balance = %d, want 700_000", cash)
+	}
+}
+
+func TestAdjust_RejectsZeroAmountAndEmptyRefID(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 0, 0, 0)
+
+	if _, err := svc.Adjust(context.Background(), acct, 0, "ref"); err == nil {
+		t.Error("expected error for zero amount")
+	}
+	if _, err := svc.Adjust(context.Background(), acct, 100, ""); err == nil {
+		t.Error("expected error for empty refID")
+	}
+}
+
+func TestAdjust_UnknownAccountReturnsError(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+
+	if _, err := svc.Adjust(context.Background(), -1, 100, "ref"); err == nil {
+		t.Error("expected error for an account with no wallet")
 	}
 }

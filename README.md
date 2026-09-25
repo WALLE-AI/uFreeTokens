@@ -14,7 +14,10 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   → 路由选渠道/Key → 转发上游（OpenAI 兼容协议，支持流式/非流式）→ 失败时按错误类别
   换 Key/换渠道重试（§7.6-7.7，见下）→ 按实际用量结算。
   `/v1/completions`、`/v1/embeddings` 尚未实现，返回 `503 not_implemented`。
-- `cmd/admin`：进程骨架，仅健康检查与依赖连通性检查，没有任何业务 API。
+- `cmd/admin`：账户/API Key/Provider/渠道/虚拟模型/售价管理的 HTTP 接口
+  （`internal/admin`）——创建账户会原子初始化一个空钱包；上游 Key 落库前用
+  `internal/secretbox` 加密；改价格是发布新版本，不覆盖历史。**目前完全没有
+  鉴权/权限控制**，只应该部署在内网，这是部署前必须解决的安全缺口。
 - `cmd/worker`：定时任务循环（§7.11、§7.13）——回收过期未结算的预扣（网关崩溃留下的
   孤儿 reservation）、保持 request_logs 未来分区就绪、内部一致性对账（钱包余额 vs
   账本、账本 vs 请求日志），发现问题只记日志上报，不自动"纠正"数据。
@@ -58,6 +61,11 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   成功/失败两种场景下 request_logs 落盘的完整性（含 attempt_trace）、
   RPM 限流（带 Retry-After）、并发限流（含释放后恢复正常）、
   打折促销降低实扣金额、免费额度促销覆盖用量。
+- `internal/app`：有一个"从控制面到数据面全打通"的端到端测试——账户、API Key、
+  Provider、渠道、售价全部通过 `cmd/admin` 的真实 HTTP 接口创建（不写一行手工
+  SQL），再用生成的 API Key 打一个真实的 `/v1/chat/completions` 请求到网关，
+  验证成功并按正确价格扣费。这条测试专门用来发现 admin 写数据和 relay/catalog
+  读数据之间的字段/格式不一致（这类问题在两边各自的单元测试里发现不了）。
 
 尚未接入：全局重试预算限流（§7.7 的"每实例每秒重试数 ≤ 正常请求数 20%"）、
 基于实时延迟/成功率的动态路由权重（§7.5.2）、促销的 cost 面（上游免费/折扣，
@@ -68,6 +76,8 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 "不限制"处理，而不是继承账户级配置）、Anthropic/Gemini 适配器。另外 request_logs
 目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；鉴权失败、
 余额不足、模型不存在、限流拒绝等预扣之前的拒绝还只有结构化访问日志，不落 request_logs。
+另外 `cmd/admin` 还没有用户控制台、支付回调、促销管理、审计日志（`admin_audit_logs`
+表已建好但没有写入），充值目前只能靠 `POST /accounts/{id}/wallet/adjust` 手工调整。
 
 ## 快速开始（无 Docker）
 
@@ -85,14 +95,25 @@ go run ./tools/devdb
 go install github.com/pressly/goose/v3/cmd/goose@latest
 goose -dir migrations postgres "postgres://uft:uft@localhost:5432/uft?sslmode=disable" up
 
-# 3. 播种一个可用的测试账户 + API Key（pepper 需要和第 4 步网关用的一致）
+# 3. 播种一个最小可用的测试账户 + API Key（只够跑 /v1/models；pepper 需要和
+#    第 5 步网关用的一致）——想要一条能真正转发请求、扣费的完整链路（账户/Key/
+#    Provider/渠道/售价），用第 4 步的 cmd/admin 接口配置，不要手写 SQL。
 go run ./tools/seed
 # 输出会打印一个 sk-uft-... 的 API Key，记下来
 
-# 4. 运行网关
-UFT_KEY_PEPPER=dev-pepper-change-me go run ./cmd/gateway -config config/gateway.example.yaml
+# 4. （可选）运行控制面，配置账户/Key/Provider/渠道/售价。KEK 用于加密落库的
+#    上游 Key，本地开发随便生成一个 32 字节 base64（生产环境应来自 KMS）：
+#    openssl rand -base64 32
+UFT_KEY_PEPPER=dev-pepper-change-me UFT_KEK=<32-byte-base64> go run ./cmd/admin
+# curl -X POST localhost:8081/accounts -d '{"Type":"personal","Name":"acme"}'
+# 完整流程（建账户 -> 充值 -> 建 Key -> 建 Provider/渠道/售价）可以参考
+# internal/app/admin_gateway_e2e_test.go，那是一个从头到尾都走 HTTP 接口、
+# 不写 SQL 的真实示例。
 
-# 5. 冒烟测试
+# 5. 运行网关（KEK 要和第 4 步一致，否则解不出上游 Key）
+UFT_KEY_PEPPER=dev-pepper-change-me UFT_KEK=<32-byte-base64> go run ./cmd/gateway -config config/gateway.example.yaml
+
+# 6. 冒烟测试
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
 curl -H "Authorization: Bearer sk-uft-xxx" http://localhost:8080/v1/models
