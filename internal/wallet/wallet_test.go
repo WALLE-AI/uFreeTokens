@@ -358,3 +358,129 @@ func TestSettleAndRelease_UnknownRequestIDReturnsNotFound(t *testing.T) {
 		t.Errorf("Release error = %v, want ErrReservationNotFound", err)
 	}
 }
+
+func TestReclaimExpired_ReleasesOnlyExpiredHeldReservations(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	expiredID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), expiredID, acct, 300_000, 10*time.Millisecond); err != nil {
+		t.Fatalf("Reserve (expired): %v", err)
+	}
+	stillLiveID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), stillLiveID, acct, 200_000, time.Hour); err != nil {
+		t.Fatalf("Reserve (still live): %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond) // 等第一条真正过期
+
+	// 不断言 ReclaimExpired 的返回值等于某个精确的全局数字：这是一个跑很久的开发库，
+	// 其它测试（尤其是只测 Reserve、不调用 Settle/Release 的用例）会在库里留下别的
+	// held 记录，ReclaimExpired 按设计会把它们也一起扫出来——这是对的行为，只是
+	// 会让"全局恰好回收 N 条"这种断言变脆弱。用本账户的 frozen 余额和这两条记录
+	// 各自的最终状态来断言，天然不受其它账户/其它测试遗留数据的影响。
+	if _, err := svc.ReclaimExpired(context.Background(), 1000); err != nil {
+		t.Fatalf("ReclaimExpired: %v", err)
+	}
+
+	_, _, frozen := getWallet(t, pool, acct)
+	if frozen != 200_000 {
+		t.Errorf("frozen = %d, want 200_000 (expired reservation released, live one untouched)", frozen)
+	}
+
+	var expiredStatus, liveStatus string
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM reservations WHERE request_id = $1`, expiredID).Scan(&expiredStatus); err != nil {
+		t.Fatalf("query expired reservation status: %v", err)
+	}
+	if expiredStatus != string(StatusReleased) {
+		t.Errorf("expired reservation status = %q, want released", expiredStatus)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM reservations WHERE request_id = $1`, stillLiveID).Scan(&liveStatus); err != nil {
+		t.Fatalf("query live reservation status: %v", err)
+	}
+	if liveStatus != string(StatusHeld) {
+		t.Errorf("still-live reservation status = %q, want held (must not be touched)", liveStatus)
+	}
+}
+
+func TestReclaimExpired_IsIdempotentAcrossCalls(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 300_000, 10*time.Millisecond); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := svc.ReclaimExpired(context.Background(), 1000); err != nil {
+		t.Fatalf("first ReclaimExpired: %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM reservations WHERE request_id = $1`, reqID).Scan(&status); err != nil {
+		t.Fatalf("query reservation status: %v", err)
+	}
+	if status != string(StatusReleased) {
+		t.Fatalf("status after first reclaim = %q, want released", status)
+	}
+
+	// 第二次扫描：这条记录已经是 released，不再满足 status='held'，
+	// 重新调用不应该改变账户的冻结余额（即没有被"重复释放"）。
+	if _, err := svc.ReclaimExpired(context.Background(), 1000); err != nil {
+		t.Fatalf("second ReclaimExpired: %v", err)
+	}
+
+	_, _, frozen := getWallet(t, pool, acct)
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0 (must not be double-released)", frozen)
+	}
+}
+
+func TestReclaimExpired_RespectsLimit(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	ids := make([]string, 3)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%s-%d", newRequestID(t), i)
+		if _, err := svc.Reserve(context.Background(), ids[i], acct, 100_000, 10*time.Millisecond); err != nil {
+			t.Fatalf("Reserve: %v", err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// limit=1：全局候选可能不止这 3 条（同一个开发库里其它测试也可能留下过期的
+	// held 记录），所以不断言全局返回值，只断言"这次调用最多处理 1 条"这件事本身
+	// 通过观察冻结余额的减少量来验证：本账户初始 frozen=300_000（3×100_000），
+	// 调完一次 limit=1 后，减少量不应该超过 1 条的份额（100_000）。
+	if _, err := svc.ReclaimExpired(context.Background(), 1); err != nil {
+		t.Fatalf("ReclaimExpired: %v", err)
+	}
+	_, _, frozenAfterOne := getWallet(t, pool, acct)
+	released := 300_000 - frozenAfterOne
+	if released > 100_000 {
+		t.Fatalf("frozen dropped by %d after limit=1, want at most 100_000 (one reservation's worth)", released)
+	}
+
+	// 用一个足够大的 limit 兜底处理完剩下的，最终这 3 条应该全部变成 released，
+	// 账户 frozen 归零。
+	if _, err := svc.ReclaimExpired(context.Background(), 1000); err != nil {
+		t.Fatalf("ReclaimExpired (drain remaining): %v", err)
+	}
+	_, _, frozenFinal := getWallet(t, pool, acct)
+	if frozenFinal != 0 {
+		t.Errorf("frozen after draining all = %d, want 0", frozenFinal)
+	}
+	for _, id := range ids {
+		var status string
+		if err := pool.QueryRow(context.Background(), `SELECT status FROM reservations WHERE request_id = $1`, id).Scan(&status); err != nil {
+			t.Fatalf("query status for %s: %v", id, err)
+		}
+		if status != string(StatusReleased) {
+			t.Errorf("reservation %s status = %q, want released", id, status)
+		}
+	}
+}

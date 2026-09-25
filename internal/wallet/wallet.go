@@ -259,6 +259,49 @@ func (s *Service) Release(ctx context.Context, requestID string) error {
 	return tx.Commit(ctx)
 }
 
+// ReclaimExpired 释放所有已过期仍处于 held 状态的预扣记录（技术方案 §7.9.3、§7.11）。
+// 网关在 Reserve 之后、Settle/Release 之前崩溃或异常退出，会留下"孤儿"预扣——这些
+// 冻结的钱会一直卡住，直到这里按 reservations.expires_at 超时把它们释放。
+// 只处理 Reserve 时约定好的过期时间已经过去的记录，正常在途请求不受影响。
+// 供 worker 定时调用；单次最多处理 limit 条（避免一次性扫出海量数据阻塞太久）。
+// 返回本次实际释放的记录数。
+func (s *Service) ReclaimExpired(ctx context.Context, limit int) (int, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT request_id FROM reservations WHERE status = 'held' AND expires_at < now() ORDER BY expires_at ASC LIMIT $1`,
+		limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("wallet: query expired reservations: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("wallet: scan expired reservation: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	reclaimed := 0
+	for _, id := range ids {
+		if err := s.Release(ctx, id); err != nil {
+			// ErrReservationNotFound 理论上不会出现（我们刚查到它），但如果出现了，
+			// 说明它在查询和释放之间被别的路径处理掉了——跳过继续，不中断整批回收。
+			if errors.Is(err, ErrReservationNotFound) {
+				continue
+			}
+			return reclaimed, fmt.Errorf("wallet: release expired reservation %s: %w", id, err)
+		}
+		reclaimed++
+	}
+	return reclaimed, nil
+}
+
 func (s *Service) loadReservation(ctx context.Context, tx pgx.Tx, requestID string) (*Hold, error) {
 	var h Hold
 	h.RequestID = requestID

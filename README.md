@@ -14,11 +14,20 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   → 路由选渠道/Key → 转发上游（OpenAI 兼容协议，支持流式/非流式）→ 失败时按错误类别
   换 Key/换渠道重试（§7.6-7.7，见下）→ 按实际用量结算。
   `/v1/completions`、`/v1/embeddings` 尚未实现，返回 `503 not_implemented`。
-- `cmd/admin` / `cmd/worker`：进程骨架，仅健康检查与依赖连通性检查。
+- `cmd/admin`：进程骨架，仅健康检查与依赖连通性检查，没有任何业务 API。
+- `cmd/worker`：定时任务循环（§7.11、§7.13）——回收过期未结算的预扣（网关崩溃留下的
+  孤儿 reservation）、保持 request_logs 未来分区就绪、内部一致性对账（钱包余额 vs
+  账本、账本 vs 请求日志），发现问题只记日志上报，不自动"纠正"数据。
 - `migrations/`：Phase1 核心表结构，已在真实 PostgreSQL 上跑通。
 - `internal/pricing`：计价纯函数（多计量项、分档、时段计价、向上取整）。
 - `internal/wallet`：Reserve/Settle/Release 两阶段计费引擎（§7.9），幂等、原子冻结，
   集成测试包含**并发透支回归测试**（§1.3 A1 场景：余额只够 1 笔请求时并发发起 50 笔，验证绝不超额冻结）。
+  另外提供 `ReclaimExpired`：扫描并释放已过期仍处于 held 状态的预扣（§7.9.3 的孤儿
+  reservation 回收），供 worker 定时调用。
+- `internal/reconcile`：内部一致性对账（§7.11 第一、二类）——钱包 cash_balance/frozen/
+  bonus_balance 是否分别等于账本流水、held 预扣、未过期赠款之和；某个时间窗口内账本
+  消费总额与 request_logs 计费总额是否一致。只发现问题、上报，不自动修复。
+  第三类对账（成本 vs 上游账单）依赖 catalog 加载成本价，尚未实现。
 - `internal/secretbox`：上游 Key 的信封加密（AES-256-GCM，§7.15）。
 - `internal/catalog`：虚拟模型/渠道/价格的内存快照（带 TTL 缓存的简化版，完整的
   LISTEN/NOTIFY 热加载见 §7.3，留作后续）。
@@ -31,7 +40,8 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   （Redis 共享，429/配额耗尽/Key 失效时跨实例生效，§7.6）。
 - `internal/reqlog`：把每次请求的用量/计费快照/重试轨迹异步批量写入 `request_logs`
   （§6.8/§7.13）——有界 channel + 后台 goroutine 每 500 条或 1 秒 flush 一次，
-  队列满时丢弃并记日志，不会反过来拖慢请求处理。
+  队列满时丢弃并记日志，不会反过来拖慢请求处理。另外提供 `EnsureFuturePartitions`：
+  按天补建未来的分区表（迁移只预建了执行当天起 14 天），供 worker 定时调用。
 - `internal/ratelimit`：按 API Key 的 RPM（GCRA，`go-redis/redis_rate`）、TPM（固定窗口，
   Lua 脚本原子扣减）、并发（有序集合模拟租约，Lua 脚本原子获取/回收）三种限流（§7.12）。
   全部 fail-open：Redis 不可用时放行而不是拒绝所有请求。
