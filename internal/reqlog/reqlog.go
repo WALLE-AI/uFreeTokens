@@ -48,7 +48,7 @@ type Record struct {
 	LatencyMillis int64
 	Usage         schema.Usage
 	SellBookID    *int64
-	PromotionIDs  []int64 // 命中的促销 ID（本阶段最多 1 个，见 internal/promotion 包注释）
+	PromotionIDs  []int64 // 命中并叠加应用的促销 ID，按应用顺序排列（见 internal/promotion 包注释）
 	ListAmount    *int64
 	ChargedAmount *int64
 	CostAmount    *int64 // 平台成本（微元，CNY）；nil = 没配成本价或成本价非 CNY，见 internal/relay.computeCostAmount

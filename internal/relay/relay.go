@@ -527,8 +527,8 @@ func (s *Service) releaseQuietly(log *slog.Logger, requestID string) {
 }
 
 // settleQuietly 计算原价、按促销引擎算出实扣价（若配置了 Promotion），再结算钱包。
-// 返回 (原价, 实扣价, 命中的促销 ID)，供 request_logs 记录完整的计费快照。
-func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requestMeta, book pricing.Book, usage schema.Usage) (list, charged int64, promotionID *int64) {
+// 返回 (原价, 实扣价, 命中的促销 ID 列表)，供 request_logs 记录完整的计费快照。
+func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requestMeta, book pricing.Book, usage schema.Usage) (list, charged int64, promotionIDs []int64) {
 	list, _ = pricing.Charge(book, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
 	charged = list
 
@@ -538,25 +538,25 @@ func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requ
 	defer cancel()
 
 	if s.Promotion != nil {
-		c, promoID, err := s.Promotion.Quote(settleCtx, meta.accountID, meta.accountTier, meta.vmName, list)
+		c, promoIDs, err := s.Promotion.Quote(settleCtx, meta.accountID, meta.accountTier, meta.vmName, list)
 		if err != nil {
 			// 促销引擎故障不应该阻塞计费：退回按原价收取，只记日志。
 			log.Error("promotion quote failed, charging list price", "error", err)
 		} else {
-			charged, promotionID = c, promoID
+			charged, promotionIDs = c, promoIDs
 		}
 	}
 
 	if _, err := s.Wallet.Settle(settleCtx, meta.requestID, charged, meta.vmName); err != nil {
 		log.Error("settle failed", "error", err, "amount", charged)
 	}
-	return list, charged, promotionID
+	return list, charged, promotionIDs
 }
 
 // logSuccess / logFailure 把一次请求的结果异步写入 request_logs（§6.8/§7.13）。
 // s.ReqLog 为 nil 时 Write 是安全的 no-op（见 reqlog.Writer 的方法注释）。
 func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []reqlog.AttemptTraceEntry,
-	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, list, charged int64, promotionID *int64, costAmount *int64) {
+	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, list, charged int64, promotionIDs []int64, costAmount *int64) {
 
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
@@ -575,9 +575,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 	rec.ListAmount = &list
 	rec.ChargedAmount = &charged
 	rec.CostAmount = costAmount
-	if promotionID != nil {
-		rec.PromotionIDs = []int64{*promotionID}
-	}
+	rec.PromotionIDs = promotionIDs
 
 	s.ReqLog.Write(rec)
 }

@@ -85,10 +85,17 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 耗 1 个令牌、桶从满值开始允许冷启动突发），而不是严格的按秒计数窗口——理由和
 实现细节见 `internal/relay/retrybudget.go`。
 
+`stackable=true` 的多促销叠加已经接入：`promotion.Engine.Quote` 按 priority
+从高到低依次尝试候选，一条命中并成功应用后只有它自己标了 `stackable=true`
+才会继续把折后价喂给下一条候选叠加（不同类型可以混着叠，比如先打折再扣免费
+额度）；命中但不可叠加、或链中间某条候选预算/额度不足，链就停在那里，保留
+已经叠加成功的部分，不会去尝试更低优先级的下一条（依然不做失败降级链）。
+`Quote` 现在返回促销 ID 列表而不是单个 ID，`request_logs.promotion_ids`
+按应用顺序记录全部命中的促销。
+
 尚未接入：基于实时延迟/成功率的动态路由权重（§7.5.2）、促销的 cost 面（上游免费/折扣，
 现在 catalog 已经会加载成本价了，缺的是促销引擎那边用它来联动调整路由权重
-这一步）、stackable=true 的多促销叠加（本阶段只应用命中的最高优先级
-一条）、账户级限流默认值继承（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按
+这一步）、账户级限流默认值继承（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按
 "不限制"处理，而不是继承账户级配置）、Anthropic/Gemini 适配器。另外 request_logs
 目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；鉴权失败、
 余额不足、模型不存在、限流拒绝等预扣之前的拒绝还只有结构化访问日志，不落 request_logs。
