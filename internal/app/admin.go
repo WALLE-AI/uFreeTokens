@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shopspring/decimal"
@@ -43,6 +44,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Post("/{accountID}/api-keys", h.createAPIKey)
 		r.Get("/{accountID}/api-keys", h.listAPIKeys)
 		r.Post("/{accountID}/wallet/adjust", h.adjustWallet)
+		r.Post("/{accountID}/credit-grants", h.grantCredit)
 	})
 	r.Post("/api-keys/{apiKeyID}/revoke", h.revokeAPIKey)
 
@@ -144,6 +146,36 @@ func (h *adminHandlers) adjustWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, receipt)
+}
+
+type grantCreditRequest struct {
+	Source     string     `json:"source"`
+	Amount     int64      `json:"amount"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	ModelScope []string   `json:"model_scope"`
+	RefID      string     `json:"ref_id"`
+}
+
+func (h *adminHandlers) grantCredit(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "accountID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid account id")
+		return
+	}
+	var in grantCreditRequest
+	if err := decodeJSON(r, &in); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	granted, err := h.svc.GrantCredit(r.Context(), admin.GrantCreditInput{
+		AccountID: id, Source: in.Source, Amount: in.Amount,
+		ExpiresAt: in.ExpiresAt, ModelScope: in.ModelScope, RefID: in.RefID,
+	})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, granted)
 }
 
 // --- api keys ---

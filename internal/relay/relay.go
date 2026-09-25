@@ -523,7 +523,7 @@ func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requ
 		}
 	}
 
-	if _, err := s.Wallet.Settle(settleCtx, meta.requestID, charged); err != nil {
+	if _, err := s.Wallet.Settle(settleCtx, meta.requestID, charged, meta.vmName); err != nil {
 		log.Error("settle failed", "error", err, "amount", charged)
 	}
 	return list, charged, promotionID

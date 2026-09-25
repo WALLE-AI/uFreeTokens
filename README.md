@@ -72,12 +72,17 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   验证成功并按正确价格扣费。这条测试专门用来发现 admin 写数据和 relay/catalog
   读数据之间的字段/格式不一致（这类问题在两边各自的单元测试里发现不了）。
 
+`credit_grant` 类促销（赠送余额）已经接入：`wallet.Service.Grant` 发放
+到 `credit_grants` 表并累加 `wallets.bonus_balance`，`wallet.Service.Settle`
+结算时会先按到期时间从近到远（FIFO）扣 bonus_balance（受 `model_scope` 限制、
+支持过期跳过、并发安全），扣完才落到 cash_balance；`cmd/admin` 暴露了
+`POST /accounts/{id}/credit-grants` 作为发放入口（还没有自动触发的注册赠送/
+活动赠送流程，得靠这个接口手工/由外部系统调用）。
+
 尚未接入：全局重试预算限流（§7.7 的"每实例每秒重试数 ≤ 正常请求数 20%"）、
 基于实时延迟/成功率的动态路由权重（§7.5.2）、促销的 cost 面（上游免费/折扣，
 现在 catalog 已经会加载成本价了，缺的是促销引擎那边用它来联动调整路由权重
-这一步）、`credit_grant` 类促销
-（赠送余额的发放不难，但要花掉它需要 wallet.Settle 支持从 bonus_balance 扣款，
-目前只扣 cash_balance）、stackable=true 的多促销叠加（本阶段只应用命中的最高优先级
+这一步）、stackable=true 的多促销叠加（本阶段只应用命中的最高优先级
 一条）、账户级限流默认值继承（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按
 "不限制"处理，而不是继承账户级配置）、Anthropic/Gemini 适配器。另外 request_logs
 目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；鉴权失败、

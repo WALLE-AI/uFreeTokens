@@ -9,10 +9,12 @@
 //	                重复调用不会重复扣费。
 //	Release（释放）：请求未产生费用时（如上游首字节前失败）全额解冻。
 //
-// 当前实现只从现金余额（cash_balance）扣款；赠送余额/免费额度按来源精确扣减
-// 属于促销引擎（§7.10）的职责，尚未接入——为了不破坏 "bonus_balance = Σ 未过期
-// credit_grants.remaining" 这一不变式，这里不直接扣减 bonus_balance，避免账目
-// 内部不一致。这是当前已知的范围限制，非遗漏。
+// Settle 按 "赠送余额（按过期时间从近到远）→ 现金余额" 的顺序扣款（技术方案
+// §7.9.1 step 2）：先花即将过期的赠款，剩下的部分才动现金——不会出现赠款还没
+// 花完、现金却先被扣掉的情况，也不会破坏 "bonus_balance = Σ 未过期
+// credit_grants.remaining" 这条不变式（因为扣减时同时更新了两边）。
+// "免费额度"（free_quota 类促销）不在这里处理，那是在算出 actualAmount 之前，
+// 由促销引擎（internal/promotion）就已经从应付金额里减掉的。
 package wallet
 
 import (
@@ -65,6 +67,71 @@ type Service struct {
 
 func New(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
+}
+
+var validGrantSources = map[string]bool{"signup": true, "promotion": true, "compensation": true, "invite": true}
+
+// GrantInput 描述一次赠送余额的发放（技术方案 §7.10 credit_grant 类促销、
+// 注册赠送等）。
+type GrantInput struct {
+	AccountID  int64
+	Source     string // signup / promotion / compensation / invite
+	Amount     int64  // 微元，必须 > 0
+	ExpiresAt  *time.Time
+	ModelScope []string // nil = 全部模型可用
+	RefID      string   // 审计用，比如促销活动 ID/工单号
+}
+
+// Grant 发放一笔赠送余额：写一条 credit_grants 记录，同时原子地把
+// wallets.bonus_balance 加上同样的金额——这两步必须在一个事务里完成，
+// 否则会出现"赠款记录已经存在、但账户余额还没涨"的中间态，用户这时候
+// 发起请求会因为可用余额不足被拒绝，即使他们其实已经有赠款了。
+func (s *Service) Grant(ctx context.Context, in GrantInput) (grantID int64, bonusAfter int64, err error) {
+	if !validGrantSources[in.Source] {
+		return 0, 0, fmt.Errorf("wallet: invalid grant source %q", in.Source)
+	}
+	if in.Amount <= 0 {
+		return 0, 0, fmt.Errorf("wallet: grant amount must be positive, got %d", in.Amount)
+	}
+	if in.RefID == "" {
+		return 0, 0, errors.New("wallet: grant requires a non-empty refID for audit purposes")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("wallet: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO credit_grants (account_id, source, amount, remaining, model_scope, expires_at)
+		 VALUES ($1, $2, $3, $3, $4, $5) RETURNING id`,
+		in.AccountID, in.Source, in.Amount, in.ModelScope, in.ExpiresAt,
+	).Scan(&grantID); err != nil {
+		return 0, 0, fmt.Errorf("wallet: insert credit_grant: %w", err)
+	}
+
+	var cashAfter int64
+	if err := tx.QueryRow(ctx,
+		`UPDATE wallets SET bonus_balance = bonus_balance + $2, updated_at = now()
+		 WHERE account_id = $1 RETURNING cash_balance, bonus_balance`,
+		in.AccountID, in.Amount,
+	).Scan(&cashAfter, &bonusAfter); err != nil {
+		return 0, 0, fmt.Errorf("wallet: update wallet bonus_balance: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id)
+		 VALUES ($1, 'grant', $2, 'bonus', $3, $4, $5, 'promotion', $6)`,
+		in.AccountID, in.Amount, grantID, cashAfter, bonusAfter, in.RefID,
+	); err != nil {
+		return 0, 0, fmt.Errorf("wallet: insert grant ledger entry: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("wallet: commit: %w", err)
+	}
+	return grantID, bonusAfter, nil
 }
 
 // CreateWallet 给一个新账户初始化钱包（余额全为 0）。技术方案 §6.5 的
@@ -205,7 +272,13 @@ func (s *Service) Reserve(ctx context.Context, requestID string, accountID int64
 // （技术方案 §7.9.1：允许现金余额出现小额负数，由上层的并发上限兜底）。
 // 幂等：对已结算的 request_id 重复调用会返回 nil, nil（无副作用，非错误），
 // 调用方应视为"已经处理过"，除非需要拿回 Receipt——此时应改从 request_logs 读取快照。
-func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int64) (*Receipt, error) {
+//
+// vmName 是本次请求用的虚拟模型名，用来匹配 credit_grants.model_scope——赠款可以
+// 限定"只能用在某些模型上"（比如活动赠送只给某个促销模型用），花赠款时必须尊重
+// 这个限定，不能让一笔限定模型的赠款被花在别的模型请求上。vmName 传空字符串
+// 时仍然只会匹配 model_scope 为 NULL（不限模型）的赠款，不会把"空字符串"当成
+// 一个可以命中任何 scope 的通配符。
+func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int64, vmName string) (*Receipt, error) {
 	if actualAmount < 0 {
 		return nil, fmt.Errorf("wallet: settle amount must be >= 0, got %d", actualAmount)
 	}
@@ -243,30 +316,53 @@ func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int
 		return nil, fmt.Errorf("wallet: mark reservation settled: %w", err)
 	}
 
+	// 扣减顺序：赠送余额（按过期时间从近到远，即将过期的先花）→ 现金余额
+	//（技术方案 §7.9.1 step 2；"免费额度"那一档由促销引擎在算出 actualAmount
+	// 之前就已经处理掉了，见 internal/promotion）。
+	bonusSpent, grantSpends, err := s.spendBonus(ctx, tx, accountID, actualAmount, vmName)
+	if err != nil {
+		return nil, fmt.Errorf("wallet: spend bonus balance: %w", err)
+	}
+	cashPortion := actualAmount - bonusSpent
+
 	var cashAfter, bonusAfter int64
 	if err := tx.QueryRow(ctx,
 		`UPDATE wallets
-		 SET cash_balance = cash_balance - $2, frozen = frozen - $3, updated_at = now()
+		 SET cash_balance = cash_balance - $2, bonus_balance = bonus_balance - $3, frozen = frozen - $4, updated_at = now()
 		 WHERE account_id = $1
 		 RETURNING cash_balance, bonus_balance`,
-		accountID, actualAmount, heldAmount,
+		accountID, cashPortion, bonusSpent, heldAmount,
 	).Scan(&cashAfter, &bonusAfter); err != nil {
 		return nil, fmt.Errorf("wallet: update wallet balance: %w", err)
 	}
 
-	if actualAmount > 0 {
-		// 不依赖 ledger_entries 上的 UNIQUE(ref_type, ref_id, type, balance_kind, grant_id)
-		// 做幂等去重：grant_id 为 NULL 时 Postgres 唯一索引把每个 NULL 视为互不相同，
-		// ON CONFLICT 在这种场景下不会触发，起不到防重复的作用。真正的幂等保证来自上面
-		// "reservations: held -> settled" 的原子状态迁移——同一 request_id 只有第一次
-		// 调用能把状态从 held 改成 settled，重复调用会在前面的 switch 里短路返回，
-		// 根本不会执行到这里，所以这里只需要普通 INSERT。
+	// 不依赖 ledger_entries 上的 UNIQUE(ref_type, ref_id, type, balance_kind, grant_id)
+	// 做幂等去重：grant_id 为 NULL 时 Postgres 唯一索引把每个 NULL 视为互不相同，
+	// ON CONFLICT 在这种场景下不会触发，起不到防重复的作用。真正的幂等保证来自上面
+	// "reservations: held -> settled" 的原子状态迁移——同一 request_id 只有第一次
+	// 调用能把状态从 held 改成 settled，重复调用会在前面的 switch 里短路返回，
+	// 根本不会执行到这里，所以这里只需要普通 INSERT。
+	//
+	// 花了几笔赠款就写几条 bonus 流水（各自带自己的 grant_id），花现金再补一条——
+	// 每条都记同样的 cash_after/bonus_after（这是这次结算完成后的最终余额，
+	// 不是"扣这一笔之前"的快照；ledger_entries 的设计就是账户级别的 after 值，
+	// 不是逐来源的中间态）。
+	for _, sp := range grantSpends {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id)
+			 VALUES ($1, 'consume', $2, 'bonus', $3, $4, $5, 'request', $6)`,
+			accountID, -sp.amount, sp.grantID, cashAfter, bonusAfter, requestID,
+		); err != nil {
+			return nil, fmt.Errorf("wallet: insert bonus ledger entry (grant=%d): %w", sp.grantID, err)
+		}
+	}
+	if cashPortion > 0 {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id)
 			 VALUES ($1, 'consume', $2, 'cash', $3, $4, 'request', $5)`,
-			accountID, -actualAmount, cashAfter, bonusAfter, requestID,
+			accountID, -cashPortion, cashAfter, bonusAfter, requestID,
 		); err != nil {
-			return nil, fmt.Errorf("wallet: insert ledger entry: %w", err)
+			return nil, fmt.Errorf("wallet: insert cash ledger entry: %w", err)
 		}
 	}
 
@@ -365,6 +461,78 @@ func (s *Service) ReclaimExpired(ctx context.Context, limit int) (int, error) {
 		reclaimed++
 	}
 	return reclaimed, nil
+}
+
+// grantSpend 记录一次结算里，从某个具体的 credit_grants 行扣了多少（技术方案
+// §6.5：credit_grants 是逐笔赠款记录，一次消费可能同时花掉好几笔——比如注册赠送
+// 还没花完，活动赠送又发了一笔，账户里同时存在两条 credit_grants）。
+type grantSpend struct {
+	grantID int64
+	amount  int64
+}
+
+// spendBonus 按过期时间从近到远（NULL/永不过期的排最后）锁定并扣减 credit_grants，
+// 最多扣 amount，返回实际扣掉的总额（赠款不够时会小于 amount，剩下的由调用方
+// 转去扣现金）。SELECT ... FOR UPDATE 锁住候选行，防止同一账户的并发结算重复
+// 花同一笔赠款——这和 wallet 其它方法要求的原子性是同一个道理。
+func (s *Service) spendBonus(ctx context.Context, tx pgx.Tx, accountID int64, amount int64, vmName string) (spent int64, spends []grantSpend, err error) {
+	if amount <= 0 {
+		return 0, nil, nil
+	}
+
+	// model_scope IS NULL 的赠款不限模型，任何请求都能花；否则 vmName 必须落在
+	// 数组里才行——NULLIF($2, '') 让空字符串和"没传模型名"一样，只能命中不限模型
+	// 的赠款，不会被当成通配符匹配所有 scope。
+	rows, err := tx.Query(ctx,
+		`SELECT id, remaining FROM credit_grants
+		 WHERE account_id = $1 AND remaining > 0 AND (expires_at IS NULL OR expires_at > now())
+		   AND (model_scope IS NULL OR NULLIF($2, '') = ANY(model_scope))
+		 ORDER BY expires_at ASC NULLS LAST, id ASC
+		 FOR UPDATE`,
+		accountID, vmName,
+	)
+	if err != nil {
+		return 0, nil, fmt.Errorf("wallet: query credit_grants: %w", err)
+	}
+
+	type candidate struct {
+		id        int64
+		remaining int64
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.remaining); err != nil {
+			rows.Close()
+			return 0, nil, fmt.Errorf("wallet: scan credit_grant: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+
+	need := amount
+	for _, c := range candidates {
+		if need <= 0 {
+			break
+		}
+		take := c.remaining
+		if take > need {
+			take = need
+		}
+		spends = append(spends, grantSpend{grantID: c.id, amount: take})
+		need -= take
+		spent += take
+	}
+
+	for _, sp := range spends {
+		if _, err := tx.Exec(ctx, `UPDATE credit_grants SET remaining = remaining - $2 WHERE id = $1`, sp.grantID, sp.amount); err != nil {
+			return 0, nil, fmt.Errorf("wallet: update credit_grant %d: %w", sp.grantID, err)
+		}
+	}
+	return spent, spends, nil
 }
 
 func (s *Service) loadReservation(ctx context.Context, tx pgx.Tx, requestID string) (*Hold, error) {

@@ -222,7 +222,7 @@ func TestSettle_DeductsActualAndReleasesExcessFreeze(t *testing.T) {
 		t.Fatalf("Reserve: %v", err)
 	}
 
-	receipt, err := svc.Settle(context.Background(), reqID, 300_000) // 实际只花了 0.3 元
+	receipt, err := svc.Settle(context.Background(), reqID, 300_000, "") // 实际只花了 0.3 元
 	if err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestSettle_AllowsActualExceedingHold(t *testing.T) {
 
 	// 实际用量超过预估冻结（如响应比预期长），技术方案 §7.9.1 允许这种情况发生，
 	// 由账户级并发上限兜底控制最坏情况下的透支幅度。
-	if _, err := svc.Settle(context.Background(), reqID, 900_000); err != nil {
+	if _, err := svc.Settle(context.Background(), reqID, 900_000, ""); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 
@@ -273,12 +273,12 @@ func TestSettle_IsIdempotent(t *testing.T) {
 	if _, err := svc.Reserve(context.Background(), reqID, acct, 500_000, time.Minute); err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	if _, err := svc.Settle(context.Background(), reqID, 300_000); err != nil {
+	if _, err := svc.Settle(context.Background(), reqID, 300_000, ""); err != nil {
 		t.Fatalf("first Settle: %v", err)
 	}
 
 	// 重复结算（模拟上游重试/网络抖动导致的重复调用）不应再次扣费。
-	receipt, err := svc.Settle(context.Background(), reqID, 300_000)
+	receipt, err := svc.Settle(context.Background(), reqID, 300_000, "")
 	if err != nil {
 		t.Fatalf("second Settle returned error, want nil (idempotent no-op): %v", err)
 	}
@@ -347,7 +347,7 @@ func TestRelease_AfterSettleReturnsReleasedNotError(t *testing.T) {
 	if _, err := svc.Reserve(context.Background(), reqID, acct, 400_000, time.Minute); err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	if _, err := svc.Settle(context.Background(), reqID, 400_000); err != nil {
+	if _, err := svc.Settle(context.Background(), reqID, 400_000, ""); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 	// 对已结算的 reservation 调用 Release 应是无害的幂等 no-op，不能把已扣的钱又退回去。
@@ -365,7 +365,7 @@ func TestSettleAndRelease_UnknownRequestIDReturnsNotFound(t *testing.T) {
 	pool := testPool(t)
 	svc := New(pool)
 
-	if _, err := svc.Settle(context.Background(), "never-reserved", 1); err != ErrReservationNotFound {
+	if _, err := svc.Settle(context.Background(), "never-reserved", 1, ""); err != ErrReservationNotFound {
 		t.Errorf("Settle error = %v, want ErrReservationNotFound", err)
 	}
 	if err := svc.Release(context.Background(), "never-reserved-either"); err != ErrReservationNotFound {
@@ -600,5 +600,304 @@ func TestAdjust_UnknownAccountReturnsError(t *testing.T) {
 
 	if _, err := svc.Adjust(context.Background(), -1, 100, "ref"); err == nil {
 		t.Error("expected error for an account with no wallet")
+	}
+}
+
+func mustGrant(t *testing.T, svc *Service, accountID, amount int64, expiresAt *time.Time) int64 {
+	t.Helper()
+	grantID, _, err := svc.Grant(context.Background(), GrantInput{
+		AccountID: accountID, Source: "promotion", Amount: amount, ExpiresAt: expiresAt, RefID: newRequestID(t),
+	})
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	return grantID
+}
+
+func mustGrantScoped(t *testing.T, svc *Service, accountID, amount int64, modelScope []string) int64 {
+	t.Helper()
+	grantID, _, err := svc.Grant(context.Background(), GrantInput{
+		AccountID: accountID, Source: "promotion", Amount: amount, ModelScope: modelScope, RefID: newRequestID(t),
+	})
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	return grantID
+}
+
+func getGrantRemaining(t *testing.T, pool *pgxpool.Pool, grantID int64) int64 {
+	t.Helper()
+	var remaining int64
+	if err := pool.QueryRow(context.Background(), `SELECT remaining FROM credit_grants WHERE id = $1`, grantID).Scan(&remaining); err != nil {
+		t.Fatalf("query credit_grant remaining: %v", err)
+	}
+	return remaining
+}
+
+func TestGrant_IncreasesBonusBalanceAndRecordsLedger(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 0, 0, 0)
+
+	grantID, bonusAfter, err := svc.Grant(context.Background(), GrantInput{
+		AccountID: acct, Source: "signup", Amount: 5_000_000, RefID: "signup-" + newRequestID(t),
+	})
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if bonusAfter != 5_000_000 {
+		t.Errorf("bonusAfter = %d, want 5_000_000", bonusAfter)
+	}
+
+	_, bonus, _ := getWallet(t, pool, acct)
+	if bonus != 5_000_000 {
+		t.Errorf("wallet.bonus_balance = %d, want 5_000_000", bonus)
+	}
+	if getGrantRemaining(t, pool, grantID) != 5_000_000 {
+		t.Errorf("credit_grants.remaining = %d, want 5_000_000", getGrantRemaining(t, pool, grantID))
+	}
+
+	var ledgerType, balanceKind string
+	var ledgerGrantID int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT type, balance_kind, grant_id FROM ledger_entries WHERE account_id = $1 AND type = 'grant'`, acct,
+	).Scan(&ledgerType, &balanceKind, &ledgerGrantID); err != nil {
+		t.Fatalf("query ledger entry: %v", err)
+	}
+	if ledgerType != "grant" || balanceKind != "bonus" || ledgerGrantID != grantID {
+		t.Errorf("ledger entry = type=%s balance_kind=%s grant_id=%d, want grant/bonus/%d", ledgerType, balanceKind, ledgerGrantID, grantID)
+	}
+}
+
+func TestGrant_ValidatesInput(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 0, 0, 0)
+	ctx := context.Background()
+
+	if _, _, err := svc.Grant(ctx, GrantInput{AccountID: acct, Source: "bogus", Amount: 100, RefID: "x"}); err == nil {
+		t.Error("expected error for invalid source")
+	}
+	if _, _, err := svc.Grant(ctx, GrantInput{AccountID: acct, Source: "signup", Amount: 0, RefID: "x"}); err == nil {
+		t.Error("expected error for non-positive amount")
+	}
+	if _, _, err := svc.Grant(ctx, GrantInput{AccountID: acct, Source: "signup", Amount: 100, RefID: ""}); err == nil {
+		t.Error("expected error for empty refID")
+	}
+}
+
+func TestSettle_SpendsBonusBeforeCash(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+	grantID := mustGrant(t, svc, acct, 400_000, nil)
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 300_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID, 300_000, ""); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	cash, bonus, frozen := getWallet(t, pool, acct)
+	if cash != 1_000_000 {
+		t.Errorf("cash_balance = %d, want unchanged 1_000_000 (should be fully covered by bonus)", cash)
+	}
+	if bonus != 100_000 {
+		t.Errorf("bonus_balance = %d, want 100_000 (400_000 - 300_000)", bonus)
+	}
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0", frozen)
+	}
+	if getGrantRemaining(t, pool, grantID) != 100_000 {
+		t.Errorf("credit_grants.remaining = %d, want 100_000", getGrantRemaining(t, pool, grantID))
+	}
+}
+
+func TestSettle_SpillsOverToCashWhenBonusInsufficient(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+	mustGrant(t, svc, acct, 200_000, nil)
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 500_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID, 500_000, ""); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	cash, bonus, _ := getWallet(t, pool, acct)
+	if bonus != 0 {
+		t.Errorf("bonus_balance = %d, want 0 (fully spent)", bonus)
+	}
+	// 500,000 应付 - 200,000 赠款覆盖 = 300,000 现金。
+	if cash != 700_000 {
+		t.Errorf("cash_balance = %d, want 700_000 (1_000_000 - 300_000 spillover)", cash)
+	}
+
+	var bonusRows, cashRows int
+	_ = pool.QueryRow(context.Background(), `SELECT count(*) FROM ledger_entries WHERE account_id=$1 AND ref_id=$2 AND balance_kind='bonus'`, acct, reqID).Scan(&bonusRows)
+	_ = pool.QueryRow(context.Background(), `SELECT count(*) FROM ledger_entries WHERE account_id=$1 AND ref_id=$2 AND balance_kind='cash'`, acct, reqID).Scan(&cashRows)
+	if bonusRows != 1 || cashRows != 1 {
+		t.Errorf("ledger rows for this settlement: bonus=%d cash=%d, want 1/1 (spillover writes both)", bonusRows, cashRows)
+	}
+}
+
+func TestSettle_SpendsSoonestExpiringGrantFirst(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	soon := time.Now().Add(time.Hour)
+	later := time.Now().Add(24 * time.Hour)
+	// 故意先建"晚过期"的那笔，再建"快过期"的那笔，确保不是巧合地按插入顺序命中。
+	lateGrant := mustGrant(t, svc, acct, 300_000, &later)
+	soonGrant := mustGrant(t, svc, acct, 300_000, &soon)
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 200_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID, 200_000, ""); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	if getGrantRemaining(t, pool, soonGrant) != 100_000 {
+		t.Errorf("soon-to-expire grant remaining = %d, want 100_000 (should be spent first)", getGrantRemaining(t, pool, soonGrant))
+	}
+	if getGrantRemaining(t, pool, lateGrant) != 300_000 {
+		t.Errorf("later-expiring grant remaining = %d, want untouched 300_000", getGrantRemaining(t, pool, lateGrant))
+	}
+}
+
+func TestSettle_SkipsExpiredGrant(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+
+	past := time.Now().Add(-time.Hour)
+	expiredGrant := mustGrant(t, svc, acct, 500_000, &past)
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 100_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID, 100_000, ""); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	cash, _, _ := getWallet(t, pool, acct)
+	if cash != 900_000 {
+		t.Errorf("cash_balance = %d, want 900_000 (expired grant must not be spent, charge falls to cash)", cash)
+	}
+	if getGrantRemaining(t, pool, expiredGrant) != 500_000 {
+		t.Errorf("expired grant remaining = %d, want untouched 500_000", getGrantRemaining(t, pool, expiredGrant))
+	}
+}
+
+// TestSettle_ModelScopedGrant_OnlyUsableForItsModel 验证限定模型的赠款不会被
+// 花在别的模型上——credit_grants.model_scope 这个字段之前只是建了表、
+// 从没有任何代码真正读过它，Settle 会不加区分地把任何账户的任何赠款都当成
+// "不限模型"来花，这是一个真实存在过的 bug（写下这条测试才发现的）。
+func TestSettle_ModelScopedGrant_OnlyUsableForItsModel(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+	scopedGrant := mustGrantScoped(t, svc, acct, 500_000, []string{"promo-model-only"})
+
+	// 在一个不在 scope 里的模型上结算：这笔赠款不应该被动用，全部走现金。
+	reqID1 := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID1, acct, 100_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID1, 100_000, "some-other-model"); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if getGrantRemaining(t, pool, scopedGrant) != 500_000 {
+		t.Errorf("scoped grant remaining = %d, want untouched 500_000 (wrong model)", getGrantRemaining(t, pool, scopedGrant))
+	}
+	cashAfterFirst, _, _ := getWallet(t, pool, acct)
+	if cashAfterFirst != 900_000 {
+		t.Errorf("cash_balance = %d, want 900_000 (charge must fall entirely to cash)", cashAfterFirst)
+	}
+
+	// 换成 scope 里的模型：这次应该能花赠款了。
+	reqID2 := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID2, acct, 200_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID2, 200_000, "promo-model-only"); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if getGrantRemaining(t, pool, scopedGrant) != 300_000 {
+		t.Errorf("scoped grant remaining = %d, want 300_000 (should be spent on its own model)", getGrantRemaining(t, pool, scopedGrant))
+	}
+	cashAfterSecond, _, _ := getWallet(t, pool, acct)
+	if cashAfterSecond != 900_000 {
+		t.Errorf("cash_balance = %d, want unchanged 900_000 (second charge fully covered by the scoped grant)", cashAfterSecond)
+	}
+}
+
+// TestSettle_UnscopedGrant_UsableOnAnyModel 验证 model_scope 为 NULL（未限定）的
+// 赠款能在任意模型上花——这是最常见的情况（比如注册赠送通常不限模型）。
+func TestSettle_UnscopedGrant_UsableOnAnyModel(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 1_000_000, 0, 0)
+	grantID := mustGrantScoped(t, svc, acct, 300_000, nil) // nil = 不限模型
+
+	reqID := newRequestID(t)
+	if _, err := svc.Reserve(context.Background(), reqID, acct, 100_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if _, err := svc.Settle(context.Background(), reqID, 100_000, "any-model-whatsoever"); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if getGrantRemaining(t, pool, grantID) != 200_000 {
+		t.Errorf("unscoped grant remaining = %d, want 200_000 (should be usable on any model)", getGrantRemaining(t, pool, grantID))
+	}
+}
+
+// TestSettle_ConcurrentSettlesNeverOverspendGrant 是并发正确性回归测试（和本文件
+// 其它"永不超发"测试同样的思路）：一笔赠款只够覆盖 1 笔请求，20 个并发的
+// Reserve+Settle 各申请一份足以花光赠款的金额，赠款只能被花一次，
+// 其余全部必须落到现金上——SELECT ... FOR UPDATE 锁住候选赠款行是这里的保证；
+// 如果退化成"先查 remaining、再算 take、再 UPDATE"两步操作，并发下会重复花。
+func TestSettle_ConcurrentSettlesNeverOverspendGrant(t *testing.T) {
+	pool := testPool(t)
+	svc := New(pool)
+	acct := seedAccount(t, pool, 10_000_000, 0, 0) // 现金充足，专门测赠款不超发
+	mustGrant(t, svc, acct, 100_000, nil)
+
+	const n = 20
+	const perRequest = int64(100_000)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reqID := fmt.Sprintf("%s-concurrent-%d", newRequestID(t), i)
+			if _, err := svc.Reserve(context.Background(), reqID, acct, perRequest, time.Minute); err != nil {
+				t.Errorf("Reserve: %v", err)
+				return
+			}
+			if _, err := svc.Settle(context.Background(), reqID, perRequest, ""); err != nil {
+				t.Errorf("Settle: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	_, bonus, _ := getWallet(t, pool, acct)
+	if bonus != 0 {
+		t.Errorf("bonus_balance = %d, want 0 (fully but not over spent)", bonus)
+	}
+	// 总花费 = 20 × 100,000 = 2,000,000；赠款覆盖 100,000，剩下 1,900,000 应该都是现金。
+	cash, _, _ := getWallet(t, pool, acct)
+	if cash != 10_000_000-1_900_000 {
+		t.Errorf("cash_balance = %d, want %d", cash, 10_000_000-1_900_000)
 	}
 }

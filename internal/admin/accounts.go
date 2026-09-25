@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
 var validAccountTypes = map[string]bool{"personal": true, "organization": true}
@@ -98,4 +100,37 @@ func (s *Service) GetAccount(ctx context.Context, accountID int64) (*Account, *W
 		return nil, nil, fmt.Errorf("admin: get account: %w", err)
 	}
 	return acct, wallet, nil
+}
+
+// GrantCreditInput 描述一次赠送余额的发放（技术方案 §7.10 credit_grant）。
+type GrantCreditInput struct {
+	AccountID  int64
+	Source     string // signup / promotion / compensation / invite
+	Amount     int64  // 微元，必须 > 0
+	ExpiresAt  *time.Time
+	ModelScope []string // 空 = 不限模型
+	RefID      string   // 审计用；留空则用当前时间生成一个
+}
+
+type GrantedCredit struct {
+	GrantID    int64
+	BonusAfter int64
+}
+
+// GrantCredit 给账户发一笔赠送余额——包装 wallet.Grant，是目前 credit_grant 类
+// 促销唯一的发放入口（还没有自动触发的注册赠送/活动赠送流程，都得靠这个接口
+// 手工/由外部系统调用）。
+func (s *Service) GrantCredit(ctx context.Context, in GrantCreditInput) (*GrantedCredit, error) {
+	refID := in.RefID
+	if refID == "" {
+		refID = fmt.Sprintf("admin-grant-%d", time.Now().UnixNano())
+	}
+	grantID, bonusAfter, err := s.wallet.Grant(ctx, wallet.GrantInput{
+		AccountID: in.AccountID, Source: in.Source, Amount: in.Amount,
+		ExpiresAt: in.ExpiresAt, ModelScope: in.ModelScope, RefID: refID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &GrantedCredit{GrantID: grantID, BonusAfter: bonusAfter}, nil
 }

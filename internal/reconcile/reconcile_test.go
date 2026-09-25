@@ -194,7 +194,7 @@ func TestCheckWallets_RealReserveSettleFlow_IsConsistent(t *testing.T) {
 	if _, err := svc.Reserve(context.Background(), reqID, accountID, 300_000, time.Minute); err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	if _, err := svc.Settle(context.Background(), reqID, 200_000); err != nil {
+	if _, err := svc.Settle(context.Background(), reqID, 200_000, ""); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 

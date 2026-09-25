@@ -360,6 +360,97 @@ func TestSetSellPrice_RejectsInvalidMeterOrUnit(t *testing.T) {
 	}
 }
 
+func TestGrantCredit_IncreasesBonusBalance(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	acct, err := s.CreateAccount(ctx, CreateAccountInput{Type: "personal", Name: uniqueCode(t)})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	granted, err := s.GrantCredit(ctx, GrantCreditInput{
+		AccountID: acct.ID, Source: "promotion", Amount: 500_000, RefID: uniqueCode(t),
+	})
+	if err != nil {
+		t.Fatalf("GrantCredit: %v", err)
+	}
+	if granted.GrantID == 0 {
+		t.Fatal("expected a non-zero grant ID")
+	}
+	if granted.BonusAfter != 500_000 {
+		t.Errorf("BonusAfter = %d, want 500000", granted.BonusAfter)
+	}
+
+	_, w, err := s.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if w.BonusBalance != 500_000 {
+		t.Errorf("wallet.BonusBalance = %d, want 500000", w.BonusBalance)
+	}
+}
+
+func TestGrantCredit_ValidatesInput(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	acct, err := s.CreateAccount(ctx, CreateAccountInput{Type: "personal", Name: uniqueCode(t)})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	if _, err := s.GrantCredit(ctx, GrantCreditInput{AccountID: acct.ID, Source: "bogus", Amount: 1, RefID: "x"}); err == nil {
+		t.Error("expected error for invalid source")
+	}
+	if _, err := s.GrantCredit(ctx, GrantCreditInput{AccountID: acct.ID, Source: "promotion", Amount: 0, RefID: "x"}); err == nil {
+		t.Error("expected error for zero amount")
+	}
+}
+
+func TestGrantCredit_SpentByRealSettle(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	w := s.Wallet()
+	ctx := context.Background()
+
+	acct, err := s.CreateAccount(ctx, CreateAccountInput{Type: "personal", Name: uniqueCode(t)})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	if _, err := s.GrantCredit(ctx, GrantCreditInput{
+		AccountID: acct.ID, Source: "signup", Amount: 1_000_000, RefID: uniqueCode(t),
+	}); err != nil {
+		t.Fatalf("GrantCredit: %v", err)
+	}
+
+	reqID := uniqueCode(t)
+	if _, err := w.Reserve(ctx, reqID, acct.ID, 200_000, time.Minute); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	receipt, err := w.Settle(ctx, reqID, 200_000, "")
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if receipt == nil {
+		t.Fatal("expected a receipt")
+	}
+
+	_, wal, err := s.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if wal.BonusBalance != 800_000 {
+		t.Errorf("BonusBalance after settle = %d, want 800000 (grant must actually be spendable through wallet.Settle)", wal.BonusBalance)
+	}
+	if wal.CashBalance != 0 {
+		t.Errorf("CashBalance after settle = %d, want 0 (bonus must be spent before cash)", wal.CashBalance)
+	}
+}
+
 func TestSetCostPrice_CreatesVersionAndDefaultsToCNY(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)
