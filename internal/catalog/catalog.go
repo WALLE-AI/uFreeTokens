@@ -342,6 +342,7 @@ func (s *Store) loadSellPrices(ctx context.Context, snap *Snapshot) error {
 		}
 		vmID := bookIDs[bookID]
 		b := books[vmID]
+		b.ID = bookID
 		b.Components = append(b.Components, pricing.Component{
 			Meter: pricing.Meter(meter), Unit: pricing.Unit(unit), ServiceTier: tier,
 			TierMinInput: tierMinInput, TierMaxInput: tierMaxInput,

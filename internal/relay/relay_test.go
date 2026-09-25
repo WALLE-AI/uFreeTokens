@@ -34,6 +34,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
+	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
@@ -230,25 +231,30 @@ func seedSimple(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamUR
 
 // newTestGateway 用和 cmd/gateway/main.go 相同的装配方式组一个可用的网关 http.Handler，
 // 包括真实 Redis 支撑的健康度/熔断注册表（每次调用都是全新的 Registry，测试间不会串状态）。
-func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client) http.Handler {
+// newTestGateway 返回一个可用的网关 http.Handler，以及背后的 reqlog.Writer
+// （测试可以调用它的 Close() 强制立即 flush，不用等 1 秒定时器）。
+func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client) (http.Handler, *reqlog.Writer) {
 	t.Helper()
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
+	reqLogWriter := reqlog.NewWriter(pool, logger)
 	relaySvc := &relay.Service{
 		Catalog:  catalog.NewStore(pool, box, 0), // TTL=0：每次 Get 都重新加载，测试里数据是即时写入的
 		Wallet:   wallet.New(pool),
 		Adapters: adapter.NewRegistry(),
 		HTTP:     http.DefaultClient,
 		Health:   health.NewRegistry(rdb, health.DefaultBreakerSettings()),
+		ReqLog:   reqLogWriter,
 		Logger:   logger,
 		Cfg:      relay.DefaultConfig(),
 	}
-	return app.NewGatewayRouter(app.GatewayDeps{
+	h := app.NewGatewayRouter(app.GatewayDeps{
 		Logger:    logger,
 		PG:        pool,
 		AuthStore: auth.NewPostgresStore(pool),
 		Pepper:    []byte(testPepper),
 		Relay:     relaySvc,
 	})
+	return h, reqLogWriter
 }
 
 func getWalletBalance(t *testing.T, pool *pgxpool.Pool, accountID int64) (cash, frozen int64) {
@@ -294,7 +300,9 @@ func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
 	defer upstream.Close()
 
 	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000) // 1 元
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
@@ -349,7 +357,9 @@ func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
 	defer upstream.Close()
 
 	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "stream": true, "messages": []any{}})
@@ -383,7 +393,9 @@ func TestChatCompletions_InsufficientBalance_Returns402AndChargesNothing(t *test
 	defer upstream.Close()
 
 	fx, vmName := seedSimple(t, pool, box, upstream.URL, 0) // 余额为 0
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
@@ -406,7 +418,9 @@ func TestChatCompletions_InsufficientBalance_Returns402AndChargesNothing(t *test
 func TestChatCompletions_ModelNotFound(t *testing.T) {
 	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 	fx, _ := seedSimple(t, pool, box, "http://unused.invalid", 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": "does-not-exist", "messages": []any{}})
@@ -432,7 +446,9 @@ func TestChatCompletions_SingleKeyRateLimited_NoMoreOptionsReturns503(t *testing
 	defer upstream.Close()
 
 	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
@@ -466,7 +482,9 @@ func TestChatCompletions_BadRequest_DoesNotRetry(t *testing.T) {
 	defer upstream.Close()
 
 	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
@@ -520,7 +538,9 @@ func TestChatCompletions_RetriesAcrossKeys_SucceedsWithSecondKey(t *testing.T) {
 	vmID, vmName := seedVirtualModel(t, pool)
 	seedChannel(t, pool, vmID, accID, 0)
 
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
@@ -573,7 +593,9 @@ func TestChatCompletions_RetriesAcrossChannels_FallsBackOnUpstreamUnavailable(t 
 	seedChannel(t, pool, vmID, primaryAcc, 0)  // priority 0：主
 	seedChannel(t, pool, vmID, fallbackAcc, 1) // priority 1：备
 
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
@@ -619,7 +641,9 @@ func TestChatCompletions_ExhaustsMaxAttempts_Returns502(t *testing.T) {
 	vmID, vmName := seedVirtualModel(t, pool)
 	seedChannel(t, pool, vmID, accID, 0)
 
-	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
 	defer gw.Close()
 
 	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
@@ -636,6 +660,142 @@ func TestChatCompletions_ExhaustsMaxAttempts_Returns502(t *testing.T) {
 	cash, frozen := getWalletBalance(t, pool, fx.accountID)
 	if cash != 1_000_000 || frozen != 0 {
 		t.Errorf("wallet mutated: cash=%d frozen=%d, want cash=1_000_000 frozen=0", cash, frozen)
+	}
+}
+
+// TestChatCompletions_LogsSuccessToRequestLogs 验证一次成功请求会在 request_logs
+// 里留下完整的审计记录：渠道/Key、计费快照、用量、尝试次数（技术方案 §6.8/§7.13）。
+func TestChatCompletions_LogsSuccessToRequestLogs(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("response missing X-Request-Id header")
+	}
+
+	reqLogW.Close() // 强制 flush，不用等 1 秒定时器
+
+	var (
+		status                       string
+		httpStatus, attempts         int
+		channelID, keyID, sellBookID *int64
+		inputTokens, outputTokens    int64
+		chargedAmount                *int64
+		usageSource                  string
+	)
+	err := pool.QueryRow(context.Background(),
+		`SELECT status, http_status, attempts, channel_id, provider_key_id, sell_price_book_id,
+		        input_tokens, output_tokens, charged_amount, usage_source
+		 FROM request_logs WHERE request_id = $1`, requestID,
+	).Scan(&status, &httpStatus, &attempts, &channelID, &keyID, &sellBookID,
+		&inputTokens, &outputTokens, &chargedAmount, &usageSource)
+	if err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+
+	if status != "success" {
+		t.Errorf("status = %q, want success", status)
+	}
+	if httpStatus != http.StatusOK {
+		t.Errorf("http_status = %d, want 200", httpStatus)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1", attempts)
+	}
+	if channelID == nil || keyID == nil {
+		t.Error("channel_id/provider_key_id should be recorded for a successful request")
+	}
+	if inputTokens != 100 || outputTokens != 50 {
+		t.Errorf("tokens = %d/%d, want 100/50", inputTokens, outputTokens)
+	}
+	// 150 token 合计，单价 1 元/百万 -> 150 微元。
+	if chargedAmount == nil || *chargedAmount != 150 {
+		t.Errorf("charged_amount = %v, want 150", chargedAmount)
+	}
+	if sellBookID == nil {
+		t.Error("sell_price_book_id should be recorded")
+	}
+	if usageSource != "upstream" {
+		t.Errorf("usage_source = %q, want upstream", usageSource)
+	}
+}
+
+// TestChatCompletions_LogsFailureToRequestLogs 验证重试耗尽后的失败也会留下审计记录，
+// 且 attempt_trace 里包含每一次尝试的渠道/Key/结果。
+func TestChatCompletions_LogsFailureToRequestLogs(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	resp.Body.Close()
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("response missing X-Request-Id header")
+	}
+
+	reqLogW.Close()
+
+	var (
+		status               string
+		httpStatus, attempts int
+		errorCode            *string
+		traceJSON            []byte
+	)
+	err := pool.QueryRow(context.Background(),
+		`SELECT status, http_status, error_code, attempts, attempt_trace FROM request_logs WHERE request_id = $1`,
+		requestID,
+	).Scan(&status, &httpStatus, &errorCode, &attempts, &traceJSON)
+	if err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+
+	if status != "upstream_error" {
+		t.Errorf("status = %q, want upstream_error", status)
+	}
+	if errorCode == nil || *errorCode != "no_available_channel" {
+		// 只有 1 个渠道/1 个 Key：第一次尝试失败后，重试时发现无候选可换，
+		// 归类为"无可用渠道"而不是"重试耗尽"，与 §7.7 的两种失败语义一致。
+		t.Errorf("error_code = %v, want no_available_channel", errorCode)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1", attempts)
+	}
+
+	var trace []map[string]any
+	if err := json.Unmarshal(traceJSON, &trace); err != nil {
+		t.Fatalf("unmarshal attempt_trace: %v", err)
+	}
+	if len(trace) != 1 {
+		t.Fatalf("attempt_trace length = %d, want 1", len(trace))
+	}
+	if trace[0]["status"] != "upstream_unavailable" {
+		t.Errorf("attempt_trace[0].status = %v, want upstream_unavailable", trace[0]["status"])
 	}
 }
 

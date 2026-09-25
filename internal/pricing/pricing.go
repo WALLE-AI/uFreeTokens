@@ -46,7 +46,10 @@ type Component struct {
 }
 
 // Book 是某个价格版本下的全部计量分量（对应一条 price_books + 其下的 price_components）。
+// ID 是价格版本的标识（price_books.id），保持为 0 也不影响 Charge 计算——只在
+// 需要把"这次结算用的是哪个价格版本"写进 request_logs 时才用得到（§7.13）。
 type Book struct {
+	ID         int64
 	Components []Component
 }
 

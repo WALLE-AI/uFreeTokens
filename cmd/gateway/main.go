@@ -26,6 +26,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
+	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 	"github.com/WALLE-AI/uFreeTokens/internal/store"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
@@ -145,6 +146,10 @@ func run() error {
 	}
 	_ = metricsSrv.Shutdown(shutdownCtx)
 
+	if relaySvc != nil {
+		relaySvc.ReqLog.Close() // flush 掉还在队列里的 request_logs 记录
+	}
+
 	time.Sleep(100 * time.Millisecond) // 留出日志 flush 的余量
 	return nil
 }
@@ -166,6 +171,7 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 	registry := adapter.NewRegistry()
 	// Key 冷却经 Redis 跨实例共享；渠道熔断器是进程内的（各实例独立统计），见 internal/health。
 	healthRegistry := health.NewRegistry(rdb, health.DefaultBreakerSettings())
+	reqLogWriter := reqlog.NewWriter(pg, logger)
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -186,6 +192,7 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 		Adapters: registry,
 		HTTP:     httpClient,
 		Health:   healthRegistry,
+		ReqLog:   reqLogWriter,
 		Logger:   logger,
 		Cfg:      relay.DefaultConfig(),
 	}, nil

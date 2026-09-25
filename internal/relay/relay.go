@@ -1,7 +1,7 @@
 // Package relay 编排一次 /v1/chat/completions 请求的完整生命周期
 // （技术方案 §3.2、§7.1）：鉴权信息已由中间件放入 context -> 解析请求 -> 预扣费用
 // -> 路由选渠道/Key -> 转发上游（失败时按错误类别换 Key/换渠道重试，§7.6-7.7）
-// -> 结算。
+// -> 结算 -> 异步写入 request_logs（§6.8/§7.13）。
 //
 // 当前范围（有意的阶段性限制，不是遗漏）：
 //   - 重试只发生在"拿到上游响应/连接失败"之后、"开始向客户端转发内容"之前
@@ -10,7 +10,9 @@
 //     目前只有单请求级别的 MaxAttempts + TotalDeadline 上限。
 //   - 用量兜底估算是保守占位（上游完全不返回 usage 时，按预扣的上限计费，
 //     不会让平台倒贴钱，但也不精确）——真正基于 tokenizer 的估算见 §7.9.4，留作后续。
-//   - 请求日志（request_logs）尚未接入，本阶段只有结构化访问日志。
+//   - request_logs 只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；
+//     鉴权失败、余额不足、模型不存在等预扣之前的拒绝目前只有结构化访问日志，
+//     不落 request_logs（那些场景没有 channel/attempt 信息，价值有限，留作后续按需补充）。
 package relay
 
 import (
@@ -20,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -30,12 +33,16 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
+	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/router"
 	"github.com/WALLE-AI/uFreeTokens/internal/schema"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
-const chatEndpoint = "/chat/completions"
+const (
+	chatEndpoint    = "/chat/completions" // 拼在 provider_accounts.base_url 后面的上游路径
+	logEndpointChat = "chat.completions"  // request_logs.endpoint 里记录的名字
+)
 
 // Config 是 relay.Service 的可调参数，默认值见技术方案附录 B。
 type Config struct {
@@ -75,13 +82,27 @@ type Service struct {
 	Adapters *adapter.Registry
 	HTTP     *http.Client
 	Health   *health.Registry // nil = 不做熔断/冷却过滤，退化为"每次都从全部候选里选"
+	ReqLog   *reqlog.Writer   // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
 	Logger   *slog.Logger
 	Cfg      Config
+}
+
+// requestMeta 收拢一次请求里贯穿始终、用于最后写 request_logs 的公共字段。
+type requestMeta struct {
+	requestID string
+	accountID int64
+	apiKeyID  int64
+	vmName    string
+	isStream  bool
+	clientIP  string
+	userAgent string
+	start     time.Time
 }
 
 // ChatCompletions 是 POST /v1/chat/completions 的 http.HandlerFunc。
 func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	start := time.Now()
 	requestID := httpx.RequestIDFromContext(ctx)
 	log := s.Logger.With("request_id", requestID)
 
@@ -155,19 +176,36 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, adp, _, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
+	meta := requestMeta{
+		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
+		vmName: vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
+	}
+
+	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
 	if err != nil {
 		s.releaseQuietly(log, requestID)
-		s.writeUpstreamError(w, r, log, err)
+		status, code := classifyRelayError(err)
+		httpx.WriteError(w, r, status, code, "Upstream request failed.")
+		s.logFailure(meta, trace, status, code, len(trace))
 		return
 	}
 	defer resp.Body.Close()
 
 	if stream {
-		s.handleStream(ctx, log, w, r, resp, adp, sellBook, vm.Name, requestID, estInput, reserveOutput)
+		s.handleStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, estInput, reserveOutput, trace)
 		return
 	}
-	s.handleNonStream(ctx, log, w, r, resp, adp, sellBook, vm.Name, requestID, estInput, reserveOutput)
+	s.handleNonStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, estInput, reserveOutput, trace)
+}
+
+// clientIP 尽量拿到客户端地址（去掉端口）；拿不到时原样返回 RemoteAddr，
+// 拿不到就是空字符串——写 request_logs 时空字符串会被存成 NULL。
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // upstreamClientError 包装一次不可重试（或重试耗尽后最后一次）的上游错误，
@@ -181,17 +219,17 @@ func (e *upstreamClientError) Error() string {
 	return fmt.Sprintf("relay: upstream error (class=%s, status=%d)", e.class, e.status)
 }
 
-func (s *Service) writeUpstreamError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
+// classifyRelayError 把 callUpstreamWithRetry 的错误映射为返回给客户端的状态码/错误码，
+// 供 ChatCompletions 和 request_logs 共用同一套判定逻辑。
+func classifyRelayError(err error) (status int, code string) {
 	var uerr *upstreamClientError
 	switch {
 	case errors.As(err, &uerr):
-		status, code := clientFacingError(uerr.class)
-		httpx.WriteError(w, r, status, code, "Upstream request failed.")
+		return clientFacingError(uerr.class)
 	case errors.Is(err, router.ErrNoAvailableChannel):
-		httpx.WriteError(w, r, http.StatusServiceUnavailable, "no_available_channel", "No healthy channel is available for this model right now.")
+		return http.StatusServiceUnavailable, "no_available_channel"
 	default:
-		log.Warn("upstream call failed", "error", err)
-		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_error", "Failed to reach upstream provider.")
+		return http.StatusBadGateway, "upstream_error"
 	}
 }
 
@@ -203,8 +241,9 @@ func (s *Service) writeUpstreamError(w http.ResponseWriter, r *http.Request, log
 //
 // 返回的 *http.Response 处于"已经拿到 2xx 响应头、尚未读取响应体"的状态，
 // 调用方从这里开始才真正向客户端转发内容——转发开始之后就不再有重试的机会了。
+// trace 记录了每一次真正发起的尝试（无论成败），供 request_logs 落盘审计。
 func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, snap *catalog.Snapshot, vm *catalog.VirtualModel,
-	features router.Features, tier string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, error) {
+	features router.Features, tier string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
 
 	maxAttempts := s.Cfg.Retry.MaxAttempts
 	if maxAttempts <= 0 {
@@ -214,14 +253,15 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 
 	excludedChannels := map[int64]bool{}
 	excludedKeys := map[int64]bool{}
+	var trace []reqlog.AttemptTraceEntry
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			if lastErr != nil {
-				return nil, nil, nil, fmt.Errorf("relay: retry total deadline exceeded: %w", lastErr)
+				return nil, nil, nil, trace, fmt.Errorf("relay: retry total deadline exceeded: %w", lastErr)
 			}
-			return nil, nil, nil, errors.New("relay: retry total deadline exceeded")
+			return nil, nil, nil, trace, errors.New("relay: retry total deadline exceeded")
 		}
 
 		opts := router.SelectOptions{ExcludeChannels: excludedChannels, ExcludeKeys: excludedKeys}
@@ -232,9 +272,9 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 		picked, perr := router.Pick(ctx, snap, vm, features, tier, opts)
 		if perr != nil {
 			if lastErr != nil {
-				return nil, nil, nil, fmt.Errorf("%w (previous attempt: %v)", perr, lastErr)
+				return nil, nil, nil, trace, fmt.Errorf("%w (previous attempt: %v)", perr, lastErr)
 			}
-			return nil, nil, nil, perr
+			return nil, nil, nil, trace, perr
 		}
 
 		var done func(bool)
@@ -255,7 +295,7 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 			if done != nil {
 				done(false)
 			}
-			return nil, nil, nil, fmt.Errorf("relay: no adapter registered for protocol %q", picked.Account.Protocol)
+			return nil, nil, nil, trace, fmt.Errorf("relay: no adapter registered for protocol %q", picked.Account.Protocol)
 		}
 
 		target := adapter.Target{Channel: picked.Channel, Account: picked.Account, Key: picked.Key}
@@ -264,14 +304,17 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 			if done != nil {
 				done(false)
 			}
-			return nil, nil, nil, fmt.Errorf("relay: build upstream request: %w", berr)
+			return nil, nil, nil, trace, fmt.Errorf("relay: build upstream request: %w", berr)
 		}
 
+		attemptStart := time.Now()
 		resp, derr := s.HTTP.Do(upstreamReq)
+		attemptLatency := time.Since(attemptStart).Milliseconds()
 		if derr != nil {
 			if done != nil {
 				done(false)
 			}
+			trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: "connection_error", LatencyMs: attemptLatency})
 			excludedChannels[picked.Channel.ID] = true
 			lastErr = derr
 			log.Warn("upstream call failed, retrying", "attempt", attempt, "channel_id", picked.Channel.ID, "error", derr)
@@ -282,7 +325,8 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 			if done != nil {
 				done(true)
 			}
-			return resp, adp, picked, nil
+			trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: "success", LatencyMs: attemptLatency})
+			return resp, adp, picked, trace, nil
 		}
 
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -291,13 +335,14 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 		if done != nil {
 			done(false)
 		}
+		trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: string(class), LatencyMs: attemptLatency})
 		lastErr = &upstreamClientError{class: class, status: resp.StatusCode}
 
 		log.Warn("upstream returned error", "attempt", attempt, "channel_id", picked.Channel.ID,
 			"key_id", picked.Key.ID, "status", resp.StatusCode, "class", class)
 
 		if !class.Retryable() {
-			return nil, nil, nil, lastErr
+			return nil, nil, nil, trace, lastErr
 		}
 
 		switch class {
@@ -320,7 +365,7 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 		}
 	}
 
-	return nil, nil, nil, fmt.Errorf("relay: exhausted %d attempts: %w", maxAttempts, lastErr)
+	return nil, nil, nil, trace, fmt.Errorf("relay: exhausted %d attempts: %w", maxAttempts, lastErr)
 }
 
 // retryAfter 解析上游的 Retry-After 头（RFC 7231，秒数形式；HTTP-date 形式不常见，
@@ -341,42 +386,50 @@ func retryAfter(h http.Header, def, max time.Duration) time.Duration {
 	return d
 }
 
-func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request,
-	resp *http.Response, adp adapter.Adapter, sellBook pricing.Book, vmName, requestID string, estInput, reserveOutput int) {
+func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
+
+	ttft := time.Since(meta.start).Milliseconds()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, s.Cfg.MaxUpstreamBody))
 	if err != nil {
-		s.releaseQuietly(log, requestID)
+		s.releaseQuietly(log, meta.requestID)
 		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_error", "Failed to read upstream response.")
+		s.logFailure(meta, trace, http.StatusBadGateway, "upstream_error", len(trace))
 		return
 	}
 
-	rewritten, usage, err := adp.DecodeResponse(respBody, vmName, requestID)
+	rewritten, usage, err := adp.DecodeResponse(respBody, meta.vmName, meta.requestID)
 	if err != nil {
-		s.releaseQuietly(log, requestID)
+		s.releaseQuietly(log, meta.requestID)
 		log.Error("decode upstream response failed", "error", err)
 		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_error", "Failed to decode upstream response.")
+		s.logFailure(meta, trace, http.StatusBadGateway, "upstream_error", len(trace))
 		return
 	}
 	if usage.IsZero() {
 		usage = fallbackUsage(estInput, reserveOutput)
-		log.Warn("upstream did not return usage, using conservative fallback", "request_id", requestID)
+		log.Warn("upstream did not return usage, using conservative fallback", "request_id", meta.requestID)
 	}
 
-	s.settleQuietly(ctx, log, requestID, sellBook, usage)
+	charged := s.settleQuietly(ctx, log, meta.requestID, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, charged)
 }
 
-func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, resp *http.Response,
-	adp adapter.Adapter, sellBook pricing.Book, vmName, requestID string, estInput, reserveOutput int) {
+func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
 
-	dec := adp.NewStreamDecoder(resp.Body, vmName, requestID)
+	ttft := time.Since(meta.start).Milliseconds()
+
+	dec := adp.NewStreamDecoder(resp.Body, meta.vmName, meta.requestID)
 	defer dec.Close()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		s.releaseQuietly(log, requestID)
+		s.releaseQuietly(log, meta.requestID)
 		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Streaming is not supported by this server.")
+		s.logFailure(meta, trace, http.StatusInternalServerError, "internal_error", len(trace))
 		return
 	}
 
@@ -399,9 +452,10 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 	usage := dec.Usage()
 	if usage.IsZero() {
 		usage = fallbackUsage(estInput, reserveOutput)
-		log.Warn("stream ended without usage, using conservative fallback", "request_id", requestID)
+		log.Warn("stream ended without usage, using conservative fallback", "request_id", meta.requestID)
 	}
-	s.settleQuietly(ctx, log, requestID, sellBook, usage)
+	charged := s.settleQuietly(ctx, log, meta.requestID, sellBook, usage)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, charged)
 }
 
 // releaseQuietly / settleQuietly：结算失败不应该影响已经发给客户端的响应
@@ -413,7 +467,7 @@ func (s *Service) releaseQuietly(log *slog.Logger, requestID string) {
 	}
 }
 
-func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, requestID string, book pricing.Book, usage schema.Usage) {
+func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, requestID string, book pricing.Book, usage schema.Usage) int64 {
 	amount, _ := pricing.Charge(book, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
 	// 用独立的、不随 HTTP 请求取消的 context：客户端断开不应该导致结算被跳过
 	// （技术方案 §7.8："无论成功、失败、断开，defer 中都执行结算"）。
@@ -422,4 +476,47 @@ func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, requestID
 	if _, err := s.Wallet.Settle(settleCtx, requestID, amount); err != nil {
 		log.Error("settle failed", "error", err, "amount", amount)
 	}
+	return amount
+}
+
+// logSuccess / logFailure 把一次请求的结果异步写入 request_logs（§6.8/§7.13）。
+// s.ReqLog 为 nil 时 Write 是安全的 no-op（见 reqlog.Writer 的方法注释）。
+func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []reqlog.AttemptTraceEntry,
+	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, charged int64) {
+
+	rec := reqlog.Record{
+		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
+		VirtualModel: meta.vmName, Endpoint: logEndpointChat, IsStream: meta.isStream,
+		Status: "success", HTTPStatus: httpStatus, Attempts: len(trace), AttemptTrace: trace,
+		TTFTMillis: &ttftMs, LatencyMillis: time.Since(meta.start).Milliseconds(),
+		Usage: usage, ClientIP: meta.clientIP, UserAgent: meta.userAgent,
+	}
+	if picked != nil {
+		rec.ChannelID = &picked.Channel.ID
+		rec.ProviderKeyID = &picked.Key.ID
+	}
+	if sellBookID != 0 {
+		rec.SellBookID = &sellBookID
+	}
+	rec.ListAmount = &charged // 促销引擎接入前，原价恒等于实扣价
+	rec.ChargedAmount = &charged
+
+	s.ReqLog.Write(rec)
+}
+
+func (s *Service) logFailure(meta requestMeta, trace []reqlog.AttemptTraceEntry, httpStatus int, errorCode string, attempts int) {
+	rec := reqlog.Record{
+		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
+		VirtualModel: meta.vmName, Endpoint: logEndpointChat, IsStream: meta.isStream,
+		Status: "upstream_error", HTTPStatus: httpStatus, ErrorCode: errorCode, Attempts: attempts, AttemptTrace: trace,
+		LatencyMillis: time.Since(meta.start).Milliseconds(),
+		Usage:         schema.Usage{Source: schema.UsageSourceEstimated}, // 未产生任何计费用量
+		ClientIP:      meta.clientIP, UserAgent: meta.userAgent,
+	}
+	if n := len(trace); n > 0 {
+		last := trace[n-1]
+		rec.ChannelID = &last.ChannelID
+		rec.ProviderKeyID = &last.KeyID
+	}
+	s.ReqLog.Write(rec)
 }
