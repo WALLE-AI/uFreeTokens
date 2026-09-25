@@ -2,10 +2,35 @@ package relay
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
+	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
+	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/schema"
 )
+
+// intOrZero 把 *int 形式的限流配置（nil = "继承账户"，尚未实现账户级默认值，
+// 见技术方案 §6.2）解成 0（= 不限制），避免到处写 nil 判断。
+func intOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// writeRateLimited 统一处理限流拒绝：带上 Retry-After 头（有明确等待时长时），
+// 返回 429（技术方案附录 A：rate_limit_exceeded / concurrency_limit_exceeded）。
+func writeRateLimited(w http.ResponseWriter, r *http.Request, res ratelimit.Result, code, message string) {
+	if res.RetryAfter > 0 {
+		secs := int(res.RetryAfter.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+	}
+	httpx.WriteError(w, r, http.StatusTooManyRequests, code, message)
+}
 
 // estimateTokens 是请求体大小到 token 数的粗略估算（约 4 字节/token 的经验值），
 // 只用于路由的上下文窗口过滤和预扣费用的估算上限——不是最终计费依据。

@@ -25,6 +25,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
@@ -171,6 +172,7 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 	registry := adapter.NewRegistry()
 	// Key 冷却经 Redis 跨实例共享；渠道熔断器是进程内的（各实例独立统计），见 internal/health。
 	healthRegistry := health.NewRegistry(rdb, health.DefaultBreakerSettings())
+	rateLimiter := ratelimit.New(rdb, logger)
 	reqLogWriter := reqlog.NewWriter(pg, logger)
 
 	httpClient := &http.Client{
@@ -187,13 +189,14 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 	}
 
 	return &relay.Service{
-		Catalog:  catalogStore,
-		Wallet:   walletSvc,
-		Adapters: registry,
-		HTTP:     httpClient,
-		Health:   healthRegistry,
-		ReqLog:   reqLogWriter,
-		Logger:   logger,
-		Cfg:      relay.DefaultConfig(),
+		Catalog:   catalogStore,
+		Wallet:    walletSvc,
+		Adapters:  registry,
+		HTTP:      httpClient,
+		Health:    healthRegistry,
+		RateLimit: rateLimiter,
+		ReqLog:    reqLogWriter,
+		Logger:    logger,
+		Cfg:       relay.DefaultConfig(),
 	}, nil
 }

@@ -32,18 +32,24 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 - `internal/reqlog`：把每次请求的用量/计费快照/重试轨迹异步批量写入 `request_logs`
   （§6.8/§7.13）——有界 channel + 后台 goroutine 每 500 条或 1 秒 flush 一次，
   队列满时丢弃并记日志，不会反过来拖慢请求处理。
-- `internal/relay`：把以上全部串起来的请求编排层，实现换 Key/换渠道的重试循环
-  （只在拿到上游响应之前重试，一旦开始向客户端转发内容就不再重试，见 §7.7），
-  并在请求结束时把结果异步写入 request_logs。
-  11 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
+- `internal/ratelimit`：按 API Key 的 RPM（GCRA，`go-redis/redis_rate`）、TPM（固定窗口，
+  Lua 脚本原子扣减）、并发（有序集合模拟租约，Lua 脚本原子获取/回收）三种限流（§7.12）。
+  全部 fail-open：Redis 不可用时放行而不是拒绝所有请求。
+- `internal/relay`：把以上全部串起来的请求编排层——鉴权 → 限流 → 预扣费用 → 路由 →
+  转发（失败时换 Key/换渠道重试，只在拿到上游响应之前重试，见 §7.7）→ 结算 →
+  异步写入 request_logs。
+  13 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
   非流式/流式计费、余额不足拒绝、模型不存在、400 不重试、429 换 Key 成功、
   5xx 换渠道回退成功、重试预算耗尽、唯一 Key 失效后无可用渠道、
-  成功/失败两种场景下 request_logs 落盘的完整性（含 attempt_trace）。
+  成功/失败两种场景下 request_logs 落盘的完整性（含 attempt_trace）、
+  RPM 限流（带 Retry-After）、并发限流（含释放后恢复正常）。
 
 尚未接入：全局重试预算限流（§7.7 的"每实例每秒重试数 ≤ 正常请求数 20%"）、
-基于实时延迟/成功率的动态路由权重（§7.5.2）、促销引擎、限流、Anthropic/Gemini 适配器。
-另外 request_logs 目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；
-鉴权失败、余额不足、模型不存在等预扣之前的拒绝还只有结构化访问日志，不落 request_logs。
+基于实时延迟/成功率的动态路由权重（§7.5.2）、促销引擎、账户级限流默认值继承
+（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按"不限制"处理，而不是继承账户级配置）、
+Anthropic/Gemini 适配器。另外 request_logs 目前只记录"预扣成功、进入路由/转发"之后的结果
+（成功或上游失败）；鉴权失败、余额不足、模型不存在、限流拒绝等预扣之前的拒绝
+还只有结构化访问日志，不落 request_logs。
 
 ## 快速开始（无 Docker）
 

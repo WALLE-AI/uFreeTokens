@@ -33,6 +33,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
+	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/router"
 	"github.com/WALLE-AI/uFreeTokens/internal/schema"
@@ -77,14 +78,15 @@ func DefaultConfig() Config {
 }
 
 type Service struct {
-	Catalog  *catalog.Store
-	Wallet   *wallet.Service
-	Adapters *adapter.Registry
-	HTTP     *http.Client
-	Health   *health.Registry // nil = 不做熔断/冷却过滤，退化为"每次都从全部候选里选"
-	ReqLog   *reqlog.Writer   // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
-	Logger   *slog.Logger
-	Cfg      Config
+	Catalog   *catalog.Store
+	Wallet    *wallet.Service
+	Adapters  *adapter.Registry
+	HTTP      *http.Client
+	Health    *health.Registry   // nil = 不做熔断/冷却过滤，退化为"每次都从全部候选里选"
+	RateLimit *ratelimit.Limiter // nil = 不做 RPM/TPM/并发限流（技术方案 §7.12）
+	ReqLog    *reqlog.Writer     // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
+	Logger    *slog.Logger
+	Cfg       Config
 }
 
 // requestMeta 收拢一次请求里贯穿始终、用于最后写 request_logs 的公共字段。
@@ -133,6 +135,20 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rlSubject := fmt.Sprintf("apikey:%d", principal.APIKeyID)
+	if s.RateLimit != nil {
+		if res := s.RateLimit.AllowRPM(ctx, rlSubject, intOrZero(principal.RPMLimit)); !res.Allowed {
+			writeRateLimited(w, r, res, "rate_limit_exceeded", "Too many requests.")
+			return
+		}
+		release, res := s.RateLimit.AcquireConcurrency(ctx, rlSubject, intOrZero(principal.ConcurrencyLimit), requestID, s.Cfg.Retry.TotalDeadline+time.Minute)
+		if !res.Allowed {
+			writeRateLimited(w, r, res, "concurrency_limit_exceeded", "Too many concurrent requests.")
+			return
+		}
+		defer release()
+	}
+
 	snap, err := s.Catalog.Get(ctx)
 	if err != nil {
 		log.Error("catalog load failed", "error", err)
@@ -150,6 +166,14 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	stream, _ := reqMap["stream"].(bool)
 	estInput := estimateTokens(len(body))
 	reserveOutput := reserveOutputTokens(reqMap, vm.MaxOutput, s.Cfg.ReserveOutputCap)
+
+	if s.RateLimit != nil {
+		amount := int64(estInput + reserveOutput)
+		if res := s.RateLimit.ConsumeTPM(ctx, rlSubject, intOrZero(principal.TPMLimit), amount); !res.Allowed {
+			writeRateLimited(w, r, res, "rate_limit_exceeded", "Token-per-minute quota exceeded.")
+			return
+		}
+	}
 
 	features := router.Features{
 		Stream:          stream,

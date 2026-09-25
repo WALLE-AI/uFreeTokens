@@ -33,6 +33,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
@@ -238,14 +239,15 @@ func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *r
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	reqLogWriter := reqlog.NewWriter(pool, logger)
 	relaySvc := &relay.Service{
-		Catalog:  catalog.NewStore(pool, box, 0), // TTL=0：每次 Get 都重新加载，测试里数据是即时写入的
-		Wallet:   wallet.New(pool),
-		Adapters: adapter.NewRegistry(),
-		HTTP:     http.DefaultClient,
-		Health:   health.NewRegistry(rdb, health.DefaultBreakerSettings()),
-		ReqLog:   reqLogWriter,
-		Logger:   logger,
-		Cfg:      relay.DefaultConfig(),
+		Catalog:   catalog.NewStore(pool, box, 0), // TTL=0：每次 Get 都重新加载，测试里数据是即时写入的
+		Wallet:    wallet.New(pool),
+		Adapters:  adapter.NewRegistry(),
+		HTTP:      http.DefaultClient,
+		Health:    health.NewRegistry(rdb, health.DefaultBreakerSettings()),
+		RateLimit: ratelimit.New(rdb, logger),
+		ReqLog:    reqLogWriter,
+		Logger:    logger,
+		Cfg:       relay.DefaultConfig(),
 	}
 	h := app.NewGatewayRouter(app.GatewayDeps{
 		Logger:    logger,
@@ -278,6 +280,23 @@ func doChatCompletion(t *testing.T, gwURL, apiKey string, body map[string]any) *
 		t.Fatalf("Do: %v", err)
 	}
 	return resp
+}
+
+func intp(v int) *int { return &v }
+
+// setAPIKeyLimits 给已经种好的 API Key 设置 RPM/TPM/并发限制（默认种子数据不限制任何一项）。
+func setAPIKeyLimits(t *testing.T, pool *pgxpool.Pool, apiKey string, rpm, tpm, concurrency *int) {
+	t.Helper()
+	mac, err := auth.ComputeHMAC([]byte(testPepper), apiKey)
+	if err != nil {
+		t.Fatalf("ComputeHMAC: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE api_keys SET rpm_limit = $1, tpm_limit = $2, concurrency_limit = $3 WHERE key_hmac = $4`,
+		rpm, tpm, concurrency, mac,
+	); err != nil {
+		t.Fatalf("update api_key limits: %v", err)
+	}
 }
 
 func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
@@ -796,6 +815,98 @@ func TestChatCompletions_LogsFailureToRequestLogs(t *testing.T) {
 	}
 	if trace[0]["status"] != "upstream_unavailable" {
 		t.Errorf("attempt_trace[0].status = %v, want upstream_unavailable", trace[0]["status"])
+	}
+}
+
+// TestChatCompletions_RPMLimitReturns429 验证按 API Key 的每分钟请求数限制生效，
+// 且带 Retry-After 头（技术方案 §7.12）。
+func TestChatCompletions_RPMLimitReturns429(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1, "completion_tokens": 1}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	setAPIKeyLimits(t, pool, fx.apiKey, intp(1), nil, nil) // 每分钟只允许 1 次请求
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	body := map[string]any{"model": vmName, "messages": []any{}}
+
+	first := doChatCompletion(t, gw.URL, fx.apiKey, body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", first.StatusCode)
+	}
+
+	second := doChatCompletion(t, gw.URL, fx.apiKey, body)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests {
+		respBody, _ := io.ReadAll(second.Body)
+		t.Fatalf("second request status = %d, want 429, body = %s", second.StatusCode, respBody)
+	}
+	if ra := second.Header.Get("Retry-After"); ra == "" {
+		t.Error("429 response should include a Retry-After header")
+	}
+}
+
+// TestChatCompletions_ConcurrencyLimitReturns429 验证并发上限生效：第一个请求
+// 还没结束时，第二个并发请求应该被拒绝；第一个结束、释放名额后，后续请求恢复正常。
+func TestChatCompletions_ConcurrencyLimitReturns429(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // 卡住，直到测试主动放行，模拟一个仍在处理中的慢请求
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1, "completion_tokens": 1}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	setAPIKeyLimits(t, pool, fx.apiKey, nil, nil, intp(1)) // 并发上限 1
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	body := map[string]any{"model": vmName, "messages": []any{}}
+
+	firstDone := make(chan *http.Response, 1)
+	go func() { firstDone <- doChatCompletion(t, gw.URL, fx.apiKey, body) }()
+
+	// 等第一个请求真正占用了并发名额（已经打到 upstream，卡在 <-release 上）再发第二个，
+	// 避免竞态导致第二个请求先到。
+	time.Sleep(500 * time.Millisecond)
+
+	second := doChatCompletion(t, gw.URL, fx.apiKey, body)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests {
+		respBody, _ := io.ReadAll(second.Body)
+		t.Fatalf("second (concurrent) request status = %d, want 429, body = %s", second.StatusCode, respBody)
+	}
+
+	close(release) // 放行第一个请求
+	first := <-firstDone
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(first.Body)
+		t.Fatalf("first request status = %d, want 200, body = %s", first.StatusCode, body)
+	}
+
+	// 第一个请求结束、名额释放后，新请求应该恢复正常。
+	third := doChatCompletion(t, gw.URL, fx.apiKey, body)
+	defer third.Body.Close()
+	if third.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(third.Body)
+		t.Errorf("third request status = %d, want 200 (concurrency slot should be released), body = %s", third.StatusCode, body)
 	}
 }
 
