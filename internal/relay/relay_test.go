@@ -300,19 +300,28 @@ func seedSimple(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamUR
 // （测试可以调用它的 Close() 强制立即 flush，不用等 1 秒定时器）。
 func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client) (http.Handler, *reqlog.Writer) {
 	t.Helper()
+	return newTestGatewayWithBudget(t, pool, box, rdb, nil)
+}
+
+// newTestGatewayWithBudget 和 newTestGateway 一样，但允许测试装一个自定义的
+// RetryBudget（默认 nil = 不限制重试），用来测全局重试预算真的会在耗尽后
+// 提前放弃重试（技术方案 §7.7）。
+func newTestGatewayWithBudget(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client, budget *relay.RetryBudget) (http.Handler, *reqlog.Writer) {
+	t.Helper()
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	reqLogWriter := reqlog.NewWriter(pool, logger)
 	relaySvc := &relay.Service{
-		Catalog:   catalog.NewStore(pool, box, 0), // TTL=0：每次 Get 都重新加载，测试里数据是即时写入的
-		Wallet:    wallet.New(pool),
-		Adapters:  adapter.NewRegistry(),
-		HTTP:      http.DefaultClient,
-		Health:    health.NewRegistry(rdb, health.DefaultBreakerSettings()),
-		RateLimit: ratelimit.New(rdb, logger),
-		Promotion: promotion.New(pool),
-		ReqLog:    reqLogWriter,
-		Logger:    logger,
-		Cfg:       relay.DefaultConfig(),
+		Catalog:     catalog.NewStore(pool, box, 0), // TTL=0：每次 Get 都重新加载，测试里数据是即时写入的
+		Wallet:      wallet.New(pool),
+		Adapters:    adapter.NewRegistry(),
+		HTTP:        http.DefaultClient,
+		Health:      health.NewRegistry(rdb, health.DefaultBreakerSettings()),
+		RateLimit:   ratelimit.New(rdb, logger),
+		Promotion:   promotion.New(pool),
+		ReqLog:      reqLogWriter,
+		Logger:      logger,
+		Cfg:         relay.DefaultConfig(),
+		RetryBudget: budget,
 	}
 	h := app.NewGatewayRouter(app.GatewayDeps{
 		Logger:    logger,
@@ -739,6 +748,53 @@ func TestChatCompletions_ExhaustsMaxAttempts_Returns502(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
 		t.Errorf("upstream call count = %d, want 3 (default MaxAttempts, 3 distinct keys available)", got)
+	}
+
+	cash, frozen := getWalletBalance(t, pool, fx.accountID)
+	if cash != 1_000_000 || frozen != 0 {
+		t.Errorf("wallet mutated: cash=%d frozen=%d, want cash=1_000_000 frozen=0", cash, frozen)
+	}
+}
+
+// TestChatCompletions_RetryBudgetExhausted_StopsRetryingEarly 验证全局重试预算
+// （技术方案 §7.7）真的会在耗尽后提前放弃重试，而不是一直重试到 MaxAttempts。
+// 用 3 个 Key（都返回 429，够 MaxAttempts=3 用）+ maxTokens=1 的预算：第一次尝试
+// 不消耗预算，第一次重试消耗掉唯一的令牌，第二次重试应该在真正发请求之前就被
+// 预算拦下——上游只应该被打 2 次，不是 3 次。
+func TestChatCompletions_RetryBudgetExhausted_StopsRetryingEarly(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccount(t, pool, upstream.URL)
+	seedKey(t, pool, box, accID, "sk-1")
+	seedKey(t, pool, box, accID, "sk-2")
+	seedKey(t, pool, box, accID, "sk-3")
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	budget := relay.NewRetryBudget(1, 0.2)
+	handler, reqLogW := newTestGatewayWithBudget(t, pool, box, rdb, budget)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 502, body = %s", resp.StatusCode, body)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("upstream call count = %d, want 2 (1 first attempt + 1 retry the budget allows; the 3rd must be blocked by the exhausted retry budget)", got)
 	}
 
 	cash, frozen := getWalletBalance(t, pool, fx.accountID)

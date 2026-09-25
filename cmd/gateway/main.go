@@ -191,15 +191,16 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 	}
 
 	return &relay.Service{
-		Catalog:   catalogStore,
-		Wallet:    walletSvc,
-		Adapters:  registry,
-		HTTP:      httpClient,
-		Health:    healthRegistry,
-		RateLimit: rateLimiter,
-		Promotion: promotionEngine,
-		ReqLog:    reqLogWriter,
-		Logger:    logger,
-		Cfg:       relay.DefaultConfig(),
+		Catalog:     catalogStore,
+		Wallet:      walletSvc,
+		Adapters:    registry,
+		HTTP:        httpClient,
+		Health:      healthRegistry,
+		RateLimit:   rateLimiter,
+		Promotion:   promotionEngine,
+		ReqLog:      reqLogWriter,
+		Logger:      logger,
+		Cfg:         relay.DefaultConfig(),
+		RetryBudget: relay.DefaultRetryBudget(),
 	}, nil
 }

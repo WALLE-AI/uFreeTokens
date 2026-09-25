@@ -32,8 +32,8 @@ type GatewayDeps struct {
 }
 
 // NewGatewayRouter 组装数据面路由。/v1/chat/completions 已接入完整的
-// 路由 → 预扣 → 转发 → 结算链路（relay.Service，见技术方案 §3.2、§7.1），
-// 但还是单次尝试、不做跨渠道重试（§7.7 留作下一阶段）。/v1/completions、
+// 路由 → 预扣 → 转发（含换 Key/换渠道重试与全局重试预算）→ 结算链路
+// （relay.Service，见技术方案 §3.2、§7.1、§7.7）。/v1/completions、
 // /v1/embeddings 尚未实现，返回 503/not_implemented。
 func NewGatewayRouter(d GatewayDeps) http.Handler {
 	r := chi.NewRouter()

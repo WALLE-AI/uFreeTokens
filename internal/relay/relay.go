@@ -6,8 +6,9 @@
 // 当前范围（有意的阶段性限制，不是遗漏）：
 //   - 重试只发生在"拿到上游响应/连接失败"之后、"开始向客户端转发内容"之前
 //     （技术方案 §7.7：一旦向客户端写出任何字节，就不能再换渠道重试）。
-//   - 没有实现"每实例每秒重试数 ≤ 正常请求数 20%"的全局重试预算（§7.7），
-//     目前只有单请求级别的 MaxAttempts + TotalDeadline 上限。
+//   - "每实例每秒重试数 ≤ 正常请求数 20%"的全局重试预算（§7.7）由 RetryBudget
+//     实现：用令牌桶近似这个比例，而不是严格的按秒计数窗口（见 retrybudget.go
+//     的注释）。除此之外仍有单请求级别的 MaxAttempts + TotalDeadline 上限。
 //   - 用量兜底估算是保守占位（上游完全不返回 usage 时，按预扣的上限计费，
 //     不会让平台倒贴钱，但也不精确）——真正基于 tokenizer 的估算见 §7.9.4，留作后续。
 //   - request_logs 只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；
@@ -89,6 +90,11 @@ type Service struct {
 	ReqLog    *reqlog.Writer     // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
 	Logger    *slog.Logger
 	Cfg       Config
+
+	// RetryBudget 是"每实例每秒重试数 ≤ 正常请求数 20%"的全局重试预算
+	// （技术方案 §7.7）。nil = 不限制（RetryBudget 的方法对 nil 接收者是安全的
+	// no-op），生产环境应设为 DefaultRetryBudget() 或自定义参数。
+	RetryBudget *RetryBudget
 }
 
 // requestMeta 收拢一次请求里贯穿始终、用于最后写 request_logs / 匹配促销的公共字段。
@@ -209,6 +215,10 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		vmName:      vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 	}
 
+	// 只有真正进入重试循环、会对上游发起至少一次尝试的请求才计入"正常请求"基数
+	// （技术方案 §7.7 的重试预算比较的是"重试数 vs 正常请求数"，鉴权失败/限流拒绝/
+	// 余额不足这些根本没打到上游的请求不应该稀释这个比例）。
+	s.RetryBudget.RecordRequest()
 	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
 	if err != nil {
 		s.releaseQuietly(log, requestID)
@@ -288,6 +298,7 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 	excludedKeys := map[int64]bool{}
 	var trace []reqlog.AttemptTraceEntry
 	var lastErr error
+	attemptsMade := 0 // 真正对上游发起过的尝试次数，不含熔断器竞态导致的空转（见下）
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -322,6 +333,19 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 				continue
 			}
 		}
+
+		if attemptsMade > 0 && !s.RetryBudget.TryRetry() {
+			// 全局重试预算耗尽（技术方案 §7.7）：不再换渠道/换 Key 重试，直接把最后
+			// 一次的错误返回给客户端，防止上游整体故障时重试把流量放大、雪上加霜。
+			if done != nil {
+				done(false)
+			}
+			if lastErr != nil {
+				return nil, nil, nil, trace, fmt.Errorf("relay: retry budget exhausted: %w", lastErr)
+			}
+			return nil, nil, nil, trace, errors.New("relay: retry budget exhausted")
+		}
+		attemptsMade++
 
 		adp, aok := s.Adapters.For(picked.Account.Protocol)
 		if !aok {
