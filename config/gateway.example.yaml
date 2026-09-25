@@ -1,0 +1,41 @@
+# 网关进程配置示例。实际值可被同名环境变量覆盖（前缀 UFT_，层级用下划线分隔）。
+# 参见技术方案 附录 B。
+gateway:
+  addr: ":8080"
+  max_body_bytes: 20971520      # 20MB
+  read_header_timeout: 5s
+  read_timeout: 30s
+  idle_timeout: 120s
+  stream_idle_timeout: 120s
+  shutdown_grace: 30s
+
+metrics:
+  addr: ":9090"
+
+retry:
+  max_attempts: 3
+  total_deadline: 90s
+  budget_ratio: 0.2
+
+billing:
+  reserve_output_cap: 8192
+  reservation_ttl: 30m
+  rounding: ceil_micro
+
+postgres:
+  dsn: "postgres://uft:uft@localhost:5432/uft?sslmode=disable"
+  max_conns: 20
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+secrets:
+  kek_source: env
+  kek_env: UFT_KEK
+  api_key_pepper_env: UFT_KEY_PEPPER
+
+log:
+  level: debug
+  format: console   # console(dev) / json(prod)

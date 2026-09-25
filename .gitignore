@@ -1,0 +1,15 @@
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+.env
+.env.*
+!.env.example
+coverage.*
+/tmp/
+.idea/
+.vscode/
+
+# tools/devdb 本地开发用 PostgreSQL 的数据目录与日志（无需 Docker 时使用，见 README）
+/.data/
