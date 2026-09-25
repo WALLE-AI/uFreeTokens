@@ -5,13 +5,14 @@
 // 挤到同一个渠道（羊群效应），触发限流后再一起切换，来回振荡。用显式的 priority 表达
 // 主备关系（运营可预期），只在同一层内做"智能"分流。
 //
-// 当前实现范围：硬过滤 + 优先级分层 + 加权随机。技术方案 §7.5.2 里基于实时延迟/成功率
-// 的动态权重因子（health/latency/cost）、P2C、提示缓存亲和性，依赖 §7.6 的运行时健康度
-// 模块，尚未实现——属于下一阶段（重试与故障转移、§7.6-7.7）要接入的部分，这里先保证
-// "从候选集合里选出一个能用的" 是正确、无偏、可测的。
+// 硬过滤额外接入了熔断器状态（ChannelHealth）与 Key 冷却状态（KeyHealth，见
+// internal/health），配合 relay 层的重试循环实现"换渠道/换 Key 重试"（§7.6-7.7）。
+// 仍未实现的：基于实时延迟/成功率的动态权重因子、P2C、提示缓存亲和性（§7.5.2 的
+// 加权公式），留作后续——静态 weight 已经能避免羊群效应，动态因子是锦上添花。
 package router
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 
@@ -37,11 +38,30 @@ type Picked struct {
 	Key     *catalog.ProviderKey
 }
 
-// Pick 从 snapshot 中为 vm 选出一个渠道 + Key。tier 是发起请求账户的分组；
-// exclude 是本次请求内已经失败过、需要排除的渠道 ID（用于故障转移重试，当前 relay
-// 还是单次调用，暂时总是传 nil，接口先留好）。
-func Pick(snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, exclude map[int64]bool) (*Picked, error) {
-	candidates := filterChannels(snapshot, vm, f, tier, exclude)
+// ChannelHealth 由 internal/health.Registry 实现：判断某渠道当前是否因为熔断而
+// 应该被跳过。只做只读查询，不消耗熔断器的 Half-Open 试探配额
+// （消耗配额的是 relay 层实际尝试前调用的 TryChannel，那一步在 router 之外）。
+type ChannelHealth interface {
+	ChannelOpen(channelID int64) bool
+}
+
+// KeyHealth 由 internal/health.Registry 实现：判断某上游 Key 是否处于冷却期。
+type KeyHealth interface {
+	KeyOnCooldown(ctx context.Context, providerKeyID int64) bool
+}
+
+// SelectOptions 是一次 Pick 调用的过滤/排除条件。零值表示不做任何额外过滤，
+// 与最初没有重试机制时的行为完全一致。
+type SelectOptions struct {
+	ExcludeChannels map[int64]bool // 本次请求内已经尝试失败、需要排除的渠道
+	ExcludeKeys     map[int64]bool // 本次请求内已经尝试失败、需要排除的 Key
+	ChannelHealth   ChannelHealth  // nil = 不做熔断过滤
+	KeyHealth       KeyHealth      // nil = 不做冷却过滤
+}
+
+// Pick 从 snapshot 中为 vm 选出一个渠道 + Key。tier 是发起请求账户的分组。
+func Pick(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, opts SelectOptions) (*Picked, error) {
+	candidates := filterChannels(ctx, snapshot, vm, f, tier, opts)
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableChannel
 	}
@@ -50,9 +70,9 @@ func Pick(snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier
 	channel := weightedRandomChannel(layer)
 
 	account := snapshot.ProviderAccounts[channel.ProviderAccountID]
-	keys := activeKeys(snapshot.KeysByAccount[channel.ProviderAccountID])
+	keys := selectableKeys(ctx, snapshot.KeysByAccount[channel.ProviderAccountID], opts)
 	if len(keys) == 0 {
-		// 理论上不会发生：filterChannels 已经要求渠道至少有一个可用 Key；
+		// 理论上不会发生：filterChannels 已经要求渠道至少有一个可选 Key；
 		// 这里是防御性检查（比如加载快照和选择之间数据发生了变化）。
 		return nil, ErrNoAvailableChannel
 	}
@@ -61,13 +81,16 @@ func Pick(snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier
 	return &Picked{Channel: channel, Account: account, Key: key}, nil
 }
 
-func filterChannels(snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, exclude map[int64]bool) []*catalog.Channel {
+func filterChannels(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, opts SelectOptions) []*catalog.Channel {
 	var out []*catalog.Channel
 	for _, c := range snapshot.ChannelsByVM[vm.ID] {
 		if c.Status != "active" {
 			continue
 		}
-		if exclude != nil && exclude[c.ID] {
+		if opts.ExcludeChannels != nil && opts.ExcludeChannels[c.ID] {
+			continue
+		}
+		if opts.ChannelHealth != nil && opts.ChannelHealth.ChannelOpen(c.ID) {
 			continue
 		}
 		if !c.AllowsTier(tier) {
@@ -77,7 +100,7 @@ func filterChannels(snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Feat
 		if !ok || account.Status != "active" {
 			continue
 		}
-		if len(activeKeys(snapshot.KeysByAccount[c.ProviderAccountID])) == 0 {
+		if len(selectableKeys(ctx, snapshot.KeysByAccount[c.ProviderAccountID], opts)) == 0 {
 			continue
 		}
 
@@ -114,12 +137,20 @@ func hasCapability(caps []string, want string) bool {
 	return false
 }
 
-func activeKeys(keys []*catalog.ProviderKey) []*catalog.ProviderKey {
+// selectableKeys 返回一个上游账号下"状态 active 且未被排除且未在冷却"的 Key 列表。
+func selectableKeys(ctx context.Context, keys []*catalog.ProviderKey, opts SelectOptions) []*catalog.ProviderKey {
 	var out []*catalog.ProviderKey
 	for _, k := range keys {
-		if k.Status == "active" {
-			out = append(out, k)
+		if k.Status != "active" {
+			continue
 		}
+		if opts.ExcludeKeys != nil && opts.ExcludeKeys[k.ID] {
+			continue
+		}
+		if opts.KeyHealth != nil && opts.KeyHealth.KeyOnCooldown(ctx, k.ID) {
+			continue
+		}
+		out = append(out, k)
 	}
 	return out
 }

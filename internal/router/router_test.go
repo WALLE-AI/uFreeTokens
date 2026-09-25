@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"testing"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
@@ -37,9 +38,14 @@ func addChannel(s *catalog.Snapshot, c *catalog.Channel) {
 
 func vm(s *catalog.Snapshot) *catalog.VirtualModel { return s.Models["deepseek-v4-flash"] }
 
+func pick(t *testing.T, s *catalog.Snapshot, f Features, tier string, opts SelectOptions) (*Picked, error) {
+	t.Helper()
+	return Pick(context.Background(), s, vm(s), f, tier, opts)
+}
+
 func TestPick_NoChannelsReturnsError(t *testing.T) {
 	s := baseSnapshot()
-	if _, err := Pick(s, vm(s), Features{}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("err = %v, want ErrNoAvailableChannel", err)
 	}
 }
@@ -50,7 +56,7 @@ func TestPick_FiltersDisabledChannel(t *testing.T) {
 	addKey(s, 1, 1, 100, "active")
 	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "disabled", Priority: 0})
 
-	if _, err := Pick(s, vm(s), Features{}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("err = %v, want ErrNoAvailableChannel", err)
 	}
 }
@@ -61,7 +67,7 @@ func TestPick_FiltersDisabledProviderAccount(t *testing.T) {
 	addKey(s, 1, 1, 100, "active")
 	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
 
-	if _, err := Pick(s, vm(s), Features{}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("err = %v, want ErrNoAvailableChannel", err)
 	}
 }
@@ -72,7 +78,7 @@ func TestPick_FiltersChannelWithNoActiveKeys(t *testing.T) {
 	addKey(s, 1, 1, 100, "exhausted") // 唯一的 Key 已失效
 	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
 
-	if _, err := Pick(s, vm(s), Features{}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("err = %v, want ErrNoAvailableChannel", err)
 	}
 }
@@ -86,10 +92,10 @@ func TestPick_FiltersByTier(t *testing.T) {
 		AllowedTiers: []string{"enterprise"}, // 只对企业用户开放
 	})
 
-	if _, err := Pick(s, vm(s), Features{}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("free tier should be rejected: err = %v", err)
 	}
-	picked, err := Pick(s, vm(s), Features{}, "enterprise", nil)
+	picked, err := pick(t, s, Features{}, "enterprise", SelectOptions{})
 	if err != nil {
 		t.Fatalf("enterprise tier should be allowed: %v", err)
 	}
@@ -108,10 +114,10 @@ func TestPick_FiltersByCapability(t *testing.T) {
 		Capabilities: []string{"stream"},
 	})
 
-	if _, err := Pick(s, vm(s), Features{NeedTools: true}, "free", nil); err != ErrNoAvailableChannel {
+	if _, err := pick(t, s, Features{NeedTools: true}, "free", SelectOptions{}); err != ErrNoAvailableChannel {
 		t.Fatalf("channel without tools capability should be filtered: err = %v", err)
 	}
-	if _, err := Pick(s, vm(s), Features{NeedTools: false}, "free", nil); err != nil {
+	if _, err := pick(t, s, Features{NeedTools: false}, "free", SelectOptions{}); err != nil {
 		t.Fatalf("channel should be pickable when tools not required: %v", err)
 	}
 }
@@ -126,25 +132,97 @@ func TestPick_FiltersByContextWindow(t *testing.T) {
 		ContextWindow: &small,
 	})
 
-	_, err := Pick(s, vm(s), Features{EstInputTokens: 900, MaxOutputTokens: 500}, "free", nil)
+	_, err := pick(t, s, Features{EstInputTokens: 900, MaxOutputTokens: 500}, "free", SelectOptions{})
 	if err != ErrNoAvailableChannel {
 		t.Fatalf("request exceeding channel context window should be filtered: err = %v", err)
 	}
-	_, err = Pick(s, vm(s), Features{EstInputTokens: 400, MaxOutputTokens: 500}, "free", nil)
+	_, err = pick(t, s, Features{EstInputTokens: 400, MaxOutputTokens: 500}, "free", SelectOptions{})
 	if err != nil {
 		t.Fatalf("request within context window should succeed: %v", err)
 	}
 }
 
-func TestPick_ExcludeSet(t *testing.T) {
+func TestPick_ExcludeChannels(t *testing.T) {
 	s := baseSnapshot()
 	addAccount(s, 1, "active")
 	addKey(s, 1, 1, 100, "active")
 	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
 
-	_, err := Pick(s, vm(s), Features{}, "free", map[int64]bool{1: true})
+	_, err := pick(t, s, Features{}, "free", SelectOptions{ExcludeChannels: map[int64]bool{1: true}})
 	if err != ErrNoAvailableChannel {
 		t.Fatalf("excluded channel should not be picked: err = %v", err)
+	}
+}
+
+func TestPick_ExcludeKeys_FallsBackToOtherKeyOnSameChannel(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addKey(s, 1, 1, 100, "active")
+	addKey(s, 1, 2, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
+
+	picked, err := pick(t, s, Features{}, "free", SelectOptions{ExcludeKeys: map[int64]bool{1: true}})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if picked.Key.ID != 2 {
+		t.Fatalf("picked key = %d, want 2 (the only non-excluded key)", picked.Key.ID)
+	}
+}
+
+func TestPick_ExcludeKeys_ChannelUnavailableWhenAllKeysExcluded(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addKey(s, 1, 1, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
+
+	_, err := pick(t, s, Features{}, "free", SelectOptions{ExcludeKeys: map[int64]bool{1: true}})
+	if err != ErrNoAvailableChannel {
+		t.Fatalf("err = %v, want ErrNoAvailableChannel (only key excluded)", err)
+	}
+}
+
+type fakeChannelHealth struct{ open map[int64]bool }
+
+func (f fakeChannelHealth) ChannelOpen(id int64) bool { return f.open[id] }
+
+func TestPick_ChannelHealth_SkipsOpenBreaker(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addAccount(s, 2, "active")
+	addKey(s, 1, 1, 100, "active")
+	addKey(s, 2, 2, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
+	addChannel(s, &catalog.Channel{ID: 2, VirtualModelID: 1, ProviderAccountID: 2, Status: "active", Priority: 1})
+
+	health := fakeChannelHealth{open: map[int64]bool{1: true}} // 渠道 1 熔断中
+	picked, err := pick(t, s, Features{}, "free", SelectOptions{ChannelHealth: health})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if picked.Channel.ID != 2 {
+		t.Fatalf("picked channel = %d, want 2 (channel 1's breaker is open)", picked.Channel.ID)
+	}
+}
+
+type fakeKeyHealth struct{ cooling map[int64]bool }
+
+func (f fakeKeyHealth) KeyOnCooldown(_ context.Context, id int64) bool { return f.cooling[id] }
+
+func TestPick_KeyHealth_SkipsCoolingDownKey(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addKey(s, 1, 1, 100, "active")
+	addKey(s, 1, 2, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0})
+
+	health := fakeKeyHealth{cooling: map[int64]bool{1: true}}
+	picked, err := pick(t, s, Features{}, "free", SelectOptions{KeyHealth: health})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if picked.Key.ID != 2 {
+		t.Fatalf("picked key = %d, want 2 (key 1 is on cooldown)", picked.Key.ID)
 	}
 }
 
@@ -160,7 +238,7 @@ func TestPick_PrefersTopPriorityLayer(t *testing.T) {
 	addChannel(s, &catalog.Channel{ID: 2, VirtualModelID: 1, ProviderAccountID: 2, Status: "active", Priority: 1}) // 备
 
 	for i := 0; i < 50; i++ {
-		picked, err := Pick(s, vm(s), Features{}, "free", nil)
+		picked, err := pick(t, s, Features{}, "free", SelectOptions{})
 		if err != nil {
 			t.Fatalf("Pick: %v", err)
 		}
@@ -171,7 +249,8 @@ func TestPick_PrefersTopPriorityLayer(t *testing.T) {
 }
 
 // TestPick_FallsBackToLowerPriorityWhenPrimaryFiltered 验证主渠道不可用时会切换到备用层，
-// 而不是直接报错——这是故障转移的基础（完整的重试循环在 relay 层，见 §7.7 后续阶段）。
+// 而不是直接报错——这是故障转移的基础，relay 层的重试循环会在每次尝试前把失败的渠道加入
+// ExcludeChannels 重新调用 Pick，效果等价于这里的直接过滤。
 func TestPick_FallsBackToLowerPriorityWhenPrimaryFiltered(t *testing.T) {
 	s := baseSnapshot()
 	addAccount(s, 1, "active")
@@ -181,7 +260,7 @@ func TestPick_FallsBackToLowerPriorityWhenPrimaryFiltered(t *testing.T) {
 	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "disabled", Priority: 0})
 	addChannel(s, &catalog.Channel{ID: 2, VirtualModelID: 1, ProviderAccountID: 2, Status: "active", Priority: 1})
 
-	picked, err := Pick(s, vm(s), Features{}, "free", nil)
+	picked, err := pick(t, s, Features{}, "free", SelectOptions{})
 	if err != nil {
 		t.Fatalf("Pick: %v", err)
 	}
@@ -204,7 +283,7 @@ func TestPick_WeightedDistributionWithinLayer(t *testing.T) {
 	const n = 4000
 	counts := map[int64]int{}
 	for i := 0; i < n; i++ {
-		picked, err := Pick(s, vm(s), Features{}, "free", nil)
+		picked, err := pick(t, s, Features{}, "free", SelectOptions{})
 		if err != nil {
 			t.Fatalf("Pick: %v", err)
 		}
@@ -231,7 +310,7 @@ func TestPick_WeightedKeySelectionWithinChannel(t *testing.T) {
 	const n = 2000
 	counts := map[int64]int{}
 	for i := 0; i < n; i++ {
-		picked, err := Pick(s, vm(s), Features{}, "free", nil)
+		picked, err := pick(t, s, Features{}, "free", SelectOptions{})
 		if err != nil {
 			t.Fatalf("Pick: %v", err)
 		}

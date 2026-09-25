@@ -1,11 +1,13 @@
 // Package relay 编排一次 /v1/chat/completions 请求的完整生命周期
-// （技术方案 §3.2、§7.1）：鉴权信息已由中间件放入 context -> 解析请求 -> 路由选渠道
-// -> 预扣费用 -> 转发上游 -> 结算。
+// （技术方案 §3.2、§7.1）：鉴权信息已由中间件放入 context -> 解析请求 -> 预扣费用
+// -> 路由选渠道/Key -> 转发上游（失败时按错误类别换 Key/换渠道重试，§7.6-7.7）
+// -> 结算。
 //
 // 当前范围（有意的阶段性限制，不是遗漏）：
-//   - 单次尝试，不做跨渠道/跨 Key 的自动重试与故障转移（技术方案 §7.7）——
-//     上游返回可重试类错误时，直接把错误返回给客户端，同时释放预扣的费用。
-//     完整的重试循环依赖 §7.6 的运行时健康度/熔断，是下一阶段要接入的部分。
+//   - 重试只发生在"拿到上游响应/连接失败"之后、"开始向客户端转发内容"之前
+//     （技术方案 §7.7：一旦向客户端写出任何字节，就不能再换渠道重试）。
+//   - 没有实现"每实例每秒重试数 ≤ 正常请求数 20%"的全局重试预算（§7.7），
+//     目前只有单请求级别的 MaxAttempts + TotalDeadline 上限。
 //   - 用量兜底估算是保守占位（上游完全不返回 usage 时，按预扣的上限计费，
 //     不会让平台倒贴钱，但也不精确）——真正基于 tokenizer 的估算见 §7.9.4，留作后续。
 //   - 请求日志（request_logs）尚未接入，本阶段只有结构化访问日志。
@@ -15,14 +17,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
+	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
 	"github.com/WALLE-AI/uFreeTokens/internal/router"
@@ -37,6 +42,16 @@ type Config struct {
 	ReserveOutputCap int           // 预扣费用时对 max_tokens 的上限裁剪（技术方案 §7.9.1）
 	ReservationTTL   time.Duration // 预扣记录的兜底过期时间，供 worker 回收（尚未实现 worker 侧）
 	MaxUpstreamBody  int64         // 非流式响应体读取上限，防止恶意/异常上游返回超大响应
+	Retry            RetryConfig
+}
+
+// RetryConfig 控制换 Key/换渠道重试的上限（技术方案 §7.7）。
+type RetryConfig struct {
+	MaxAttempts     int           // 含首次在内的最大尝试次数
+	TotalDeadline   time.Duration // 从第一次尝试起，超过这个时长不再重试
+	DefaultCooldown time.Duration // 429 且上游未给 Retry-After 时的默认冷却时长
+	MaxCooldown     time.Duration // Retry-After 头的取值上限，防止上游返回异常大的值把 Key 冻结太久
+	KeyDownCooldown time.Duration // Key 失效/配额耗尽（非限流）时的冷却时长
 }
 
 func DefaultConfig() Config {
@@ -44,6 +59,13 @@ func DefaultConfig() Config {
 		ReserveOutputCap: 8192,
 		ReservationTTL:   30 * time.Minute,
 		MaxUpstreamBody:  20 * 1024 * 1024,
+		Retry: RetryConfig{
+			MaxAttempts:     3,
+			TotalDeadline:   90 * time.Second,
+			DefaultCooldown: 30 * time.Second,
+			MaxCooldown:     5 * time.Minute,
+			KeyDownCooldown: time.Hour,
+		},
 	}
 }
 
@@ -52,6 +74,7 @@ type Service struct {
 	Wallet   *wallet.Service
 	Adapters *adapter.Registry
 	HTTP     *http.Client
+	Health   *health.Registry // nil = 不做熔断/冷却过滤，退化为"每次都从全部候选里选"
 	Logger   *slog.Logger
 	Cfg      Config
 }
@@ -115,17 +138,8 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		MaxOutputTokens: reserveOutput,
 	}
 
-	picked, err := router.Pick(snap, vm, features, principal.AccountTier, nil)
-	if err != nil {
-		if errors.Is(err, router.ErrNoAvailableChannel) {
-			httpx.WriteError(w, r, http.StatusServiceUnavailable, "no_available_channel", "No healthy channel is available for this model right now.")
-			return
-		}
-		log.Error("router pick failed", "error", err)
-		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Routing failed.")
-		return
-	}
-
+	// 预扣的金额只取决于虚拟模型的售价，与最终选中哪个渠道无关（技术方案 §6.4：
+	// 售价挂在虚拟模型上），所以可以先 Reserve，再在重试循环里尝试各个渠道。
 	sellBook := snap.SellPriceBooks[vm.ID]
 	quoteAmount, _ := pricing.Charge(sellBook,
 		pricing.Usage{InputTokens: int64(estInput), OutputTokens: int64(reserveOutput)},
@@ -141,48 +155,190 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adp, ok := s.Adapters.For(picked.Account.Protocol)
-	if !ok {
-		s.releaseQuietly(log, requestID)
-		log.Error("no adapter for protocol", "protocol", picked.Account.Protocol)
-		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Unsupported upstream protocol.")
-		return
-	}
-
-	target := adapter.Target{Channel: picked.Channel, Account: picked.Account, Key: picked.Key}
-	upstreamReq, err := adp.BuildRequest(ctx, target, chatEndpoint, reqMap)
+	resp, adp, _, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
 	if err != nil {
 		s.releaseQuietly(log, requestID)
-		log.Error("build upstream request failed", "error", err)
-		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to build upstream request.")
-		return
-	}
-
-	resp, err := s.HTTP.Do(upstreamReq)
-	if err != nil {
-		// 连接失败/超时，发生在拿到任何响应之前：本次请求未产生费用，全额释放。
-		s.releaseQuietly(log, requestID)
-		log.Warn("upstream request failed", "channel_id", picked.Channel.ID, "error", err)
-		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_error", "Failed to reach upstream provider.")
+		s.writeUpstreamError(w, r, log, err)
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		class := adp.ClassifyError(resp.StatusCode, errBody)
-		s.releaseQuietly(log, requestID)
-		log.Warn("upstream returned error", "channel_id", picked.Channel.ID, "status", resp.StatusCode, "class", class)
-		status, code := clientFacingError(class)
-		httpx.WriteError(w, r, status, code, "Upstream request failed.")
-		return
-	}
 
 	if stream {
 		s.handleStream(ctx, log, w, r, resp, adp, sellBook, vm.Name, requestID, estInput, reserveOutput)
 		return
 	}
 	s.handleNonStream(ctx, log, w, r, resp, adp, sellBook, vm.Name, requestID, estInput, reserveOutput)
+}
+
+// upstreamClientError 包装一次不可重试（或重试耗尽后最后一次）的上游错误，
+// 供 ChatCompletions 决定回给客户端的状态码。
+type upstreamClientError struct {
+	class  adapter.ErrorClass
+	status int
+}
+
+func (e *upstreamClientError) Error() string {
+	return fmt.Sprintf("relay: upstream error (class=%s, status=%d)", e.class, e.status)
+}
+
+func (s *Service) writeUpstreamError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
+	var uerr *upstreamClientError
+	switch {
+	case errors.As(err, &uerr):
+		status, code := clientFacingError(uerr.class)
+		httpx.WriteError(w, r, status, code, "Upstream request failed.")
+	case errors.Is(err, router.ErrNoAvailableChannel):
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "no_available_channel", "No healthy channel is available for this model right now.")
+	default:
+		log.Warn("upstream call failed", "error", err)
+		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_error", "Failed to reach upstream provider.")
+	}
+}
+
+// callUpstreamWithRetry 是重试/故障转移的核心循环（技术方案 §7.6-7.7）：
+//   - Key 级错误（429/配额耗尽/Key 失效）→ 冷却该 Key（Redis 共享），同渠道换 Key 重试。
+//   - 渠道级错误（连接失败/5xx）→ 记入该渠道的熔断器，换渠道重试。
+//   - 请求本身有问题（400/内容审核拦截）→ 不重试，直接返回。
+//   - 达到 MaxAttempts 或 TotalDeadline 后，返回最后一次的错误。
+//
+// 返回的 *http.Response 处于"已经拿到 2xx 响应头、尚未读取响应体"的状态，
+// 调用方从这里开始才真正向客户端转发内容——转发开始之后就不再有重试的机会了。
+func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, snap *catalog.Snapshot, vm *catalog.VirtualModel,
+	features router.Features, tier string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, error) {
+
+	maxAttempts := s.Cfg.Retry.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	deadline := time.Now().Add(s.Cfg.Retry.TotalDeadline)
+
+	excludedChannels := map[int64]bool{}
+	excludedKeys := map[int64]bool{}
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			if lastErr != nil {
+				return nil, nil, nil, fmt.Errorf("relay: retry total deadline exceeded: %w", lastErr)
+			}
+			return nil, nil, nil, errors.New("relay: retry total deadline exceeded")
+		}
+
+		opts := router.SelectOptions{ExcludeChannels: excludedChannels, ExcludeKeys: excludedKeys}
+		if s.Health != nil {
+			opts.ChannelHealth = s.Health
+			opts.KeyHealth = s.Health
+		}
+		picked, perr := router.Pick(ctx, snap, vm, features, tier, opts)
+		if perr != nil {
+			if lastErr != nil {
+				return nil, nil, nil, fmt.Errorf("%w (previous attempt: %v)", perr, lastErr)
+			}
+			return nil, nil, nil, perr
+		}
+
+		var done func(bool)
+		if s.Health != nil {
+			var allowed bool
+			done, allowed = s.Health.TryChannel(picked.Channel.ID)
+			if !allowed {
+				// 熔断器刚好在过滤之后、真正尝试之前变成不可用（并发场景），换下一个候选，
+				// 不计入 attempt 预算的浪费——但为避免死循环，仍然把它排除掉。
+				excludedChannels[picked.Channel.ID] = true
+				attempt--
+				continue
+			}
+		}
+
+		adp, aok := s.Adapters.For(picked.Account.Protocol)
+		if !aok {
+			if done != nil {
+				done(false)
+			}
+			return nil, nil, nil, fmt.Errorf("relay: no adapter registered for protocol %q", picked.Account.Protocol)
+		}
+
+		target := adapter.Target{Channel: picked.Channel, Account: picked.Account, Key: picked.Key}
+		upstreamReq, berr := adp.BuildRequest(ctx, target, chatEndpoint, reqMap)
+		if berr != nil {
+			if done != nil {
+				done(false)
+			}
+			return nil, nil, nil, fmt.Errorf("relay: build upstream request: %w", berr)
+		}
+
+		resp, derr := s.HTTP.Do(upstreamReq)
+		if derr != nil {
+			if done != nil {
+				done(false)
+			}
+			excludedChannels[picked.Channel.ID] = true
+			lastErr = derr
+			log.Warn("upstream call failed, retrying", "attempt", attempt, "channel_id", picked.Channel.ID, "error", derr)
+			continue
+		}
+
+		if resp.StatusCode < 400 {
+			if done != nil {
+				done(true)
+			}
+			return resp, adp, picked, nil
+		}
+
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		_ = resp.Body.Close()
+		class := adp.ClassifyError(resp.StatusCode, errBody)
+		if done != nil {
+			done(false)
+		}
+		lastErr = &upstreamClientError{class: class, status: resp.StatusCode}
+
+		log.Warn("upstream returned error", "attempt", attempt, "channel_id", picked.Channel.ID,
+			"key_id", picked.Key.ID, "status", resp.StatusCode, "class", class)
+
+		if !class.Retryable() {
+			return nil, nil, nil, lastErr
+		}
+
+		switch class {
+		case adapter.ErrClassRateLimited:
+			d := retryAfter(resp.Header, s.Cfg.Retry.DefaultCooldown, s.Cfg.Retry.MaxCooldown)
+			if s.Health != nil {
+				s.Health.CooldownKey(ctx, picked.Key.ID, d)
+			}
+			excludedKeys[picked.Key.ID] = true
+		case adapter.ErrClassKeyExhausted, adapter.ErrClassKeyInvalid:
+			// 技术方案 §7.6：这类问题本质上需要人工介入（换 Key/充值），这里先用较长的
+			// 冷却时间近似"标记失效"，避免同一 Key 在短时间内被反复选中；DB 状态更新与
+			// 告警是运维工具的职责，留作后续（worker 或 admin 侧）。
+			if s.Health != nil {
+				s.Health.CooldownKey(ctx, picked.Key.ID, s.Cfg.Retry.KeyDownCooldown)
+			}
+			excludedKeys[picked.Key.ID] = true
+		case adapter.ErrClassUpstreamUnavailable:
+			excludedChannels[picked.Channel.ID] = true
+		}
+	}
+
+	return nil, nil, nil, fmt.Errorf("relay: exhausted %d attempts: %w", maxAttempts, lastErr)
+}
+
+// retryAfter 解析上游的 Retry-After 头（RFC 7231，秒数形式；HTTP-date 形式不常见，
+// 这里不处理，回退到默认值），并夹在 [0, max] 范围内。
+func retryAfter(h http.Header, def, max time.Duration) time.Duration {
+	v := h.Get("Retry-After")
+	if v == "" {
+		return def
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return def
+	}
+	d := time.Duration(secs) * time.Second
+	if max > 0 && d > max {
+		return max
+	}
+	return d
 }
 
 func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request,

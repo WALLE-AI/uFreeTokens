@@ -1,6 +1,7 @@
 // 端到端集成测试：真实启动 app.NewGatewayRouter（和 cmd/gateway/main.go 一样的装配方式），
-// 打真实 HTTP 请求，上游用 httptest mock server 顶替，账户/钱包/价格数据写入真实
-// PostgreSQL（tools/devdb，无需 Docker）。验证的是"鉴权 -> 路由 -> 转发 -> 计费"这条
+// 打真实 HTTP 请求，上游用 httptest mock server 顶替，账户/钱包/价格/健康度数据分别
+// 写入真实 PostgreSQL 和 Redis（tools/devdb + 本机 Redis/Memurai，无需 Docker）。
+// 验证的是"鉴权 -> 预扣 -> 路由 -> 转发 -> (失败时换 Key/换渠道重试) -> 结算"这条
 // 完整链路真的能跑通，而不只是各个包的单元测试凑在一起。
 //
 // 用 relay_test 这个外部测试包（而不是 relay 包内部测试），是因为需要引用
@@ -18,16 +19,19 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
@@ -35,6 +39,7 @@ import (
 )
 
 const defaultTestDSN = "postgres://uft:uft@localhost:5432/uft?sslmode=disable"
+const defaultTestRedisAddr = "localhost:6379"
 const testPepper = "relay-e2e-test-pepper"
 
 func testPool(t *testing.T) *pgxpool.Pool {
@@ -58,15 +63,43 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+func testRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	addr := os.Getenv("UFT_TEST_REDIS_ADDR")
+	if addr == "" {
+		addr = defaultTestRedisAddr
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		t.Skipf("skipping: redis not reachable at %s: %v", addr, err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func testBox(t *testing.T) *secretbox.Box {
+	t.Helper()
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	box, err := secretbox.NewBox(base64.StdEncoding.EncodeToString(b))
+	if err != nil {
+		t.Fatalf("NewBox: %v", err)
+	}
+	return box
+}
+
+// --- 可组合的种子数据函数：每个测试按需拼出自己的 account/channel/key 拓扑 ---
+
 type fixture struct {
 	pool      *pgxpool.Pool
 	accountID int64
 	apiKey    string
 }
 
-// seed 建一个账户（带余额）+ API Key + 指向 upstreamURL 的完整 Provider/Channel/Price 链，
-// 虚拟模型名带随机后缀避免测试之间互相干扰（不同测试并行/重复运行时不会撞名字）。
-func seed(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL string, cashMicro int64) (fx fixture, vmName string) {
+func seedAccount(t *testing.T, pool *pgxpool.Pool, cashMicro int64) fixture {
 	t.Helper()
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -92,6 +125,14 @@ func seed(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL stri
 	); err != nil {
 		t.Fatalf("insert api_key: %v", err)
 	}
+	return fixture{pool: pool, accountID: accountID, apiKey: key.Raw}
+}
+
+// seedProviderAccount 建一个指向 upstreamURL 的 provider + provider_account，返回其 ID。
+func seedProviderAccount(t *testing.T, pool *pgxpool.Pool, upstreamURL string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var providerID int64
 	if err := pool.QueryRow(ctx,
@@ -108,35 +149,40 @@ func seed(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL stri
 	).Scan(&accID); err != nil {
 		t.Fatalf("insert provider_account: %v", err)
 	}
+	return accID
+}
 
-	sealed, err := box.Seal("sk-mock-upstream-secret")
+// seedKey 给某个 provider_account 添加一个上游 Key，明文 secret 由调用方指定
+// （用于在 mock 上游里按 Authorization 头区分"这是哪个 Key 发起的请求"）。返回 Key 的 DB ID。
+func seedKey(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, accountID int64, secret string) int64 {
+	t.Helper()
+	sealed, err := box.Seal(secret)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	var keyID int64
+	if err := pool.QueryRow(context.Background(),
 		`INSERT INTO provider_keys (provider_account_id, secret_ciphertext, secret_dek_wrapped, secret_last4, weight, status)
-		 VALUES ($1, $2, $3, 'cret', 100, 'active')`,
-		accID, sealed.Ciphertext, sealed.WrappedDEK,
-	); err != nil {
+		 VALUES ($1, $2, $3, 'cret', 100, 'active') RETURNING id`,
+		accountID, sealed.Ciphertext, sealed.WrappedDEK,
+	).Scan(&keyID); err != nil {
 		t.Fatalf("insert provider_key: %v", err)
 	}
+	return keyID
+}
 
-	vmName = "e2e-model-" + suffix
-	var vmID int64
+// seedVirtualModel 建一个虚拟模型 + 对应的售价（1 元/百万 token，方便手算预期扣费）。
+func seedVirtualModel(t *testing.T, pool *pgxpool.Pool) (vmID int64, vmName string) {
+	t.Helper()
+	ctx := context.Background()
+	vmName = fmt.Sprintf("e2e-model-%d", time.Now().UnixNano())
+
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO virtual_models (name, family, type, context_window, max_output, capabilities, visible_tiers, status)
 		 VALUES ($1, 'test', 'chat', 128000, 8192, '{stream}', '{free}', 'active') RETURNING id`,
 		vmName,
 	).Scan(&vmID); err != nil {
 		t.Fatalf("insert virtual_model: %v", err)
-	}
-
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, status)
-		 VALUES ($1, $2, 'mock-upstream-model', 0, 100, 'active')`,
-		vmID, accID,
-	); err != nil {
-		t.Fatalf("insert channel: %v", err)
 	}
 
 	var bookID int64
@@ -146,7 +192,6 @@ func seed(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL stri
 	).Scan(&bookID); err != nil {
 		t.Fatalf("insert price_book: %v", err)
 	}
-	// 1 元/百万 token，方便手算预期扣费。
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO price_components (price_book_id, meter, unit, service_tier, tier_min_input, unit_price)
 		 VALUES ($1,'input','per_1m_tokens','default',0,1), ($1,'output','per_1m_tokens','default',0,1)`,
@@ -154,23 +199,38 @@ func seed(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL stri
 	); err != nil {
 		t.Fatalf("insert price_components: %v", err)
 	}
-
-	return fixture{pool: pool, accountID: accountID, apiKey: key.Raw}, vmName
+	return vmID, vmName
 }
 
-func testBox(t *testing.T) *secretbox.Box {
+// seedChannel 把虚拟模型接到某个 provider_account 上，priority 越小越优先。
+func seedChannel(t *testing.T, pool *pgxpool.Pool, vmID, providerAccountID int64, priority int) int64 {
 	t.Helper()
-	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	box, err := secretbox.NewBox(base64.StdEncoding.EncodeToString(b))
-	if err != nil {
-		t.Fatalf("NewBox: %v", err)
+	var channelID int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, status)
+		 VALUES ($1, $2, 'mock-upstream-model', $3, 100, 'active') RETURNING id`,
+		vmID, providerAccountID, priority,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("insert channel: %v", err)
 	}
-	return box
+	return channelID
 }
 
-// newTestGateway 用和 cmd/gateway/main.go 相同的装配方式组一个可用的网关 http.Handler。
-func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box) http.Handler {
+// seedSimple 是最常用拓扑的便捷封装：1 账户 + 1 上游账号(1 Key) + 1 虚拟模型 + 1 渠道，
+// Key 的明文固定为 "sk-mock-upstream-secret"。
+func seedSimple(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL string, cashMicro int64) (fx fixture, vmName string) {
+	t.Helper()
+	fx = seedAccount(t, pool, cashMicro)
+	accID := seedProviderAccount(t, pool, upstreamURL)
+	seedKey(t, pool, box, accID, "sk-mock-upstream-secret")
+	vmID, name := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+	return fx, name
+}
+
+// newTestGateway 用和 cmd/gateway/main.go 相同的装配方式组一个可用的网关 http.Handler，
+// 包括真实 Redis 支撑的健康度/熔断注册表（每次调用都是全新的 Registry，测试间不会串状态）。
+func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client) http.Handler {
 	t.Helper()
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	relaySvc := &relay.Service{
@@ -178,6 +238,7 @@ func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box) http.H
 		Wallet:   wallet.New(pool),
 		Adapters: adapter.NewRegistry(),
 		HTTP:     http.DefaultClient,
+		Health:   health.NewRegistry(rdb, health.DefaultBreakerSettings()),
 		Logger:   logger,
 		Cfg:      relay.DefaultConfig(),
 	}
@@ -200,9 +261,21 @@ func getWalletBalance(t *testing.T, pool *pgxpool.Pool, accountID int64) (cash, 
 	return
 }
 
+func doChatCompletion(t *testing.T, gwURL, apiKey string, body map[string]any) *http.Response {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, gwURL+"/v1/chat/completions", strings.NewReader(string(raw)))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return resp
+}
+
 func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
-	pool := testPool(t)
-	box := testBox(t)
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
@@ -220,19 +293,13 @@ func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	fx, vmName := seed(t, pool, box, upstream.URL, 1_000_000) // 1 元
-	gw := httptest.NewServer(newTestGateway(t, pool, box))
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000) // 1 元
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
 	defer gw.Close()
 
-	reqBody, _ := json.Marshal(map[string]any{"model": vmName, "messages": []any{map[string]any{"role": "user", "content": "hi"}}})
-	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
-	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
+		"model": vmName, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
@@ -253,19 +320,7 @@ func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
 	// 用量 1000 input + 2000 output，单价都是 1 元/百万 token：
 	// (1000*1 + 2000*1) / 1e6 元 = 0.003 元 = 3000 微元。
 	wantCharge := int64(3000)
-
-	// 结算是 handler 返回响应之后、通过独立 context 异步完成的写入，但在 handler
-	// 返回给 HTTP 客户端之前已经在同一个函数调用栈里同步执行完（settleQuietly 内部
-	// 虽然用了 WithoutCancel，但没有另起 goroutine），所以这里直接读取应该已经生效；
-	// 加一个小的重试规避极端调度延迟，避免测试偶发失败。
-	var cash, frozen int64
-	for i := 0; i < 20; i++ {
-		cash, frozen = getWalletBalance(t, pool, fx.accountID)
-		if cash != 1_000_000 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	cash, frozen := awaitSettled(t, pool, fx.accountID, 1_000_000)
 	if cash != 1_000_000-wantCharge {
 		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
 	}
@@ -275,8 +330,7 @@ func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
 }
 
 func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
-	pool := testPool(t)
-	box := testBox(t)
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -294,18 +348,11 @@ func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	fx, vmName := seed(t, pool, box, upstream.URL, 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box))
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
 	defer gw.Close()
 
-	reqBody, _ := json.Marshal(map[string]any{"model": vmName, "stream": true, "messages": []any{}})
-	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
-	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "stream": true, "messages": []any{}})
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
@@ -321,43 +368,28 @@ func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
 
 	// 500 input + 100 output, 单价 1 元/百万 -> (500+100)/1e6 元 = 600 微元。
 	wantCharge := int64(600)
-	var cash int64
-	for i := 0; i < 20; i++ {
-		cash, _ = getWalletBalance(t, pool, fx.accountID)
-		if cash != 1_000_000 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
 	if cash != 1_000_000-wantCharge {
 		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
 	}
 }
 
 func TestChatCompletions_InsufficientBalance_Returns402AndChargesNothing(t *testing.T) {
-	pool := testPool(t)
-	box := testBox(t)
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("upstream should not be called when balance is insufficient")
 	}))
 	defer upstream.Close()
 
-	fx, vmName := seed(t, pool, box, upstream.URL, 0) // 余额为 0
-	gw := httptest.NewServer(newTestGateway(t, pool, box))
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 0) // 余额为 0
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
 	defer gw.Close()
 
-	reqBody, _ := json.Marshal(map[string]any{
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
 		"model": vmName, "max_tokens": float64(1000),
 		"messages": []any{map[string]any{"role": "user", "content": strings.Repeat("x", 2000)}},
 	})
-	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
-	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusPaymentRequired {
@@ -371,62 +403,252 @@ func TestChatCompletions_InsufficientBalance_Returns402AndChargesNothing(t *test
 	}
 }
 
-func TestChatCompletions_UpstreamError_ReleasesReservation(t *testing.T) {
-	pool := testPool(t)
-	box := testBox(t)
+func TestChatCompletions_ModelNotFound(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+	fx, _ := seedSimple(t, pool, box, "http://unused.invalid", 1_000_000)
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	defer gw.Close()
 
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": "does-not-exist", "messages": []any{}})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 404, body = %s", resp.StatusCode, body)
+	}
+}
+
+// TestChatCompletions_SingleKeyRateLimited_NoMoreOptionsReturns503 用单渠道单 Key，
+// 上游总是 429。换 Key 重试时发现没有别的 Key 可换，router 报告"无可用渠道"——
+// 这是技术方案 §7.7 里"重试耗尽 vs 彻底没有候选"两种情况中的后者，返回 503 而不是 502。
+func TestChatCompletions_SingleKeyRateLimited_NoMoreOptionsReturns503(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var calls int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
 	}))
 	defer upstream.Close()
 
-	fx, vmName := seed(t, pool, box, upstream.URL, 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box))
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
 	defer gw.Close()
 
-	reqBody, _ := json.Marshal(map[string]any{"model": vmName, "messages": []any{}})
-	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
-	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	defer resp.Body.Close()
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 503, body = %s", resp.StatusCode, body)
 	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("upstream call count = %d, want 1 (only one key exists, no point retrying it)", calls)
+	}
+
+	cash, frozen := getWalletBalance(t, pool, fx.accountID)
+	if cash != 1_000_000 || frozen != 0 {
+		t.Errorf("wallet mutated: cash=%d frozen=%d, want cash=1_000_000 frozen=0", cash, frozen)
+	}
+}
+
+// TestChatCompletions_BadRequest_DoesNotRetry 验证 400 类错误不会触发任何重试——
+// 换 Key/换渠道对"请求本身有问题"无济于事，还可能被误用于规避内容审核。
+func TestChatCompletions_BadRequest_DoesNotRetry(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid request"}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400, body = %s", resp.StatusCode, body)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("upstream call count = %d, want exactly 1 (400 must not be retried)", got)
+	}
+
+	cash, frozen := getWalletBalance(t, pool, fx.accountID)
+	if cash != 1_000_000 || frozen != 0 {
+		t.Errorf("wallet mutated: cash=%d frozen=%d", cash, frozen)
+	}
+}
+
+// TestChatCompletions_RetriesAcrossKeys_SucceedsWithSecondKey 同一渠道两个 Key，
+// 一个总是 429，另一个总是成功——无论 router 先随机选到哪一个，最终都应该在
+// MaxAttempts(3) 以内换到能用的 Key 并成功计费。
+func TestChatCompletions_RetriesAcrossKeys_SucceedsWithSecondKey(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	const goodSecret = "sk-good-key"
+	const badSecret = "sk-bad-key"
+	var goodCalls, badCalls int32
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + goodSecret:
+			atomic.AddInt32(&goodCalls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}`))
+		case "Bearer " + badSecret:
+			atomic.AddInt32(&badCalls, 1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+		default:
+			t.Errorf("unexpected Authorization header: %q", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccount(t, pool, upstream.URL)
+	seedKey(t, pool, box, accID, goodSecret)
+	seedKey(t, pool, box, accID, badSecret)
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (should eventually succeed via the good key), body = %s", resp.StatusCode, body)
+	}
+	if atomic.LoadInt32(&goodCalls) != 1 {
+		t.Errorf("good key call count = %d, want 1", goodCalls)
+	}
+
+	// 150 token 合计（100 input + 50 output），单价 1 元/百万 -> 150 微元。
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-150 {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-150)
+	}
+}
+
+// TestChatCompletions_RetriesAcrossChannels_FallsBackOnUpstreamUnavailable 验证主渠道
+// 5xx 时会切换到备用渠道（priority 更大），而不是直接失败——优先级分层是确定性的，
+// 所以这个测试不依赖随机数，每次都应该先打到 primary 再打到 fallback。
+func TestChatCompletions_RetriesAcrossChannels_FallsBackOnUpstreamUnavailable(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var primaryCalls int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&primaryCalls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"internal error"}}`))
+	}))
+	defer primary.Close()
+
+	var fallbackCalls int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fallbackCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 200, "completion_tokens": 300}}`))
+	}))
+	defer fallback.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	primaryAcc := seedProviderAccount(t, pool, primary.URL)
+	seedKey(t, pool, box, primaryAcc, "sk-primary")
+	fallbackAcc := seedProviderAccount(t, pool, fallback.URL)
+	seedKey(t, pool, box, fallbackAcc, "sk-fallback")
+
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, primaryAcc, 0)  // priority 0：主
+	seedChannel(t, pool, vmID, fallbackAcc, 1) // priority 1：备
+
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (should fall back to the secondary channel), body = %s", resp.StatusCode, body)
+	}
+	if atomic.LoadInt32(&primaryCalls) != 1 {
+		t.Errorf("primary call count = %d, want 1 (must have been tried first, deterministically)", primaryCalls)
+	}
+	if atomic.LoadInt32(&fallbackCalls) != 1 {
+		t.Errorf("fallback call count = %d, want 1", fallbackCalls)
+	}
+
+	// 500 token 合计（200 input + 300 output）-> 500 微元。
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-500 {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-500)
+	}
+}
+
+// TestChatCompletions_ExhaustsMaxAttempts_Returns502 用 3 个 Key（>= 默认 MaxAttempts=3）
+// 全部返回 429，验证重试预算耗尽后返回 502（而不是"无可用渠道"的 503——此时明明还有
+// 没试过的 Key，只是攒够了尝试次数，语义上更接近"上游一直不给面子"）。
+func TestChatCompletions_ExhaustsMaxAttempts_Returns502(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccount(t, pool, upstream.URL)
+	seedKey(t, pool, box, accID, "sk-1")
+	seedKey(t, pool, box, accID, "sk-2")
+	seedKey(t, pool, box, accID, "sk-3")
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	gw := httptest.NewServer(newTestGateway(t, pool, box, rdb))
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadGateway {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 502, body = %s", resp.StatusCode, body)
 	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("upstream call count = %d, want 3 (default MaxAttempts, 3 distinct keys available)", got)
+	}
 
 	cash, frozen := getWalletBalance(t, pool, fx.accountID)
-	if cash != 1_000_000 {
-		t.Errorf("cash_balance = %d, want unchanged 1_000_000 (failed upstream call must not charge)", cash)
-	}
-	if frozen != 0 {
-		t.Errorf("frozen = %d, want 0 (reservation must be released on upstream failure)", frozen)
+	if cash != 1_000_000 || frozen != 0 {
+		t.Errorf("wallet mutated: cash=%d frozen=%d, want cash=1_000_000 frozen=0", cash, frozen)
 	}
 }
 
-func TestChatCompletions_ModelNotFound(t *testing.T) {
-	pool := testPool(t)
-	box := testBox(t)
-	fx, _ := seed(t, pool, box, "http://unused.invalid", 1_000_000)
-	gw := httptest.NewServer(newTestGateway(t, pool, box))
-	defer gw.Close()
-
-	reqBody, _ := json.Marshal(map[string]any{"model": "does-not-exist", "messages": []any{}})
-	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(reqBody)))
-	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
+// awaitSettled 轮询等待结算完成（settleQuietly 在 handler 返回响应前同步执行，
+// 但给一点余量规避极端调度延迟），返回最终余额。
+func awaitSettled(t *testing.T, pool *pgxpool.Pool, accountID, unsettledCash int64) (cash, frozen int64) {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		cash, frozen = getWalletBalance(t, pool, accountID)
+		if cash != unsettledCash {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 404, body = %s", resp.StatusCode, body)
-	}
+	return
 }

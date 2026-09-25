@@ -16,12 +16,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
@@ -77,7 +79,7 @@ func run() error {
 	metrics := observability.NewMetrics(prometheus.DefaultRegisterer)
 	authStore := auth.NewPostgresStore(pg)
 
-	relaySvc, err := buildRelayService(pg, cfg, logger)
+	relaySvc, err := buildRelayService(pg, rdb, cfg, logger)
 	if err != nil {
 		// KEK 缺失/格式错误时不应该让整个网关起不来——没有它只是意味着
 		// /v1/chat/completions 继续返回 503（未实现），其余端点仍然可用，
@@ -148,8 +150,8 @@ func run() error {
 }
 
 // buildRelayService 组装 relay.Service 所需的全部依赖：解密上游 Key 的信封加密盒、
-// 配置快照 Store、钱包引擎、协议适配器注册表、面向上游的 HTTP 客户端。
-func buildRelayService(pg *pgxpool.Pool, cfg *config.Config, logger *slog.Logger) (*relay.Service, error) {
+// 配置快照 Store、钱包引擎、协议适配器注册表、健康度/熔断注册表、面向上游的 HTTP 客户端。
+func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, logger *slog.Logger) (*relay.Service, error) {
 	kekB64 := os.Getenv(cfg.Secrets.KEKEnv)
 	if kekB64 == "" {
 		return nil, fmt.Errorf("env %s is required (upstream key envelope encryption KEK)", cfg.Secrets.KEKEnv)
@@ -162,6 +164,8 @@ func buildRelayService(pg *pgxpool.Pool, cfg *config.Config, logger *slog.Logger
 	catalogStore := catalog.NewStore(pg, box, catalogTTL)
 	walletSvc := wallet.New(pg)
 	registry := adapter.NewRegistry()
+	// Key 冷却经 Redis 跨实例共享；渠道熔断器是进程内的（各实例独立统计），见 internal/health。
+	healthRegistry := health.NewRegistry(rdb, health.DefaultBreakerSettings())
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -181,6 +185,7 @@ func buildRelayService(pg *pgxpool.Pool, cfg *config.Config, logger *slog.Logger
 		Wallet:   walletSvc,
 		Adapters: registry,
 		HTTP:     httpClient,
+		Health:   healthRegistry,
 		Logger:   logger,
 		Cfg:      relay.DefaultConfig(),
 	}, nil
