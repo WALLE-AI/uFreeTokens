@@ -33,6 +33,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/promotion"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
@@ -218,6 +219,48 @@ func seedChannel(t *testing.T, pool *pgxpool.Pool, vmID, providerAccountID int64
 	return channelID
 }
 
+// seedPriceDiscountPromotion 种一条对全部模型/tier 生效的打折促销（见 internal/promotion）。
+// seedPriceDiscountPromotion 种一条打折促销。scope 限定到 vmName——`go test ./...`
+// 会并发跑不同包的测试二进制，internal/promotion 的测试也在同一个真实数据库里插
+// 促销数据；如果这里种成"不限模型"，两边的促销会互相串扰（之前真的因为这个栽过，
+// 见对应的提交历史），所以促销必须限定到本次测试专属、带随机后缀的虚拟模型名。
+func seedPriceDiscountPromotion(t *testing.T, pool *pgxpool.Pool, vmName string, discount float64) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO promotions (name, side, type, priority, scope, params, starts_at, status)
+		 VALUES ($1, 'sell', 'price_discount', 0, $2, $3, now() - interval '1 hour', 'active') RETURNING id`,
+		fmt.Sprintf("e2e-discount-%d", time.Now().UnixNano()), map[string]any{"models": []string{vmName}}, map[string]any{"discount": discount},
+	).Scan(&id); err != nil {
+		t.Fatalf("seed price_discount promotion: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM promotions WHERE id = $1`, id)
+	})
+	return id
+}
+
+// seedFreeQuotaPromotion 种一条每日免费额度促销，同样限定到 vmName（理由同上）。
+func seedFreeQuotaPromotion(t *testing.T, pool *pgxpool.Pool, vmName string, dailyAmountMicro int64) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO promotions (name, side, type, priority, scope, params, starts_at, status)
+		 VALUES ($1, 'sell', 'free_quota', 0, $2, $3, now() - interval '1 hour', 'active') RETURNING id`,
+		fmt.Sprintf("e2e-freequota-%d", time.Now().UnixNano()), map[string]any{"models": []string{vmName}},
+		map[string]any{"period": "daily", "amount_micro": dailyAmountMicro},
+	).Scan(&id); err != nil {
+		t.Fatalf("seed free_quota promotion: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM promotion_counters WHERE promotion_id = $1`, id)
+		_, _ = pool.Exec(ctx, `DELETE FROM promotions WHERE id = $1`, id)
+	})
+	return id
+}
+
 // seedSimple 是最常用拓扑的便捷封装：1 账户 + 1 上游账号(1 Key) + 1 虚拟模型 + 1 渠道，
 // Key 的明文固定为 "sk-mock-upstream-secret"。
 func seedSimple(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL string, cashMicro int64) (fx fixture, vmName string) {
@@ -245,6 +288,7 @@ func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *r
 		HTTP:      http.DefaultClient,
 		Health:    health.NewRegistry(rdb, health.DefaultBreakerSettings()),
 		RateLimit: ratelimit.New(rdb, logger),
+		Promotion: promotion.New(pool),
 		ReqLog:    reqLogWriter,
 		Logger:    logger,
 		Cfg:       relay.DefaultConfig(),
@@ -907,6 +951,95 @@ func TestChatCompletions_ConcurrencyLimitReturns429(t *testing.T) {
 	if third.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(third.Body)
 		t.Errorf("third request status = %d, want 200 (concurrency slot should be released), body = %s", third.StatusCode, body)
+	}
+}
+
+// TestChatCompletions_PriceDiscountPromotion_ReducesCharge 验证命中打折促销时，
+// 实扣金额按折扣计算，且 request_logs 里 list_amount(原价) != charged_amount(实扣)，
+// promotion_ids 包含命中的促销 ID（端到端贯穿 relay -> promotion -> wallet -> reqlog）。
+func TestChatCompletions_PriceDiscountPromotion_ReducesCharge(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1000, "completion_tokens": 1000}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	seedPriceDiscountPromotion(t, pool, vmName, 0.5) // 5 折
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	reqLogW.Close()
+
+	// 2000 token 合计，单价 1 元/百万 -> 原价 2000 微元，5 折后实扣 1000 微元。
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-1000 {
+		t.Errorf("cash_balance = %d, want %d (list 2000 discounted 50%% to 1000)", cash, 1_000_000-1000)
+	}
+
+	var listAmount, chargedAmount *int64
+	var promotionIDs []int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT list_amount, charged_amount, promotion_ids FROM request_logs WHERE request_id = $1`, requestID,
+	).Scan(&listAmount, &chargedAmount, &promotionIDs); err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+	if listAmount == nil || *listAmount != 2000 {
+		t.Errorf("list_amount = %v, want 2000", listAmount)
+	}
+	if chargedAmount == nil || *chargedAmount != 1000 {
+		t.Errorf("charged_amount = %v, want 1000", chargedAmount)
+	}
+	if len(promotionIDs) != 1 {
+		t.Errorf("promotion_ids = %v, want exactly 1 entry", promotionIDs)
+	}
+}
+
+// TestChatCompletions_FreeQuotaPromotion_CoversUsage 验证免费额度促销命中时不扣费。
+func TestChatCompletions_FreeQuotaPromotion_CoversUsage(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 500, "completion_tokens": 500}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	seedFreeQuotaPromotion(t, pool, vmName, 1_000_000) // 每天 1 元免费额度，远超本次用量
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	// 结算发生在 handler 写响应之前（settleQuietly 是同步调用，见 relay.go），
+	// 客户端已经收到响应，说明结算必然已完成，不需要像其它用例那样轮询等待变化
+	// ——这里恰恰是要断言余额"没有变化"，轮询等待变化只会白白等满整个超时。
+	cash, frozen := getWalletBalance(t, pool, fx.accountID)
+	if cash != 1_000_000 {
+		t.Errorf("cash_balance = %d, want unchanged 1_000_000 (usage fully covered by free quota)", cash)
+	}
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0", frozen)
 	}
 }
 

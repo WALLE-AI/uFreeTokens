@@ -33,6 +33,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
+	"github.com/WALLE-AI/uFreeTokens/internal/promotion"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
 	"github.com/WALLE-AI/uFreeTokens/internal/router"
@@ -84,21 +85,23 @@ type Service struct {
 	HTTP      *http.Client
 	Health    *health.Registry   // nil = 不做熔断/冷却过滤，退化为"每次都从全部候选里选"
 	RateLimit *ratelimit.Limiter // nil = 不做 RPM/TPM/并发限流（技术方案 §7.12）
+	Promotion *promotion.Engine  // nil = 不匹配促销，一律按原价结算（技术方案 §7.10）
 	ReqLog    *reqlog.Writer     // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
 	Logger    *slog.Logger
 	Cfg       Config
 }
 
-// requestMeta 收拢一次请求里贯穿始终、用于最后写 request_logs 的公共字段。
+// requestMeta 收拢一次请求里贯穿始终、用于最后写 request_logs / 匹配促销的公共字段。
 type requestMeta struct {
-	requestID string
-	accountID int64
-	apiKeyID  int64
-	vmName    string
-	isStream  bool
-	clientIP  string
-	userAgent string
-	start     time.Time
+	requestID   string
+	accountID   int64
+	apiKeyID    int64
+	accountTier string
+	vmName      string
+	isStream    bool
+	clientIP    string
+	userAgent   string
+	start       time.Time
 }
 
 // ChatCompletions 是 POST /v1/chat/completions 的 http.HandlerFunc。
@@ -202,7 +205,8 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	meta := requestMeta{
 		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
-		vmName: vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
+		accountTier: principal.AccountTier,
+		vmName:      vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 	}
 
 	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
@@ -436,9 +440,9 @@ func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.
 		log.Warn("upstream did not return usage, using conservative fallback", "request_id", meta.requestID)
 	}
 
-	charged := s.settleQuietly(ctx, log, meta.requestID, sellBook, usage)
+	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
-	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, charged)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID)
 }
 
 func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
@@ -478,8 +482,8 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 		usage = fallbackUsage(estInput, reserveOutput)
 		log.Warn("stream ended without usage, using conservative fallback", "request_id", meta.requestID)
 	}
-	charged := s.settleQuietly(ctx, log, meta.requestID, sellBook, usage)
-	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, charged)
+	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
+	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID)
 }
 
 // releaseQuietly / settleQuietly：结算失败不应该影响已经发给客户端的响应
@@ -491,22 +495,37 @@ func (s *Service) releaseQuietly(log *slog.Logger, requestID string) {
 	}
 }
 
-func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, requestID string, book pricing.Book, usage schema.Usage) int64 {
-	amount, _ := pricing.Charge(book, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
-	// 用独立的、不随 HTTP 请求取消的 context：客户端断开不应该导致结算被跳过
+// settleQuietly 计算原价、按促销引擎算出实扣价（若配置了 Promotion），再结算钱包。
+// 返回 (原价, 实扣价, 命中的促销 ID)，供 request_logs 记录完整的计费快照。
+func (s *Service) settleQuietly(ctx context.Context, log *slog.Logger, meta requestMeta, book pricing.Book, usage schema.Usage) (list, charged int64, promotionID *int64) {
+	list, _ = pricing.Charge(book, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
+	charged = list
+
+	// 用独立的、不随 HTTP 请求取消的 context：客户端断开不应该导致结算/促销扣减被跳过
 	// （技术方案 §7.8："无论成功、失败、断开，defer 中都执行结算"）。
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, err := s.Wallet.Settle(settleCtx, requestID, amount); err != nil {
-		log.Error("settle failed", "error", err, "amount", amount)
+
+	if s.Promotion != nil {
+		c, promoID, err := s.Promotion.Quote(settleCtx, meta.accountID, meta.accountTier, meta.vmName, list)
+		if err != nil {
+			// 促销引擎故障不应该阻塞计费：退回按原价收取，只记日志。
+			log.Error("promotion quote failed, charging list price", "error", err)
+		} else {
+			charged, promotionID = c, promoID
+		}
 	}
-	return amount
+
+	if _, err := s.Wallet.Settle(settleCtx, meta.requestID, charged); err != nil {
+		log.Error("settle failed", "error", err, "amount", charged)
+	}
+	return list, charged, promotionID
 }
 
 // logSuccess / logFailure 把一次请求的结果异步写入 request_logs（§6.8/§7.13）。
 // s.ReqLog 为 nil 时 Write 是安全的 no-op（见 reqlog.Writer 的方法注释）。
 func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []reqlog.AttemptTraceEntry,
-	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, charged int64) {
+	httpStatus int, ttftMs int64, usage schema.Usage, sellBookID int64, list, charged int64, promotionID *int64) {
 
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
@@ -522,8 +541,11 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 	if sellBookID != 0 {
 		rec.SellBookID = &sellBookID
 	}
-	rec.ListAmount = &charged // 促销引擎接入前，原价恒等于实扣价
+	rec.ListAmount = &list
 	rec.ChargedAmount = &charged
+	if promotionID != nil {
+		rec.PromotionIDs = []int64{*promotionID}
+	}
 
 	s.ReqLog.Write(rec)
 }

@@ -35,21 +35,29 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 - `internal/ratelimit`：按 API Key 的 RPM（GCRA，`go-redis/redis_rate`）、TPM（固定窗口，
   Lua 脚本原子扣减）、并发（有序集合模拟租约，Lua 脚本原子获取/回收）三种限流（§7.12）。
   全部 fail-open：Redis 不可用时放行而不是拒绝所有请求。
+- `internal/promotion`：促销引擎的售价侧实现（§7.10）——`price_discount`（按比例打折，
+  可选预算上限）和 `free_quota`（每日/每月一定金额内免费，超出正常计费），两者的
+  额度/预算扣减都用数据库事务 + 条件更新原子完成，并发下不会超发（并发回归测试：
+  quota=10000、20 个并发请求各申请 1000，覆盖总量精确等于 10000）。
 - `internal/relay`：把以上全部串起来的请求编排层——鉴权 → 限流 → 预扣费用 → 路由 →
-  转发（失败时换 Key/换渠道重试，只在拿到上游响应之前重试，见 §7.7）→ 结算 →
-  异步写入 request_logs。
-  13 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
+  转发（失败时换 Key/换渠道重试，只在拿到上游响应之前重试，见 §7.7）→ 促销匹配 →
+  结算 → 异步写入 request_logs。
+  15 个端到端集成测试（真实 HTTP 请求 + mock 上游 + 真实 Postgres/Redis）覆盖：
   非流式/流式计费、余额不足拒绝、模型不存在、400 不重试、429 换 Key 成功、
   5xx 换渠道回退成功、重试预算耗尽、唯一 Key 失效后无可用渠道、
   成功/失败两种场景下 request_logs 落盘的完整性（含 attempt_trace）、
-  RPM 限流（带 Retry-After）、并发限流（含释放后恢复正常）。
+  RPM 限流（带 Retry-After）、并发限流（含释放后恢复正常）、
+  打折促销降低实扣金额、免费额度促销覆盖用量。
 
 尚未接入：全局重试预算限流（§7.7 的"每实例每秒重试数 ≤ 正常请求数 20%"）、
-基于实时延迟/成功率的动态路由权重（§7.5.2）、促销引擎、账户级限流默认值继承
-（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按"不限制"处理，而不是继承账户级配置）、
-Anthropic/Gemini 适配器。另外 request_logs 目前只记录"预扣成功、进入路由/转发"之后的结果
-（成功或上游失败）；鉴权失败、余额不足、模型不存在、限流拒绝等预扣之前的拒绝
-还只有结构化访问日志，不落 request_logs。
+基于实时延迟/成功率的动态路由权重（§7.5.2）、促销的 cost 面（上游免费/折扣，
+需要 catalog 加载成本价，见 internal/catalog 包注释）、`credit_grant` 类促销
+（赠送余额的发放不难，但要花掉它需要 wallet.Settle 支持从 bonus_balance 扣款，
+目前只扣 cash_balance）、stackable=true 的多促销叠加（本阶段只应用命中的最高优先级
+一条）、账户级限流默认值继承（api_keys 的 rpm/tpm/concurrency_limit 为 NULL 时按
+"不限制"处理，而不是继承账户级配置）、Anthropic/Gemini 适配器。另外 request_logs
+目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；鉴权失败、
+余额不足、模型不存在、限流拒绝等预扣之前的拒绝还只有结构化访问日志，不落 request_logs。
 
 ## 快速开始（无 Docker）
 
