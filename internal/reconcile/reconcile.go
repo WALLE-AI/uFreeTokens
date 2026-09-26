@@ -1,13 +1,16 @@
-// Package reconcile 实现内部一致性对账（技术方案 §7.11 的第一、二类对账）：
+// Package reconcile 实现三类对账（技术方案 §7.11、§7.16.8）：
 //
 //  1. 钱包内部一致性：wallets.cash_balance 应该等于该账户全部现金流水
 //     （ledger_entries, balance_kind='cash'）之和；wallets.frozen 应该等于
 //     该账户当前处于 held 状态的预扣金额之和。
 //  2. 账本 vs 请求日志：某个时间窗口内，ledger_entries 里的消费总额应该等于
 //     request_logs 里成功请求的 charged_amount 总额。
-//
-// 第三类对账（成本 vs 上游账单，§7.11）依赖 catalog 加载成本价（尚未实现，
-// 见 internal/catalog 包注释），留作后续。
+//  3. 账单级对账（billing.go，§7.16.8）：按"渠道 × 模型 × 天"比较本地成本
+//     （request_logs.cost_amount）与上游账单（BillingFetcher，L1 来源）。
+//     这里只搭好框架和比对逻辑——没有真实上游账单 API 的凭据无法验证任何具体
+//     实现是否正确，各家认证方式/明细粒度/时区处理也都不一样，接一个新
+//     BillingFetcher 实现留给后续按需接入；测试只用 MockBillingFetcher，不发
+//     任何真实网络请求。
 //
 // 这里只发现问题、上报，不自动修复——账本、余额这类数据出现不一致本身就说明
 // 某处逻辑或者某次人工操作绕开了应有的路径，自动"纠正"很可能是在掩盖问题而不是
