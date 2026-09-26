@@ -628,6 +628,73 @@ func TestChatCompletions_AnthropicProtocol_Stream_TranslatesAndCharges(t *testin
 	}
 }
 
+// TestChatCompletions_GeminiProtocol_NonStream_TranslatesAndCharges 是
+// GeminiAdapter 的网关级验证，和上面 Anthropic 的两条测试是同一个思路：
+// 一个 providers.protocol='gemini' 的渠道要能走完整链路，而不只是适配器单测通过。
+func TestChatCompletions_GeminiProtocol_NonStream_TranslatesAndCharges(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, ":generateContent") {
+			t.Errorf("upstream got unexpected path %q, want suffix :generateContent", r.URL.Path)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "sk-mock-gemini-secret" {
+			t.Errorf("upstream x-goog-api-key = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates": [{"content":{"parts":[{"text":"hi there"}]},"finishReason":"STOP"}],
+			"usageMetadata": {"promptTokenCount": 1000, "candidatesTokenCount": 2000}
+		}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000) // 1 元
+	accID := seedProviderAccountWithProtocol(t, pool, upstream.URL, "gemini")
+	seedKey(t, pool, box, accID, "sk-mock-gemini-secret")
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
+		"model":    vmName,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, respBody)
+	}
+	if m["model"] != vmName {
+		t.Errorf("model = %v, want %v (must not leak upstream model name)", m["model"], vmName)
+	}
+	choices, _ := m["choices"].([]any)
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message["content"] != "hi there" {
+		t.Errorf("message.content = %v, want %q", message["content"], "hi there")
+	}
+
+	// 1000 input + 2000 output，单价都是 1 元/百万 token -> 3000 微元。
+	wantCharge := int64(3000)
+	cash, frozen := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0 (reservation must be fully settled)", frozen)
+	}
+}
+
 func TestChatCompletions_InsufficientBalance_Returns402AndChargesNothing(t *testing.T) {
 	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 

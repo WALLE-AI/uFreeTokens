@@ -22,7 +22,7 @@ type Provider struct {
 type CreateProviderInput struct {
 	Code     string
 	Name     string
-	Protocol string // openai / anthropic / gemini；gemini 目前还没有适配器实现（internal/adapter）
+	Protocol string // openai / anthropic / gemini（三者都已有适配器实现，见 internal/adapter）
 }
 
 func (s *Service) CreateProvider(ctx context.Context, in CreateProviderInput) (*Provider, error) {

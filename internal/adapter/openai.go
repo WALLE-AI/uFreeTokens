@@ -48,6 +48,7 @@ func NewRegistry() *Registry {
 	r := &Registry{byProtocol: map[string]Adapter{}}
 	r.Register(&OpenAIAdapter{})
 	r.Register(&AnthropicAdapter{})
+	r.Register(&GeminiAdapter{})
 	return r
 }
 
