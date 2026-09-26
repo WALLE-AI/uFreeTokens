@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>uFreeTokens · 用户联调页</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; line-height: 1.5; }
+  h1 { font-size: 20px; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  section h2 { margin-top: 0; font-size: 15px; }
+  label { display: block; font-size: 13px; opacity: .8; margin-top: 8px; }
+  input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; margin-top: 2px; font-family: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  button { margin-top: 10px; margin-right: 8px; padding: 6px 14px; cursor: pointer; }
+  .hint { font-size: 12px; opacity: .65; }
+  .reply { border: 1px solid #8884; border-radius: 6px; padding: 10px; margin-top: 10px; white-space: pre-wrap; }
+  .usage { font-size: 12px; opacity: .7; margin-top: 6px; }
+  #log { background: #0003; border-radius: 6px; padding: 8px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+  .err { color: #d33; }
+  .ok { color: #2a8; }
+</style>
+</head>
+<body>
+
+<h1>uFreeTokens 用户联调页</h1>
+<p class="hint">
+  这个页面模拟一个真实用户：拿一把 API Key，看能看到哪些模型，然后真的发一条消息、拿真实上游的回复。
+  所有请求都发到当前这个页面的同源地址（即 cmd/gateway）。
+</p>
+
+<section>
+  <h2>1. API Key</h2>
+  <label>把管理员页面生成的 Key 粘贴到这里</label>
+  <input id="apiKey" type="password" placeholder="sk-uft-...">
+  <button onclick="connect()">连接，拉取可用模型</button>
+  <div id="connectResult"></div>
+</section>
+
+<section>
+  <h2>2. 聊天</h2>
+  <label>模型</label>
+  <select id="modelSelect"><option value="">（先连接）</option></select>
+  <label>消息</label>
+  <textarea id="message">你好，请用一句话介绍一下你自己。</textarea>
+  <button onclick="send()">发送</button>
+  <div id="chatResult"></div>
+</section>
+
+<section>
+  <h2>日志</h2>
+  <div id="log"></div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+$('apiKey').value = localStorage.getItem('uft_api_key') || '';
+$('apiKey').addEventListener('input', () => localStorage.setItem('uft_api_key', $('apiKey').value));
+
+function log(line, cls) {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = line;
+  const box = $('log');
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function call(method, path, body) {
+  const headers = {};
+  const key = $('apiKey').value.trim();
+  if (key) headers['Authorization'] = 'Bearer ' + key;
+  if (body) headers['Content-Type'] = 'application/json';
+  log(`--> ${method} ${path}${body ? ' ' + JSON.stringify(body) : ''}`);
+  let resp, text;
+  try {
+    resp = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    text = await resp.text();
+  } catch (e) {
+    log(`<-- network error: ${e}`, 'err');
+    throw e;
+  }
+  let json;
+  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const cls = resp.ok ? 'ok' : 'err';
+  log(`<-- ${resp.status} ${text}`, cls);
+  if (!resp.ok) throw new Error(`${method} ${path} -> ${resp.status}: ${text}`);
+  return json;
+}
+
+async function connect() {
+  try {
+    const res = await call('GET', '/v1/models', null);
+    const models = res.data || [];
+    const sel = $('modelSelect');
+    sel.innerHTML = '';
+    if (models.length === 0) {
+      sel.innerHTML = '<option value="">（这个账户看不到任何模型）</option>';
+      $('connectResult').innerHTML = '<span class="err">没有可用模型——检查一下管理员页面是否已经导入并发布了售价</span>';
+      return;
+    }
+    models.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      sel.appendChild(opt);
+    });
+    $('connectResult').innerHTML = `<span class="ok">拿到 ${models.length} 个模型</span>`;
+  } catch (e) { /* 已经记进日志了 */ }
+}
+
+async function send() {
+  try {
+    const model = $('modelSelect').value;
+    const message = $('message').value.trim();
+    if (!model) { log('先连接、选一个模型', 'err'); return; }
+    if (!message) { log('消息不能为空', 'err'); return; }
+
+    const res = await call('POST', '/v1/chat/completions', {
+      model,
+      messages: [{ role: 'user', content: message }],
+    });
+    const reply = res.choices && res.choices[0] && res.choices[0].message ? res.choices[0].message.content : JSON.stringify(res);
+    let usageLine = '';
+    if (res.usage) {
+      usageLine = `<div class="usage">prompt_tokens=${res.usage.prompt_tokens ?? '?'} completion_tokens=${res.usage.completion_tokens ?? '?'}</div>`;
+    }
+    $('chatResult').innerHTML = `<div class="reply">${escapeHTML(reply)}</div>${usageLine}`;
+  } catch (e) { /* 已经记进日志了 */ }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+</script>
+</body>
+</html>

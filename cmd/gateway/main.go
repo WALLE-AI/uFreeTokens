@@ -90,15 +90,20 @@ func run() error {
 		logger.Warn("relay service unavailable, /v1/chat/completions will return 503", "error", err)
 	}
 
+	// UFT_TEST_WEB_DIR 是手工联调用的开关（见 internal/app/staticweb.go），
+	// 和 cmd/admin 同款：留空（默认）不开启。
+	testWebDir := os.Getenv("UFT_TEST_WEB_DIR")
+
 	router := app.NewGatewayRouter(app.GatewayDeps{
-		Cfg:       cfg,
-		Logger:    logger,
-		Metrics:   metrics,
-		PG:        pg,
-		Redis:     rdb,
-		AuthStore: authStore,
-		Pepper:    pepper,
-		Relay:     relaySvc,
+		Cfg:        cfg,
+		Logger:     logger,
+		Metrics:    metrics,
+		PG:         pg,
+		Redis:      rdb,
+		AuthStore:  authStore,
+		Pepper:     pepper,
+		Relay:      relaySvc,
+		TestWebDir: testWebDir,
 	})
 
 	srv := &http.Server{

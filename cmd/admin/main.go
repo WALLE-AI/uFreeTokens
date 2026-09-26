@@ -1,8 +1,9 @@
 // Command admin 是控制面入口：账户/API Key/Provider/渠道/虚拟模型/价格管理
 // （技术方案 §7 相关章节）。用户控制台、支付回调、促销管理尚未实现。
 //
-// 见 internal/app.NewAdminRouter 和 internal/admin 包文档：目前完全没有
-// 鉴权/权限控制，只应该部署在内网。
+// 见 internal/app.NewAdminRouter 和 internal/admin 包文档：鉴权目前只到
+// "共享密钥"这一级，不是完整的多用户登录 + RBAC，只应该部署在内网/加一层
+// 反向代理。
 package main
 
 import (
@@ -86,7 +87,12 @@ func run() error {
 	adminSvc := admin.New(pg, walletSvc, box, pepper)
 	priceSyncEngine := pricesync.NewEngine(pg, adminSvc)
 
-	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, AdminToken: adminToken})
+	// UFT_TEST_WEB_DIR 是手工联调用的开关（见 internal/app/staticweb.go）：
+	// 留空（默认）不开启，不接入 internal/config 的分层配置——这是本地调试
+	// 用的旁路开关，不是需要区分 dev/staging/prod 的正式参数。
+	testWebDir := os.Getenv("UFT_TEST_WEB_DIR")
+
+	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, AdminToken: adminToken, TestWebDir: testWebDir})
 
 	addr := ":8081"
 	srv := &http.Server{

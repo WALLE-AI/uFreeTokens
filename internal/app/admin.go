@@ -23,6 +23,7 @@ type AdminDeps struct {
 	Admin      *admin.Service
 	PriceSync  *pricesync.Engine // nil 时价格同步相关接口返回 503 not_implemented（见技术方案 §7.16）
 	AdminToken string            // 见 NewAdminRouter 的鉴权说明；空字符串会拒绝所有受保护的请求，不会退化成不鉴权
+	TestWebDir string            // 非空时在根路径同源提供 test_web/admin.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
 }
 
 // NewAdminRouter 组装控制面路由：账户/API Key/Provider/渠道/虚拟模型/价格管理
@@ -42,6 +43,11 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Use(httpx.AccessLog(d.Logger))
 
 	r.Get("/healthz", healthzHandler)
+	// 根路径给手工联调用的测试页面用，故意放在鉴权分组外面——它只是个静态
+	// HTML 文件，浏览器直接打开首页不应该先被 401 挡住；管理员令牌是页面内
+	// JS 调后续接口时才用到。TestWebDir 为空时这里返回 404，行为和不注册
+	// 这个路由完全一样。
+	r.Get("/", serveStaticHTML(d.TestWebDir, "admin.html"))
 
 	h := &adminHandlers{svc: d.Admin, log: d.Logger, pricesync: d.PriceSync}
 
@@ -61,6 +67,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Post("/providers", h.createProvider)
 		r.Post("/provider-accounts", h.createProviderAccount)
 		r.Post("/provider-accounts/{providerAccountID}/keys", h.addProviderKey)
+		r.Get("/provider-accounts/{providerAccountID}/upstream-models", h.listUpstreamModels)
 
 		r.Post("/virtual-models", h.createVirtualModel)
 		r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
@@ -116,10 +123,16 @@ func decodeJSON(r *http.Request, v any) error {
 func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	switch {
 	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound),
+		errors.Is(err, admin.ErrProviderAccountNotFound),
 		errors.Is(err, pricesync.ErrChangeRequestNotFound), errors.Is(err, pricesync.ErrListingNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, pricesync.ErrChangeRequestNotPending), errors.Is(err, pricesync.ErrListingNotPending):
+	case errors.Is(err, pricesync.ErrChangeRequestNotPending), errors.Is(err, pricesync.ErrListingNotPending),
+		errors.Is(err, admin.ErrNoActiveProviderKey):
 		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, admin.ErrUpstreamUnavailable):
+		// 上游 /models 调不通/返回非预期内容——这是上游那边的问题，不是调用方
+		// 请求参数有问题，不应该归进默认的 400。
+		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_unavailable", err.Error())
 	default:
 		log.Warn("admin request failed", "error", err)
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
@@ -367,6 +380,24 @@ func (h *adminHandlers) addProviderKey(w http.ResponseWriter, r *http.Request) {
 	// key（ProviderKeySummary）从来不包含明文/密文，只有末 4 位——安全地记进审计日志。
 	h.recordAudit(r, "provider_key.add", "provider_account", strconv.FormatInt(providerAccountID, 10), nil, key)
 	httpx.WriteJSON(w, http.StatusCreated, key)
+}
+
+// listUpstreamModels 是"选一个供应商、录入 API Key 之后，真的问一遍它支持
+// 哪些模型"这个操作的 HTTP 入口——调用 admin.Service.ListUpstreamModels，
+// 后者会真的对上游发一次 GET /models（技术方案 §7.16 之外的手工联调场景，
+// 不是价格同步流水线的一部分）。
+func (h *adminHandlers) listUpstreamModels(w http.ResponseWriter, r *http.Request) {
+	providerAccountID, ok := pathInt64(r, "providerAccountID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid provider account id")
+		return
+	}
+	models, err := h.svc.ListUpstreamModels(r.Context(), providerAccountID)
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": models})
 }
 
 func (h *adminHandlers) createVirtualModel(w http.ResponseWriter, r *http.Request) {

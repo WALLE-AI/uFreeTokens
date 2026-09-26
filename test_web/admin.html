@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>uFreeTokens · 管理员联调页</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 960px; margin: 24px auto; padding: 0 16px; line-height: 1.5; }
+  h1 { font-size: 20px; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  section h2 { margin-top: 0; font-size: 15px; }
+  label { display: block; font-size: 13px; opacity: .8; margin-top: 8px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; margin-top: 2px; font-family: inherit; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button { margin-top: 10px; margin-right: 8px; padding: 6px 14px; cursor: pointer; }
+  .hint { font-size: 12px; opacity: .65; }
+  .modelList { max-height: 220px; overflow-y: auto; border: 1px solid #8884; border-radius: 6px; padding: 8px; margin-top: 8px; }
+  .modelList label { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 4px 0; }
+  .modelList input[type=checkbox] { width: auto; }
+  .rawkey { font-family: monospace; background: #8882; padding: 8px; border-radius: 6px; word-break: break-all; margin-top: 8px; }
+  #log { background: #0003; border-radius: 6px; padding: 8px; height: 220px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+  .err { color: #d33; }
+  .ok { color: #2a8; }
+</style>
+</head>
+<body>
+
+<h1>uFreeTokens 管理员联调页</h1>
+<p class="hint">
+  这是一个手工联调工具，不是生产管理后台——把每一步的原始请求/响应都摊开在下方日志区，
+  方便直接核对是否成功。所有请求都发到当前这个页面的同源地址（即 cmd/admin），不需要额外配置。
+</p>
+
+<section>
+  <h2>0. 管理员令牌</h2>
+  <label>UFT_ADMIN_TOKEN</label>
+  <input id="adminToken" type="password" placeholder="和 cmd/admin 启动时配置的一致">
+  <p class="hint">保存在浏览器 localStorage 里，只用于给后续请求加 Authorization 头，不会发到任何第三方。</p>
+</section>
+
+<section>
+  <h2>1. 接入供应商</h2>
+  <div class="row">
+    <div><label>Provider Code</label><input id="pCode" value="siliconflow"></div>
+    <div><label>Provider Name</label><input id="pName" value="SiliconFlow"></div>
+  </div>
+  <label>Base URL</label>
+  <input id="pBaseURL" value="https://api.siliconflow.cn/v1">
+  <label>API Key（明文，只在这一次请求里出现，落库前立即加密）</label>
+  <input id="pSecret" type="password" placeholder="sk-...">
+  <button onclick="setupProvider()">创建供应商 + 保存 Key</button>
+  <p class="hint">Provider Code 有唯一约束；重复点击会报错，这是预期行为——换个 Code 或者复用已有的
+    <code>provider_account_id</code>（见下）。</p>
+  <div id="providerResult"></div>
+</section>
+
+<section>
+  <h2>2. 拉取上游模型列表</h2>
+  <label>Provider Account ID</label>
+  <input id="pAccountID" placeholder="上一步成功后自动填入，也可以手动填一个已有的">
+  <button onclick="fetchModels()">获取模型列表</button>
+  <div id="modelListBox" class="modelList" style="display:none"></div>
+</section>
+
+<section>
+  <h2>3. 导入选中模型</h2>
+  <div class="row">
+    <div><label>Context Window</label><input id="impCtx" value="32768"></div>
+    <div><label>Max Output</label><input id="impMaxOut" value="4096"></div>
+  </div>
+  <div class="row">
+    <div><label>成本单价·输入（元/百万 token）</label><input id="impCostIn" value="0"></div>
+    <div><label>成本单价·输出（元/百万 token）</label><input id="impCostOut" value="0"></div>
+  </div>
+  <div class="row">
+    <div><label>售价单价·输入（元/百万 token）</label><input id="impSellIn" value="5"></div>
+    <div><label>售价单价·输出（元/百万 token）</label><input id="impSellOut" value="15"></div>
+  </div>
+  <label>售价适用 Tier</label>
+  <select id="impTier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select>
+  <button onclick="importSelected()">导入选中模型</button>
+  <p class="hint">直接用上游模型 ID 当平台内的虚拟模型名字，最直观——
+    <code>/v1/chat/completions</code> 里 <code>model</code> 字段就填这个 ID。成本价填 0 不影响计费，只是毛利算不出来。</p>
+</section>
+
+<section>
+  <h2>4. 生成测试用户</h2>
+  <button onclick="createTestUser()">创建测试账户 + 充值 100 元 + 生成 API Key</button>
+  <div id="testUserResult"></div>
+</section>
+
+<section>
+  <h2>日志</h2>
+  <div id="log"></div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function loadPersisted() {
+  $('adminToken').value = localStorage.getItem('uft_admin_token') || '';
+  $('pAccountID').value = localStorage.getItem('uft_provider_account_id') || '';
+}
+loadPersisted();
+$('adminToken').addEventListener('input', () => localStorage.setItem('uft_admin_token', $('adminToken').value));
+$('pAccountID').addEventListener('input', () => localStorage.setItem('uft_provider_account_id', $('pAccountID').value));
+
+function log(line, cls) {
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = line;
+  const box = $('log');
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function call(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  const token = $('adminToken').value.trim();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  log(`--> ${method} ${path}${body ? ' ' + JSON.stringify(body) : ''}`);
+  let resp, text;
+  try {
+    resp = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    text = await resp.text();
+  } catch (e) {
+    log(`<-- network error: ${e}`, 'err');
+    throw e;
+  }
+  let json;
+  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  const cls = resp.ok ? 'ok' : 'err';
+  log(`<-- ${resp.status} ${text}`, cls);
+  if (!resp.ok) throw new Error(`${method} ${path} -> ${resp.status}: ${text}`);
+  return json;
+}
+
+async function setupProvider() {
+  try {
+    const code = $('pCode').value.trim();
+    const name = $('pName').value.trim();
+    const baseURL = $('pBaseURL').value.trim();
+    const secret = $('pSecret').value.trim();
+    if (!code || !name || !baseURL || !secret) { log('请填完供应商的四个字段', 'err'); return; }
+
+    const provider = await call('POST', '/providers', { Code: code, Name: name, Protocol: 'openai' });
+    const providerAccount = await call('POST', '/provider-accounts', { provider_id: provider.ID, name: name + '-account', base_url: baseURL });
+    await call('POST', `/provider-accounts/${providerAccount.ID}/keys`, { secret, weight: 100 });
+
+    $('pAccountID').value = providerAccount.ID;
+    localStorage.setItem('uft_provider_account_id', providerAccount.ID);
+    $('providerResult').textContent = `provider_account_id = ${providerAccount.ID}`;
+  } catch (e) { /* 已经记进日志了 */ }
+}
+
+let lastModels = [];
+
+async function fetchModels() {
+  try {
+    const accountID = $('pAccountID').value.trim();
+    if (!accountID) { log('请先填 Provider Account ID', 'err'); return; }
+    const res = await call('GET', `/provider-accounts/${accountID}/upstream-models`, null);
+    lastModels = res.data || [];
+    const box = $('modelListBox');
+    box.style.display = 'block';
+    box.innerHTML = '';
+    if (lastModels.length === 0) {
+      box.textContent = '（上游没有返回任何模型）';
+      return;
+    }
+    lastModels.forEach((m, i) => {
+      const lab = document.createElement('label');
+      lab.innerHTML = `<input type="checkbox" value="${i}"> <span>${m.ID}</span> <span class="hint">${m.OwnedBy || ''}</span>`;
+      box.appendChild(lab);
+    });
+  } catch (e) { /* 已经记进日志了 */ }
+}
+
+function priceComponents(inPrice, outPrice) {
+  return [
+    { Meter: 'input', Unit: 'per_1m_tokens', UnitPrice: String(inPrice) },
+    { Meter: 'output', Unit: 'per_1m_tokens', UnitPrice: String(outPrice) },
+  ];
+}
+
+async function importSelected() {
+  const accountID = $('pAccountID').value.trim();
+  const boxes = document.querySelectorAll('#modelListBox input[type=checkbox]:checked');
+  if (boxes.length === 0) { log('先勾选至少一个模型', 'err'); return; }
+
+  const ctxWindow = parseInt($('impCtx').value, 10);
+  const maxOut = parseInt($('impMaxOut').value, 10);
+  const costIn = $('impCostIn').value.trim();
+  const costOut = $('impCostOut').value.trim();
+  const sellIn = $('impSellIn').value.trim();
+  const sellOut = $('impSellOut').value.trim();
+  const tier = $('impTier').value;
+
+  for (const cb of boxes) {
+    const model = lastModels[parseInt(cb.value, 10)];
+    try {
+      const vm = await call('POST', '/virtual-models', {
+        Name: model.ID, Family: model.OwnedBy || 'unknown', Type: 'chat',
+        ContextWindow: ctxWindow, MaxOutput: maxOut, Capabilities: ['stream'],
+      });
+      const channel = await call('POST', '/channels', {
+        VirtualModelID: vm.ID, ProviderAccountID: parseInt(accountID, 10),
+        UpstreamModel: model.ID, Priority: 0, Weight: 100,
+      });
+      await call('POST', `/channels/${channel.ID}/cost-price`, { components: priceComponents(costIn, costOut) });
+      await call('POST', `/virtual-models/${vm.ID}/sell-price`, { tier, components: priceComponents(sellIn, sellOut) });
+      log(`导入成功: ${model.ID}`, 'ok');
+    } catch (e) {
+      log(`导入失败: ${model.ID}: ${e}`, 'err');
+    }
+  }
+}
+
+async function createTestUser() {
+  try {
+    const suffix = Date.now();
+    const account = await call('POST', '/accounts', { Type: 'personal', Name: 'test-user-' + suffix, Tier: 'free' });
+    await call('POST', `/accounts/${account.ID}/wallet/adjust`, { amount: 1000000, ref_id: 'test-web-topup-' + suffix });
+    const key = await call('POST', `/accounts/${account.ID}/api-keys`, { name: 'test-web-key' });
+    $('testUserResult').innerHTML = `账户 ID: ${account.ID}<br>把下面这个 Key 粘贴到用户页面：<div class="rawkey">${key.RawKey}</div>`;
+  } catch (e) { /* 已经记进日志了 */ }
+}
+</script>
+</body>
+</html>

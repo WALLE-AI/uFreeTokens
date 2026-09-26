@@ -21,14 +21,15 @@ import (
 
 // GatewayDeps 是构造网关路由所需的全部依赖，由 cmd/gateway/main.go 装配后传入。
 type GatewayDeps struct {
-	Cfg       *config.Config
-	Logger    *slog.Logger
-	Metrics   *observability.Metrics
-	PG        *pgxpool.Pool
-	Redis     *redis.Client
-	AuthStore auth.Store
-	Pepper    []byte
-	Relay     *relay.Service // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
+	Cfg        *config.Config
+	Logger     *slog.Logger
+	Metrics    *observability.Metrics
+	PG         *pgxpool.Pool
+	Redis      *redis.Client
+	AuthStore  auth.Store
+	Pepper     []byte
+	Relay      *relay.Service // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
+	TestWebDir string         // 非空时在根路径同源提供 test_web/user.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
 }
 
 // NewGatewayRouter 组装数据面路由。/v1/chat/completions、/v1/embeddings 已接入
@@ -46,6 +47,10 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 
 	r.Get("/healthz", healthzHandler)
 	r.Get("/readyz", readyzHandler(d.PG, d.Redis))
+	// 根路径给手工联调用的测试页面用，同 internal/app/admin.go 的
+	// NewAdminRouter；根路径本来就在 auth.APIKey 中间件挂载的 /v1 分组之外，
+	// 不需要额外处理鉴权。
+	r.Get("/", serveStaticHTML(d.TestWebDir, "user.html"))
 
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.APIKey(d.AuthStore, d.Pepper))
