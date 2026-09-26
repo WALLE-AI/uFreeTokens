@@ -78,6 +78,8 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
 		r.Post("/fx-rates", h.setFXRate)
 
+		r.Post("/pricesync/litellm-lookup", h.litellmPriceLookup)
+
 		r.Post("/price-sources", h.createPriceSource)
 		r.Post("/providers/{providerID}/price-observations", h.ingestUnmappedPriceObservation)
 		r.Get("/price-change-requests", h.listPendingChangeRequests)

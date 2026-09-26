@@ -18,6 +18,10 @@
   .modelList { max-height: 220px; overflow-y: auto; border: 1px solid #8884; border-radius: 6px; padding: 8px; margin-top: 8px; }
   .modelList label { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 4px 0; }
   .modelList input[type=checkbox] { width: auto; }
+  table.priceTable { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  table.priceTable th, table.priceTable td { border: 1px solid #8884; padding: 4px 6px; text-align: left; }
+  table.priceTable input { width: 90px; padding: 3px 4px; margin-top: 0; }
+  table.priceTable .modelName { max-width: 220px; overflow-wrap: break-word; }
   .rawkey { font-family: monospace; background: #8882; padding: 8px; border-radius: 6px; word-break: break-all; margin-top: 8px; }
   #log { background: #0003; border-radius: 6px; padding: 8px; height: 220px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
   .err { color: #d33; }
@@ -69,19 +73,16 @@
     <div><label>Context Window</label><input id="impCtx" value="32768"></div>
     <div><label>Max Output</label><input id="impMaxOut" value="4096"></div>
   </div>
-  <div class="row">
-    <div><label>成本单价·输入（元/百万 token）</label><input id="impCostIn" value="0"></div>
-    <div><label>成本单价·输出（元/百万 token）</label><input id="impCostOut" value="0"></div>
-  </div>
-  <div class="row">
-    <div><label>售价单价·输入（元/百万 token）</label><input id="impSellIn" value="5"></div>
-    <div><label>售价单价·输出（元/百万 token）</label><input id="impSellOut" value="15"></div>
-  </div>
   <label>售价适用 Tier</label>
   <select id="impTier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select>
-  <button onclick="importSelected()">导入选中模型</button>
-  <p class="hint">直接用上游模型 ID 当平台内的虚拟模型名字，最直观——
-    <code>/v1/chat/completions</code> 里 <code>model</code> 字段就填这个 ID。成本价填 0 不影响计费，只是毛利算不出来。</p>
+
+  <button onclick="buildPriceTable()">① 生成价格表（按上面勾选的模型）</button>
+  <p class="hint">先勾选第 2 步里的模型，再点这个——会自动去 LiteLLM 社区价格数据集
+    （<code>BerriAI/litellm</code> 维护的 <code>model_prices_and_context_window.json</code>）查一遍这些模型有没有现成的成本价（美元/百万 token）。
+    查得到就把成本价填好；查不到的行成本价留 0，需要自己填。
+    售价（人民币/百万 token）不会自动生成——LiteLLM 给的是"上游成本"，不是"我们该收用户多少钱"，售价永远是自己的定价决策，这里只给了一个默认倍数按钮方便手动套。</p>
+  <div id="priceTableBox"></div>
+  <button id="importBtn" onclick="importSelected()" style="display:none">② 导入（按上表价格）</button>
 </section>
 
 <section>
@@ -199,21 +200,72 @@ function priceComponents(inPrice, outPrice) {
   ];
 }
 
-async function importSelected() {
-  const accountID = $('pAccountID').value.trim();
+let priceTableModels = [];
+
+// buildPriceTable 对当前勾选的模型查一遍 LiteLLM 参考成本价，渲染成一张可编辑
+// 的表格——查得到的行成本价自动填好，查不到的留 0 需要自己判断；售价
+// （人民币）不从 LiteLLM 推导（那是上游成本，不是我们的定价决策），给一个
+// 固定默认值，每行都能单独改。
+async function buildPriceTable() {
   const boxes = document.querySelectorAll('#modelListBox input[type=checkbox]:checked');
   if (boxes.length === 0) { log('先勾选至少一个模型', 'err'); return; }
+  priceTableModels = Array.from(boxes).map((cb) => lastModels[parseInt(cb.value, 10)]);
+
+  let lookup = {};
+  try {
+    const res = await call('POST', '/pricesync/litellm-lookup', {
+      upstream_models: priceTableModels.map((m) => m.ID),
+    });
+    lookup = res.data || {};
+  } catch (e) {
+    log('LiteLLM 查询失败，成本价先都填 0，可以手动改', 'err');
+  }
+
+  const box = $('priceTableBox');
+  const rows = priceTableModels.map((m, i) => {
+    const match = lookup[m.ID];
+    const costIn = match && match.matched ? match.input : '0';
+    const costOut = match && match.matched ? match.output : '0';
+    const matchedLabel = match && match.matched ? '<span class="ok">已匹配</span>' : '<span class="hint">未匹配</span>';
+    return `<tr>
+      <td class="modelName">${m.ID}</td>
+      <td>${matchedLabel}</td>
+      <td><input data-i="${i}" data-f="costIn" value="${costIn}"></td>
+      <td><input data-i="${i}" data-f="costOut" value="${costOut}"></td>
+      <td><input data-i="${i}" data-f="sellIn" value="5"></td>
+      <td><input data-i="${i}" data-f="sellOut" value="15"></td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `<table class="priceTable">
+    <thead><tr>
+      <th>模型</th><th>LiteLLM</th>
+      <th>成本-输入 (USD/M)</th><th>成本-输出 (USD/M)</th>
+      <th>售价-输入 (CNY/M)</th><th>售价-输出 (CNY/M)</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  $('importBtn').style.display = 'inline-block';
+}
+
+function priceTableRowValue(i, field) {
+  const el = document.querySelector(`#priceTableBox input[data-i="${i}"][data-f="${field}"]`);
+  return el ? el.value.trim() : '0';
+}
+
+async function importSelected() {
+  const accountID = $('pAccountID').value.trim();
+  if (priceTableModels.length === 0) { log('先点①生成价格表', 'err'); return; }
 
   const ctxWindow = parseInt($('impCtx').value, 10);
   const maxOut = parseInt($('impMaxOut').value, 10);
-  const costIn = $('impCostIn').value.trim();
-  const costOut = $('impCostOut').value.trim();
-  const sellIn = $('impSellIn').value.trim();
-  const sellOut = $('impSellOut').value.trim();
   const tier = $('impTier').value;
 
-  for (const cb of boxes) {
-    const model = lastModels[parseInt(cb.value, 10)];
+  for (let i = 0; i < priceTableModels.length; i++) {
+    const model = priceTableModels[i];
+    const costIn = priceTableRowValue(i, 'costIn');
+    const costOut = priceTableRowValue(i, 'costOut');
+    const sellIn = priceTableRowValue(i, 'sellIn');
+    const sellOut = priceTableRowValue(i, 'sellOut');
     try {
       // 先查、不存在才创建：virtual_models.name 和 channels 的
       // (virtual_model_id, provider_account_id, upstream_model) 都是唯一
@@ -240,7 +292,11 @@ async function importSelected() {
           UpstreamModel: model.ID, Priority: 0, Weight: 100,
         });
       }
-      await call('POST', `/channels/${channel.ID}/cost-price`, { components: priceComponents(costIn, costOut) });
+      // 成本价用 USD——LiteLLM 数据集本身就是美元，硬转成人民币需要一个
+      // 汇率假设，与其编一个数字进账，不如老老实实按美元记账（没配对应
+      // fx_rate 时这条成本不会参与毛利计算，见 internal/catalog 包文档，
+      // 不影响计费本身）。
+      await call('POST', `/channels/${channel.ID}/cost-price`, { currency: 'USD', components: priceComponents(costIn, costOut) });
       await call('POST', `/virtual-models/${vm.ID}/sell-price`, { tier, components: priceComponents(sellIn, sellOut) });
       log(`导入成功: ${model.ID}`, 'ok');
     } catch (e) {
