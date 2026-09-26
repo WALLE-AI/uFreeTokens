@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -71,6 +72,8 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Post("/pending-model-listings/{listingID}/publish", h.publishPendingModelListing)
 	r.Post("/pending-model-listings/{listingID}/dismiss", h.dismissPendingModelListing)
 
+	r.Get("/audit-logs", h.listAuditLogs)
+
 	return r
 }
 
@@ -112,6 +115,36 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, e
 	default:
 		log.Warn("admin request failed", "error", err)
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+}
+
+// actorIDFromRequest 从 X-Actor-ID 头读出发起操作的管理员 ID——cmd/admin 还没有
+// 鉴权（见 internal/admin 包文档），没有"当前登录管理员"这个概念，这个头完全
+// 靠调用方自觉填写，读不到或解析失败就记 0（未知/系统操作）。等真正的管理员
+// 登录做出来了，这里应该换成从鉴权中间件解析出的身份，调用方不用变。
+func actorIDFromRequest(r *http.Request) int64 {
+	id, _ := strconv.ParseInt(r.Header.Get("X-Actor-ID"), 10, 64)
+	return id
+}
+
+// requestIP 尽量拿到调用方地址（去掉端口），拿不到就原样返回 RemoteAddr。
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// recordAudit 是审计日志写入失败时的统一处理：只记日志，不影响已经成功的业务
+// 操作的响应——审计不应该成为主流程的单点故障（技术方案 Phase 4 的审计导出，
+// 见 internal/admin/audit.go 的取舍说明）。
+func (h *adminHandlers) recordAudit(r *http.Request, action, targetType, targetID string, before, after any) {
+	if _, err := h.svc.RecordAudit(r.Context(), admin.AuditLogInput{
+		ActorID: actorIDFromRequest(r), Action: action, TargetType: targetType, TargetID: targetID,
+		Before: before, After: after, IP: requestIP(r),
+	}); err != nil {
+		h.log.Error("record audit log failed", "action", action, "target_type", targetType, "target_id", targetID, "error", err)
 	}
 }
 
@@ -173,6 +206,7 @@ func (h *adminHandlers) adjustWallet(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "wallet.adjust", "account", strconv.FormatInt(id, 10), nil, map[string]any{"amount": in.Amount, "ref_id": in.RefID, "receipt": receipt})
 	httpx.WriteJSON(w, http.StatusOK, receipt)
 }
 
@@ -203,6 +237,7 @@ func (h *adminHandlers) grantCredit(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "wallet.credit_grant", "account", strconv.FormatInt(id, 10), nil, granted)
 	httpx.WriteJSON(w, http.StatusOK, granted)
 }
 
@@ -321,6 +356,8 @@ func (h *adminHandlers) addProviderKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	// key（ProviderKeySummary）从来不包含明文/密文，只有末 4 位——安全地记进审计日志。
+	h.recordAudit(r, "provider_key.add", "provider_account", strconv.FormatInt(providerAccountID, 10), nil, key)
 	httpx.WriteJSON(w, http.StatusCreated, key)
 }
 
@@ -373,6 +410,7 @@ func (h *adminHandlers) setSellPrice(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "sell_price.set", "virtual_model", strconv.FormatInt(vmID, 10), nil, map[string]any{"price_book_id": bookID, "tier": body.Tier, "components": body.Components})
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
 }
 
@@ -397,6 +435,7 @@ func (h *adminHandlers) setCostPrice(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "cost_price.set", "channel", strconv.FormatInt(channelID, 10), nil, map[string]any{"price_book_id": bookID, "currency": body.Currency, "components": body.Components})
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
 }
 
@@ -420,5 +459,20 @@ func (h *adminHandlers) setFXRate(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "fx_rate.set", "fx_rate", body.Base, nil, in)
 	httpx.WriteJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
+}
+
+// listAuditLogs 是审计导出的查询入口（技术方案 Phase 4）：?target_type=&target_id=
+// 都可以留空，留空表示不按那个维度过滤；?limit= 留空用默认值 100。
+func (h *adminHandlers) listAuditLogs(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	entries, err := h.svc.ListAuditLogs(r.Context(), admin.ListAuditLogsInput{
+		TargetType: r.URL.Query().Get("target_type"), TargetID: r.URL.Query().Get("target_id"), Limit: limit,
+	})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"audit_logs": entries})
 }

@@ -160,8 +160,16 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 都已接入，见上面 `internal/adapter` 一节的已知限制。另外 request_logs
 目前只记录"预扣成功、进入路由/转发"之后的结果（成功或上游失败）；鉴权失败、
 余额不足、模型不存在、限流拒绝等预扣之前的拒绝还只有结构化访问日志，不落 request_logs。
-另外 `cmd/admin` 还没有用户控制台、支付回调、促销管理、审计日志（`admin_audit_logs`
-表已建好但没有写入），充值目前只能靠 `POST /accounts/{id}/wallet/adjust` 手工调整。
+另外 `cmd/admin` 还没有用户控制台、支付回调、促销管理，充值目前只能靠
+`POST /accounts/{id}/wallet/adjust` 手工调整。
+
+审计日志（Phase 4）已经接入一部分：`internal/admin/audit.go` 的 `RecordAudit`/
+`ListAuditLogs` 写读 `admin_audit_logs`，`cmd/admin` 在钱包调账/赠款、上游 Key
+添加、成本价/售价/汇率发布这几个高价值操作成功后各记一条（`before`/`after`
+JSON 快照 + 调用方 IP），`GET /audit-logs?target_type=&target_id=` 查询/导出。
+不是每个写操作都审计；`actor_id` 只能靠调用方在 `X-Actor-ID` 请求头里自己声明——
+`cmd/admin` 还没有管理员登录/鉴权，没有真正的"当前操作者"概念（见上面
+`cmd/admin` 一节的安全缺口）。
 
 ## 快速开始（无 Docker）
 

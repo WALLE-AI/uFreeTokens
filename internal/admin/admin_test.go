@@ -272,6 +272,80 @@ func TestCreateVirtualModelAndChannel(t *testing.T) {
 	}
 }
 
+func TestRecordAudit_InsertsAndListsByTarget(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+	targetID := uniqueCode(t)
+
+	id, err := s.RecordAudit(ctx, AuditLogInput{
+		ActorID: 42, Action: "wallet.adjust", TargetType: "account", TargetID: targetID,
+		Before: map[string]any{"cash_balance": 1000}, After: map[string]any{"cash_balance": 2000}, IP: "203.0.113.7",
+	})
+	if err != nil {
+		t.Fatalf("RecordAudit: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected a non-zero audit log ID")
+	}
+
+	entries, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: "account", TargetID: targetID})
+	if err != nil {
+		t.Fatalf("ListAuditLogs: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want exactly 1", entries)
+	}
+	e := entries[0]
+	if e.ActorID != 42 || e.Action != "wallet.adjust" || e.TargetType != "account" || e.TargetID != targetID {
+		t.Errorf("entry = %+v, want actor=42 action=wallet.adjust target=account/%s", e, targetID)
+	}
+	if e.IP != "203.0.113.7" {
+		t.Errorf("IP = %q, want 203.0.113.7", e.IP)
+	}
+	if string(e.Before) == "" || string(e.After) == "" {
+		t.Errorf("expected non-empty before/after JSON, got before=%s after=%s", e.Before, e.After)
+	}
+}
+
+func TestRecordAudit_ValidatesInput(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	if _, err := s.RecordAudit(ctx, AuditLogInput{Action: "", TargetType: "account", TargetID: "1"}); err == nil {
+		t.Error("expected error for empty action")
+	}
+	if _, err := s.RecordAudit(ctx, AuditLogInput{Action: "x", TargetType: "", TargetID: "1"}); err == nil {
+		t.Error("expected error for empty target_type")
+	}
+	if _, err := s.RecordAudit(ctx, AuditLogInput{Action: "x", TargetType: "account", TargetID: ""}); err == nil {
+		t.Error("expected error for empty target_id")
+	}
+}
+
+func TestListAuditLogs_FiltersByTargetTypeOnly(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+	targetType := uniqueCode(t) // 独立的假 target_type，避免和其它测试的记录混在一起数不准
+
+	if _, err := s.RecordAudit(ctx, AuditLogInput{Action: "a", TargetType: targetType, TargetID: "1"}); err != nil {
+		t.Fatalf("RecordAudit: %v", err)
+	}
+	if _, err := s.RecordAudit(ctx, AuditLogInput{Action: "b", TargetType: targetType, TargetID: "2"}); err != nil {
+		t.Fatalf("RecordAudit: %v", err)
+	}
+
+	entries, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: targetType})
+	if err != nil {
+		t.Fatalf("ListAuditLogs: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v, want exactly 2", entries)
+	}
+}
+
 func TestCreateChannel_WithExperimentLabel(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)
