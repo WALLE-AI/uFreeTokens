@@ -72,6 +72,16 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   风险太高）。技术方案原文还提到的"大量断连白嫖""大量 400 疑似探测"两条规则没有
   实现——它们依赖的信号（区分客户端断连、记录被鉴权/模型校验挡在预扣之前的失败
   请求）目前在 `internal/relay` 里根本不存在，写查不到数据的规则没有意义。
+- `internal/chsync`：ClickHouse 用量分析 ETL 的骨架（§7.13"Phase2 起 worker 把
+  request_logs 同步到 ClickHouse"）——`Syncer.SyncOnce` 从 Postgres 按
+  `(created_at, request_id)` 游标增量拉取 `request_logs`，转成扁平化的
+  `UsageRow`，交给一个 `Sink` 接口写出去；游标持久化在 `analytics_sync_state`
+  表，断点续传，Sink 写失败不推进游标（at-least-once）。没有接真正的
+  ClickHouse——没有一个能在自动化测试里安全连接的实例，写一个连不上任何
+  真实服务的客户端代码不会比不写更有价值；测试用内存 Sink 验证拉取/去重/
+  续传/失败重试这部分逻辑（完全不依赖 ClickHouse 本身）。没有接入 `cmd/worker`
+  的定时循环——接入需要一个真实 Sink 实现，目前没有，接一个假的调用点不会
+  产生任何真实的同步能力。
 - `internal/secretbox`：上游 Key 的信封加密（AES-256-GCM，§7.15）。
 - `internal/catalog`：虚拟模型/渠道/售价/成本价/汇率的内存快照（带 TTL 缓存的
   简化版，完整的 LISTEN/NOTIFY 热加载见 §7.3，留作后续）。成本价挂渠道（§6.4），
