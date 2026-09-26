@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
@@ -162,6 +164,78 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("second reject status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
+	pool, box := testPool(t), testBox(t)
+	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
+
+	walletSvc := wallet.New(pool)
+	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
+	engine := pricesync.NewEngine(pool, adminSvc)
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine}))
+	defer adminSrv.Close()
+	ac := &adminClient{t: t, baseURL: adminSrv.URL}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	var provider struct{ ID int64 }
+	ac.post("/providers", map[string]any{"Code": "discover-provider-" + suffix, "Name": "x", "Protocol": "openai"}, &provider)
+
+	var providerAccount struct{ ID int64 }
+	ac.post("/provider-accounts", map[string]any{"provider_id": provider.ID, "name": "acc", "base_url": "https://x"}, &providerAccount)
+
+	var source struct{ ID int64 }
+	ac.post("/price-sources", map[string]any{"provider_id": provider.ID, "level": "L2", "kind": "manual", "fetcher": "http-test"}, &source)
+
+	// 提交一条观测，这个 provider 底下压根没有任何渠道叫这个 upstream_model
+	// 名字——应该落进"待上架"队列，而不是报错或者被静默丢弃。
+	model := "brand-new-model-" + suffix
+	var ingestResult pricesync.UnmappedIngestResult
+	ac.post(fmt.Sprintf("/providers/%d/price-observations", provider.ID), map[string]any{
+		"source_id": source.ID, "level": "L2", "upstream_model": model, "currency": "CNY",
+		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "8"}},
+	}, &ingestResult)
+	if ingestResult.ListingID == nil {
+		t.Fatal("expected a pending listing ID, got nil (no channel should have matched)")
+	}
+
+	var list struct {
+		PendingListings []pricesync.PendingListingSummary `json:"pending_listings"`
+	}
+	adminGet(t, adminSrv.URL, "/pending-model-listings", &list)
+	var found bool
+	for _, l := range list.PendingListings {
+		if l.ID == *ingestResult.ListingID {
+			found = true
+			if l.UpstreamModel != model {
+				t.Errorf("UpstreamModel = %q, want %q", l.UpstreamModel, model)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected listing %d in GET /pending-model-listings, got %+v", *ingestResult.ListingID, list.PendingListings)
+	}
+
+	var publishResult pricesync.PublishListingResult
+	ac.post(fmt.Sprintf("/pending-model-listings/%d/publish", *ingestResult.ListingID), map[string]any{
+		"virtual_model": map[string]any{
+			"name": "discovered-vm-" + suffix, "type": "chat", "context_window": 128000, "max_output": 8192,
+		},
+		"provider_account_id": providerAccount.ID,
+		"sell_markup":         "0.25",
+	}, &publishResult)
+	if publishResult.VirtualModelID == 0 || publishResult.ChannelID == 0 {
+		t.Fatalf("PublishListing result has a zero ID: %+v", publishResult)
+	}
+
+	var sellPrice decimal.Decimal
+	if err := pool.QueryRow(t.Context(), `SELECT unit_price FROM price_components WHERE price_book_id = $1`, publishResult.SellBookID).Scan(&sellPrice); err != nil {
+		t.Fatalf("query sell price: %v", err)
+	}
+	if !sellPrice.Equal(decimal.NewFromInt(10)) { // 8 * 1.25
+		t.Errorf("sell price = %s, want 10 (8 * 1.25 markup)", sellPrice)
 	}
 }
 

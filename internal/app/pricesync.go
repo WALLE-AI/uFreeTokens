@@ -6,6 +6,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
@@ -93,6 +94,121 @@ func (h *adminHandlers) ingestPriceObservation(w http.ResponseWriter, r *http.Re
 		ChannelID: channelID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
 		Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
 		RawObject: body.RawObject,
+	})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, result)
+}
+
+// ingestUnmappedPriceObservation 是技术方案 §7.16.3 Mapper 阶段的入口：不知道
+// 具体渠道，只知道 provider + upstream_model。找到匹配渠道就对每个都走正常的
+// Ingest 流程；一个都找不到就记入"新模型发现"队列（Phase 3），不自动上架。
+func (h *adminHandlers) ingestUnmappedPriceObservation(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePriceSync(w, r) {
+		return
+	}
+	providerID, ok := pathInt64(r, "providerID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid provider id")
+		return
+	}
+	var body struct {
+		SourceID      int64                `json:"source_id"`
+		Level         string               `json:"level"`
+		UpstreamModel string               `json:"upstream_model"`
+		Currency      string               `json:"currency"`
+		Components    []priceComponentJSON `json:"components"`
+		EffectiveFrom *time.Time           `json:"effective_from"`
+		ExpiresAt     *time.Time           `json:"expires_at"`
+		RawObject     string               `json:"raw_object"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	components := make([]pricesync.Component, 0, len(body.Components))
+	for _, c := range body.Components {
+		components = append(components, c.toComponent())
+	}
+
+	result, err := h.pricesync.IngestUnmapped(r.Context(), pricesync.UnmappedObservationInput{
+		ProviderID: providerID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
+		Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
+		RawObject: body.RawObject,
+	})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, result)
+}
+
+func (h *adminHandlers) listPendingModelListings(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePriceSync(w, r) {
+		return
+	}
+	list, err := h.pricesync.ListPendingListings(r.Context())
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"pending_listings": list})
+}
+
+func (h *adminHandlers) dismissPendingModelListing(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePriceSync(w, r) {
+		return
+	}
+	id, ok := pathInt64(r, "listingID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid listing id")
+		return
+	}
+	if err := h.pricesync.DismissListing(r.Context(), id); err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "dismissed"})
+}
+
+// publishPendingModelListing 是"一键上架"：运营补齐虚拟模型元数据、指定真正
+// 用哪个 provider_account 路由、给个加价比例，一次调用建出虚拟模型 + 渠道 +
+// 成本价 + 售价（技术方案 Phase 3"新模型自动发现与一键上架"）。
+func (h *adminHandlers) publishPendingModelListing(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePriceSync(w, r) {
+		return
+	}
+	id, ok := pathInt64(r, "listingID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid listing id")
+		return
+	}
+	var body struct {
+		VirtualModel struct {
+			Name          string   `json:"name"`
+			Family        string   `json:"family"`
+			Type          string   `json:"type"`
+			ContextWindow int      `json:"context_window"`
+			MaxOutput     int      `json:"max_output"`
+			Capabilities  []string `json:"capabilities"`
+			VisibleTiers  []string `json:"visible_tiers"`
+		} `json:"virtual_model"`
+		ProviderAccountID int64           `json:"provider_account_id"`
+		SellMarkup        decimal.Decimal `json:"sell_markup"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	result, err := h.pricesync.PublishListing(r.Context(), id, pricesync.PublishListingInput{
+		VirtualModel: admin.CreateVirtualModelInput{
+			Name: body.VirtualModel.Name, Family: body.VirtualModel.Family, Type: body.VirtualModel.Type,
+			ContextWindow: body.VirtualModel.ContextWindow, MaxOutput: body.VirtualModel.MaxOutput,
+			Capabilities: body.VirtualModel.Capabilities, VisibleTiers: body.VirtualModel.VisibleTiers,
+		},
+		ProviderAccountID: body.ProviderAccountID, SellMarkup: body.SellMarkup,
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)

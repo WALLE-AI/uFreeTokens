@@ -62,10 +62,16 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   比较（Diff：up/down/mixed/new/removed + 最大变化比例）、生效策略
   （§7.16.7 的成本价策略表：L2/L5 降价自动生效，L2 涨价 ≤20% 自动生效，
   其余一律 pending）、发布（自动通过或人工批准后调用 `internal/admin` 发布
-  新的成本价版本，支持预约生效）。`cmd/admin` 暴露了完整的 HTTP 接口：
-  `POST /price-sources`、`POST /channels/{id}/price-observations`（提交一条
-  观测，跑完整条流水线）、`GET /price-change-requests`、
-  `POST /price-change-requests/{id}/approve|reject`。
+  新的成本价版本，支持预约生效）、Mapper（按 provider+upstream_model 找现有
+  渠道；一个都找不到时进"新模型发现"队列而不是自动上架，Phase 3）。`cmd/admin`
+  暴露了完整的 HTTP 接口：`POST /price-sources`、
+  `POST /channels/{id}/price-observations`（已知渠道，跑完整条流水线）、
+  `POST /providers/{id}/price-observations`（不知道渠道，走 Mapper：能匹配到
+  就对每个匹配渠道跑流水线，匹配不到就排队待发现）、
+  `GET /price-change-requests`、`POST /price-change-requests/{id}/approve|reject`、
+  `GET /pending-model-listings`、`POST /pending-model-listings/{id}/publish`
+  （一键上架：新建虚拟模型 + 渠道 + 成本价 + 按 `sell_markup` 加价算出的售价）、
+  `POST /pending-model-listings/{id}/dismiss`。
 
   已知范围限制（§7.16 本身是个很大的独立子系统，这里先把确定性流水线做对、
   做全，见 `internal/pricesync` 包级注释）：没有真正对接外部数据源的

@@ -2,6 +2,10 @@
 // 的确定性部分：归一化表示（PriceSpec）、校验（Validate）、比较（Diff）、生效
 // 策略（DecidePolicy）、发布（Engine.Ingest 会在自动通过时直接调用
 // internal/admin 发布新的成本价版本）、以及人工审批（Engine.Approve/Reject）。
+// 还有 Mapper 阶段（listing.go）：Engine.IngestUnmapped 按 provider+upstream_model
+// 找现有渠道，找不到就进"新模型发现"队列（pending_model_listings），运营用
+// Engine.PublishListing 一键把候选变成真实的虚拟模型 + 渠道 + 成本价 + 售价
+// （技术方案 Phase 3"新模型自动发现与一键上架"）。
 //
 // 已知范围限制（明确未实现，不是遗漏——§7.16 本身是一个足够大的独立子系统，
 // 这里先把"来了一条观测该怎么处理"这条确定性流水线做对、做全，调度和外部集成

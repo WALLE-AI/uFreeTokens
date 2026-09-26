@@ -62,9 +62,14 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Post("/fx-rates", h.setFXRate)
 
 	r.Post("/price-sources", h.createPriceSource)
+	r.Post("/providers/{providerID}/price-observations", h.ingestUnmappedPriceObservation)
 	r.Get("/price-change-requests", h.listPendingChangeRequests)
 	r.Post("/price-change-requests/{changeRequestID}/approve", h.approveChangeRequest)
 	r.Post("/price-change-requests/{changeRequestID}/reject", h.rejectChangeRequest)
+
+	r.Get("/pending-model-listings", h.listPendingModelListings)
+	r.Post("/pending-model-listings/{listingID}/publish", h.publishPendingModelListing)
+	r.Post("/pending-model-listings/{listingID}/dismiss", h.dismissPendingModelListing)
 
 	return r
 }
@@ -99,9 +104,10 @@ func decodeJSON(r *http.Request, v any) error {
 // 精细区分错误码，能定位问题就够了。
 func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	switch {
-	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound), errors.Is(err, pricesync.ErrChangeRequestNotFound):
+	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound),
+		errors.Is(err, pricesync.ErrChangeRequestNotFound), errors.Is(err, pricesync.ErrListingNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, pricesync.ErrChangeRequestNotPending):
+	case errors.Is(err, pricesync.ErrChangeRequestNotPending), errors.Is(err, pricesync.ErrListingNotPending):
 		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
 	default:
 		log.Warn("admin request failed", "error", err)

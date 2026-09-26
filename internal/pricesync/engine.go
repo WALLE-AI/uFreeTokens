@@ -29,10 +29,10 @@ type CostPricePublisher interface {
 // 新价格版本。
 type Engine struct {
 	pool      *pgxpool.Pool
-	publisher CostPricePublisher
+	publisher ListingPublisher
 }
 
-func NewEngine(pool *pgxpool.Pool, publisher CostPricePublisher) *Engine {
+func NewEngine(pool *pgxpool.Pool, publisher ListingPublisher) *Engine {
 	return &Engine{pool: pool, publisher: publisher}
 }
 
@@ -253,14 +253,7 @@ func (e *Engine) Reject(ctx context.Context, changeRequestID, decidedBy int64) e
 // 转换成 admin.SetCostPriceInput 发布一个新的 cost price_book 版本，再把这条
 // change request 标记为 applied。
 func (e *Engine) apply(ctx context.Context, changeRequestID, channelID int64, spec PriceSpec, effectiveFrom time.Time) (int64, error) {
-	components := make([]admin.PriceComponentInput, 0, len(spec.Components))
-	for _, c := range spec.Components {
-		components = append(components, admin.PriceComponentInput{
-			Meter: string(c.Meter), Unit: string(c.Unit), ServiceTier: c.ServiceTier,
-			TierMinInput: c.TierMinInput, TierMaxInput: c.TierMaxInput,
-			WindowStartMin: c.WindowStartMin, WindowEndMin: c.WindowEndMin, UnitPrice: c.UnitPrice,
-		})
-	}
+	components := toAdminComponents(spec.Components)
 	ef := effectiveFrom
 	bookID, err := e.publisher.SetCostPrice(ctx, admin.SetCostPriceInput{
 		ChannelID: channelID, Currency: spec.Currency, EffectiveFrom: &ef, Components: components,
