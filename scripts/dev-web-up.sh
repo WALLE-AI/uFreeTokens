@@ -12,7 +12,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 : "${UFT_KEK:=8PTzdjl8kOMJalrTbGLXTlQ4RiX1Tsi6zqm2MTrq/+U=}"
 : "${UFT_KEY_PEPPER:=dev-pepper-change-me}"
 : "${UFT_ADMIN_TOKEN:=dev-admin-token-change-me}"
-: "${UFT_TEST_WEB_DIR:=test_web}"
+: "${UFT_TEST_WEB_DIR:=frontend/test_web}"
 export UFT_KEK UFT_KEY_PEPPER UFT_ADMIN_TOKEN UFT_TEST_WEB_DIR
 
 CONFIG=config/gateway.example.yaml

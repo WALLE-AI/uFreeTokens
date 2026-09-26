@@ -57,13 +57,13 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   SiliconFlow 这类只在自己官网发布定价、不进任何聚合数据集的供应商大概率
   查不到（`/v1/models` 本身也不带价格字段），这不是缺陷，是这类来源的真实
   覆盖范围。
-- `test_web/`：手工联调用的管理员页面 + 用户页面（不是生产管理后台），验证
+- `frontend/test_web/`：手工联调用的管理员页面 + 用户页面（不是生产管理后台），验证
   "接入真实上游 → 拉模型列表 → 导入 → 用户端可见并能真的聊"这条完整链路。
   管理员页面第 1 步现在是个常见 OpenAI 兼容供应商下拉框（SiliconFlow/
   DeepSeek 官方/阿里云百炼/Moonshot/智谱 GLM/火山方舟/OpenRouter），选一个
   自动填 Base URL，也可以选"自定义"手填。`UFT_TEST_WEB_DIR` 环境变量留空
-  （默认）不开启；设成 `test_web` 后 `cmd/admin`/`cmd/gateway` 会在各自根
-  路径同源提供对应页面（同源、无需 CORS）。用法见 `test_web/README.md`。
+  （默认）不开启；设成 `frontend/test_web` 后 `cmd/admin`/`cmd/gateway` 会在各自根
+  路径同源提供对应页面（同源、无需 CORS）。用法见 `frontend/test_web/README.md`。
 - `cmd/worker`：定时任务循环（§7.11、§7.12、§7.13）——回收过期未结算的预扣（网关崩溃
   留下的孤儿 reservation）、保持 request_logs 未来分区就绪、内部一致性对账（钱包余额
   vs 账本、账本 vs 请求日志，发现问题只记日志上报，不自动"纠正"数据）、每分钟跑一轮

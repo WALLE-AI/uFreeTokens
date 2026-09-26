@@ -7,7 +7,7 @@
 ## 怎么跑起来
 
 ```bash
-export UFT_TEST_WEB_DIR=test_web   # 相对 cwd；在仓库根目录下 go run 就对了
+export UFT_TEST_WEB_DIR=frontend/test_web   # 相对 cwd；在仓库根目录下 go run 就对了
 go run ./cmd/admin      # http://localhost:8081/ 是管理员页面
 go run ./cmd/gateway    # http://localhost:8080/ 是用户页面
 ```
