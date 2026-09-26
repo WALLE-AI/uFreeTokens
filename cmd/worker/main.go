@@ -1,9 +1,15 @@
-// Command worker 是异步任务入口（技术方案 §7.11、§7.13）：
+// Command worker 是异步任务入口（技术方案 §7.11、§7.12、§7.13）：
 //   - 回收过期未结算的预扣（网关崩溃留下的"孤儿" reservation）
 //   - 保持 request_logs 的未来分区存在（表按天分区，不持续补分区插入会失败）
 //   - 定期做内部一致性对账（钱包余额 vs 账本流水、账本 vs 请求日志）
+//   - 每分钟跑一轮风控规则引擎（internal/risk：消费速率突增自动降级 tier，
+//     同 IP 多账户聚集只上报不处置）
 //
-// 尚未实现：价格同步（§7.16）、成本 vs 上游账单对账（依赖 catalog 加载成本价）。
+// 尚未实现：价格同步调度（§7.16，见 internal/pricesync 包文档）。账单级对账
+// （internal/reconcile.CheckBillingDrift）已经有框架，但没有接进这个循环——
+// 调用它需要一个真实的 BillingFetcher 实现和要扫描哪些 provider_account，
+// 这两者目前都不存在（只有 mock fetcher 用于测试），接一个假的调用点不会
+// 产生任何真实的对账能力。
 package main
 
 import (
@@ -22,6 +28,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/reconcile"
 	"github.com/WALLE-AI/uFreeTokens/internal/reqlog"
+	"github.com/WALLE-AI/uFreeTokens/internal/risk"
 	"github.com/WALLE-AI/uFreeTokens/internal/store"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
@@ -38,6 +45,8 @@ const (
 	reconcileInterval = time.Hour
 	reconcileLookback = time.Hour       // 每次对账检查最近 1 小时的账本 vs 请求日志
 	reconcileBuffer   = 5 * time.Minute // 窗口结束时间往回退 5 分钟，避开异步写入延迟
+
+	riskScanInterval = time.Minute // 与技术方案 §7.12"异常检测 worker 每分钟聚合"一致
 )
 
 func main() {
@@ -72,6 +81,7 @@ func run() error {
 
 	walletSvc := wallet.New(pg)
 	reconciler := reconcile.New(pg)
+	riskEngine := risk.New(pg, risk.DefaultThresholds())
 
 	logger.Info("worker dependencies connected, starting task loops")
 
@@ -84,6 +94,9 @@ func run() error {
 	})
 	runTask(ctx, &wg, logger, "reconcile", reconcileInterval, func(ctx context.Context) {
 		runReconcile(ctx, logger, reconciler)
+	})
+	runTask(ctx, &wg, logger, "risk_scan", riskScanInterval, func(ctx context.Context) {
+		runRiskScan(ctx, logger, riskEngine)
 	})
 
 	<-ctx.Done()
@@ -166,5 +179,21 @@ func runReconcile(ctx context.Context, logger *slog.Logger, reconciler *reconcil
 			"window_start", report.LedgerVsLogs.WindowStart, "window_end", report.LedgerVsLogs.WindowEnd,
 			"ledger_total", report.LedgerVsLogs.LedgerTotal, "request_logs_total", report.LedgerVsLogs.RequestLogsTotal,
 			"diff", report.LedgerVsLogs.Diff())
+	}
+}
+
+// runRiskScan 跑一轮 §7.12 风控规则引擎；命中的规则已经在 Scan 内部执行完
+// 对应的 Action（比如降级 tier），这里只负责把结果记日志——真正的人工通知
+// 渠道（邮件/Slack）没有接，见 internal/risk 包文档。
+func runRiskScan(ctx context.Context, logger *slog.Logger, engine *risk.Engine) {
+	findings, err := engine.Scan(ctx, time.Now())
+	if err != nil {
+		logger.Error("risk scan failed", "error", err)
+		return
+	}
+	for _, f := range findings {
+		logger.Warn("risk: rule matched",
+			"rule", f.Rule, "account_id", f.AccountID, "ip", f.IP, "detail", f.Detail,
+			"action", f.Action, "applied", f.Applied)
 	}
 }
