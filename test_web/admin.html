@@ -78,6 +78,10 @@
   </div>
   <label>售价适用 Tier</label>
   <select id="impTier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select>
+  <div class="row">
+    <div><label>汇率 (USD→CNY)</label><input id="fxRate" value="7.2" oninput="recomputeAllSell()"></div>
+    <div><label>加价倍数</label><input id="markup" value="2" oninput="recomputeAllSell()"></div>
+  </div>
 
   <button onclick="buildPriceTable()">① 生成价格表（按上面勾选的模型）</button>
   <p class="hint">先勾选第 2 步里的模型，再点这个——会自动查两个真实来源有没有现成的成本价
@@ -85,7 +89,8 @@
     和 <b>LiteLLM</b> 社区数据集（<code>BerriAI/litellm</code> 维护的 <code>model_prices_and_context_window.json</code>）。
     两个都是精确按模型 ID 匹配，不做模糊猜测——查得到就把成本价填好并在"来源"那列标出是哪个来源；查不到的行成本价留 0，需要自己填
     （SiliconFlow 这类只在自己官网发布价格、不进任何聚合数据集的供应商大概率查不到，见前面的排查结论）。
-    售价（人民币/百万 token）不会自动生成——这两个来源给的都是"上游成本"，不是"我们该收用户多少钱"，售价永远是自己的定价决策。</p>
+    售价 = 成本(USD) × 汇率 × 加价倍数，改成本、改汇率、改倍数都会实时重算——但算出来的售价框仍然是普通输入框，
+    算完之后你还能手动改，改完只要不再碰成本/汇率/倍数就不会被覆盖回去。汇率和倍数都是占位默认值，不是实时汇率/真实定价策略，改成你自己的数字。</p>
   <div id="priceTableBox"></div>
   <button id="importBtn" onclick="importSelected()" style="display:none">② 导入（按上表价格）</button>
 </section>
@@ -237,11 +242,36 @@ function priceComponents(inPrice, outPrice) {
 
 let priceTableModels = [];
 
+// computeSellPrice：售价(CNY) = 成本(USD) × 汇率 × 加价倍数。汇率/倍数都是
+// 页面上的占位默认值，不是实时汇率或真实定价策略，管理员应该自己填对的数字——
+// 这里只负责算乘法，不负责判断这两个输入是否合理。
+function computeSellPrice(costUSD) {
+  const fx = parseFloat($('fxRate').value) || 0;
+  const markup = parseFloat($('markup').value) || 0;
+  const cost = parseFloat(costUSD) || 0;
+  return (cost * fx * markup).toFixed(4);
+}
+
+// recomputeRowSell 用第 i 行当前的成本价重算那一行的售价——改成本、改
+// 汇率/倍数都会触发。算完之后售价框仍然是普通输入框，之后手动改了不会被
+// 这次调用覆盖，只有再次触发重算（改成本/汇率/倍数）才会覆盖回去。
+function recomputeRowSell(i) {
+  const costIn = priceTableRowValue(i, 'costIn');
+  const costOut = priceTableRowValue(i, 'costOut');
+  const sellInEl = document.querySelector(`#priceTableBox input[data-i="${i}"][data-f="sellIn"]`);
+  const sellOutEl = document.querySelector(`#priceTableBox input[data-i="${i}"][data-f="sellOut"]`);
+  if (sellInEl) sellInEl.value = computeSellPrice(costIn);
+  if (sellOutEl) sellOutEl.value = computeSellPrice(costOut);
+}
+
+function recomputeAllSell() {
+  priceTableModels.forEach((_, i) => recomputeRowSell(i));
+}
+
 // buildPriceTable 对当前勾选的模型查一遍参考成本价（同时查 OpenRouter 和
 // LiteLLM 两个真实来源，OpenRouter 优先，见 internal/app/pricelookup.go），
 // 渲染成一张可编辑的表格——查得到的行成本价自动填好，查不到的留 0 需要
-// 自己判断；售价（人民币）不从这两个来源推导（那是上游成本，不是我们的
-// 定价决策），给一个固定默认值，每行都能单独改。
+// 自己判断；售价按 computeSellPrice 算出一个初始值，每行都能单独改。
 async function buildPriceTable() {
   const boxes = document.querySelectorAll('#modelListBox input[type=checkbox]:checked');
   if (boxes.length === 0) { log('先勾选至少一个模型', 'err'); return; }
@@ -270,10 +300,10 @@ async function buildPriceTable() {
     return `<tr>
       <td class="modelName">${m.ID}</td>
       <td>${matchedLabel}</td>
-      <td><input data-i="${i}" data-f="costIn" value="${costIn}"></td>
-      <td><input data-i="${i}" data-f="costOut" value="${costOut}"></td>
-      <td><input data-i="${i}" data-f="sellIn" value="5"></td>
-      <td><input data-i="${i}" data-f="sellOut" value="15"></td>
+      <td><input data-i="${i}" data-f="costIn" value="${costIn}" oninput="recomputeRowSell(${i})"></td>
+      <td><input data-i="${i}" data-f="costOut" value="${costOut}" oninput="recomputeRowSell(${i})"></td>
+      <td><input data-i="${i}" data-f="sellIn" value="${computeSellPrice(costIn)}"></td>
+      <td><input data-i="${i}" data-f="sellOut" value="${computeSellPrice(costOut)}"></td>
     </tr>`;
   }).join('');
   box.innerHTML = `<table class="priceTable">
