@@ -54,9 +54,11 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 		if d.Relay != nil {
 			v1.Post("/chat/completions", d.Relay.ChatCompletions)
 			v1.Post("/embeddings", d.Relay.Embeddings)
+			v1.Post("/messages", d.Relay.Messages)
 		} else {
 			v1.Post("/chat/completions", notImplementedHandler("chat.completions"))
 			v1.Post("/embeddings", notImplementedHandler("embeddings"))
+			v1.Post("/messages", notImplementedHandler("messages"))
 		}
 		v1.Post("/completions", notImplementedHandler("completions"))
 		v1.Post("/images/generations", notImplementedHandler("images.generations"))

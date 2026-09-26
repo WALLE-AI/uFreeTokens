@@ -17,11 +17,25 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   鉴权/限流/预扣/重试/结算管线（`callUpstreamWithRetry`/`handleNonStream`
   两边共用），差异只在没有流式、没有工具调用、用量只有 input（没有
   completion）；只有 `virtual_models.type = 'embedding'` 的模型能被
-  `/v1/embeddings` 路由到。`/v1/completions`（旧式补全接口）、
-  `/v1/images/generations`、`/v1/audio/transcriptions`、`/v1/audio/speech`
-  尚未实现，返回 `503 not_implemented`——图片/音频的请求体（multipart 上传、
-  二进制/base64 响应）和聊天/嵌入的 JSON 形态差异太大，复用不了现有管线，
-  需要单独设计，比嵌入端点的工作量大得多。
+  `/v1/embeddings` 路由到。
+
+  `/v1/messages`（Phase 2 的原生 Anthropic 入口）也已经接入，但走的是完全
+  不同的实现思路：不是重新实现一遍鉴权/预扣/路由/结算，而是把客户端发来的
+  Anthropic Messages API 请求翻译成内部通用的 OpenAI 形状，直接调用
+  `ChatCompletions`（当 `http.Handler` 一样调用，用一个包装了
+  `http.ResponseWriter` 的翻译层拦截它写出去的响应），再把结果（非流式 JSON、
+  流式 SSE 具名事件）翻译回 Anthropic 形状。好处是这条入口自动获得
+  `ChatCompletions` 的所有能力（多协议路由、重试预算、毛利守护……），不需要
+  重新实现一遍；代价是 `request_logs.endpoint` 记的仍然是 `chat.completions`，
+  不区分客户端是从哪个协议入口进来的。已知限制和 `internal/adapter.AnthropicAdapter`
+  保持对称：不支持 tool/function calling，content 数组只识别文本块，非 200
+  的错误响应直接透传 OpenAI 形状的错误体、不翻译成 Anthropic 的错误形状。
+
+  `/v1/completions`（旧式补全接口）、`/v1/images/generations`、
+  `/v1/audio/transcriptions`、`/v1/audio/speech` 尚未实现，返回
+  `503 not_implemented`——图片/音频的请求体（multipart 上传、二进制/base64
+  响应）和聊天/嵌入/messages 的纯 JSON 形态差异太大，复用不了现有管线，
+  需要单独设计，比这几个端点的工作量大得多。
 - `cmd/admin`：账户/API Key/Provider/渠道/虚拟模型/售价管理的 HTTP 接口
   （`internal/admin`）——创建账户会原子初始化一个空钱包；上游 Key 落库前用
   `internal/secretbox` 加密；改价格是发布新版本，不覆盖历史。鉴权已经接入

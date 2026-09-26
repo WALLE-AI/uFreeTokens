@@ -381,6 +381,11 @@ func doEmbeddings(t *testing.T, gwURL, apiKey string, body map[string]any) *http
 	return doPost(t, gwURL+"/v1/embeddings", apiKey, body)
 }
 
+func doMessages(t *testing.T, gwURL, apiKey string, body map[string]any) *http.Response {
+	t.Helper()
+	return doPost(t, gwURL+"/v1/messages", apiKey, body)
+}
+
 func doPost(t *testing.T, url, apiKey string, body map[string]any) *http.Response {
 	t.Helper()
 	raw, _ := json.Marshal(body)
@@ -546,6 +551,147 @@ func TestEmbeddings_RejectsChatOnlyModel(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404, body = %s", resp.StatusCode, body)
+	}
+}
+
+// TestMessages_NonStream_TranslatesRequestAndResponse 验证 /v1/messages
+// （技术方案 Phase 2 的原生 Anthropic 入口）真的是 ChatCompletions 的协议转换
+// 外壳：上游收到的是翻译后的 OpenAI 兼容请求（不是 Anthropic 形状），客户端
+// 收到的响应是翻译回来的 Anthropic 形状，计费和普通 /v1/chat/completions
+// 走的是同一条路径。
+func TestMessages_NonStream_TranslatesRequestAndResponse(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "up-1", "model": "mock-upstream-model",
+			"choices": [{"message": {"role":"assistant","content":"hi there"}, "finish_reason":"stop"}],
+			"usage": {"prompt_tokens": 1000, "completion_tokens": 500}
+		}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doMessages(t, gw.URL, fx.apiKey, map[string]any{
+		"model": vmName, "max_tokens": 1024,
+		"messages": []any{
+			map[string]any{"role": "system", "content": "be terse"},
+			map[string]any{"role": "user", "content": "hi"},
+		},
+	})
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+
+	// 上游收到的必须是翻译后的 OpenAI 形状：messages 数组里有拆出来的 system
+	// 消息，不是 Anthropic 的顶层 "system" 字段。
+	if gotBody["system"] != nil {
+		t.Errorf("upstream should not receive a top-level Anthropic 'system' field: %v", gotBody)
+	}
+	upstreamMsgs, _ := gotBody["messages"].([]any)
+	if len(upstreamMsgs) != 2 {
+		t.Fatalf("upstream messages = %v, want 2 (system extracted + user)", upstreamMsgs)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, respBody)
+	}
+	if m["type"] != "message" || m["role"] != "assistant" {
+		t.Errorf("response = %+v, want Anthropic message shape", m)
+	}
+	content, _ := m["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %v, want exactly 1 block", content)
+	}
+	block, _ := content[0].(map[string]any)
+	if block["text"] != "hi there" {
+		t.Errorf("content text = %v, want 'hi there'", block["text"])
+	}
+	if m["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", m["stop_reason"])
+	}
+	usage, _ := m["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(1000) || usage["output_tokens"] != float64(500) {
+		t.Errorf("usage = %+v, want input=1000 output=500", usage)
+	}
+
+	// 1000 input + 500 output, 单价 1 元/百万 -> 1500 微元，和走 /v1/chat/completions
+	// 应该完全一样，因为底下走的是同一条结算管线。
+	wantCharge := int64(1500)
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+}
+
+// TestMessages_Stream_TranslatesToAnthropicSSEEvents 验证 /v1/messages 的流式
+// 路径：内部管线产出的 OpenAI 风格 SSE chunk 被逐块翻译成 Anthropic 的具名
+// SSE 事件（message_start/content_block_start/content_block_delta/
+// content_block_stop/message_delta/message_stop），而不是原样转发 OpenAI 形状。
+func TestMessages_Stream_TranslatesToAnthropicSSEEvents(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			`data: {"id":"up-1","choices":[{"delta":{"content":"He"}}]}` + "\n\n",
+			`data: {"id":"up-1","choices":[{"delta":{"content":"llo"}}]}` + "\n\n",
+			`data: {"id":"up-1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":500,"completion_tokens":100}}` + "\n\n",
+			"data: [DONE]\n\n",
+		} {
+			_, _ = w.Write([]byte(line))
+			fl.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doMessages(t, gw.URL, fx.apiKey, map[string]any{
+		"model": vmName, "max_tokens": 1024, "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	s := string(body)
+
+	for _, want := range []string{"event: message_start", "event: content_block_start", "event: content_block_delta", "event: content_block_stop", "event: message_delta", "event: message_stop"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("stream body missing %q: %s", want, s)
+		}
+	}
+	if !strings.Contains(s, `"text":"He"`) || !strings.Contains(s, `"text":"llo"`) {
+		t.Errorf("stream body should contain both text deltas: %s", s)
+	}
+	if strings.Contains(s, `"choices"`) {
+		t.Errorf("stream body leaks raw OpenAI-shaped chunks (should be fully translated): %s", s)
+	}
+
+	// 500 input + 100 output, 单价 1 元/百万 -> 600 微元。
+	wantCharge := int64(600)
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
 	}
 }
 
