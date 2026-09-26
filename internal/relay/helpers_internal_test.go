@@ -93,3 +93,75 @@ func TestComputeCostAmount_NoMatchingMeterReturnsNil(t *testing.T) {
 		t.Errorf("computeCostAmount() = %v, want nil (no meter matched this usage)", got)
 	}
 }
+
+func TestClientRequestedStreamUsage(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want bool
+	}{
+		{"absent", map[string]any{"stream": true}, false},
+		{"include_usage_true", map[string]any{"stream_options": map[string]any{"include_usage": true}}, true},
+		{"include_usage_false", map[string]any{"stream_options": map[string]any{"include_usage": false}}, false},
+		{"stream_options_not_a_map", map[string]any{"stream_options": "nope"}, false},
+		{"include_usage_not_a_bool", map[string]any{"stream_options": map[string]any{"include_usage": "yes"}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := clientRequestedStreamUsage(c.body); got != c.want {
+				t.Errorf("clientRequestedStreamUsage(%v) = %v, want %v", c.body, got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsUsageOnlyChunk(t *testing.T) {
+	cases := []struct {
+		name  string
+		chunk string
+		want  bool
+	}{
+		{
+			name:  "usage_only_empty_choices",
+			chunk: "data: {\"id\":\"x\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "usage_only_missing_choices",
+			chunk: "data: {\"id\":\"x\",\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n",
+			want:  true,
+		},
+		{
+			name:  "content_delta_with_choices",
+			chunk: "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+			want:  false,
+		},
+		{
+			name:  "content_delta_and_usage_both_present",
+			chunk: "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":1}}\n\n",
+			want:  false,
+		},
+		{
+			name:  "no_usage_field_empty_choices",
+			chunk: "data: {\"id\":\"x\",\"choices\":[]}\n\n",
+			want:  false,
+		},
+		{
+			name:  "usage_null",
+			chunk: "data: {\"id\":\"x\",\"choices\":[],\"usage\":null}\n\n",
+			want:  false,
+		},
+		{
+			name:  "malformed_json",
+			chunk: "data: not-json\n\n",
+			want:  false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isUsageOnlyChunk([]byte(c.chunk)); got != c.want {
+				t.Errorf("isUsageOnlyChunk(%q) = %v, want %v", c.chunk, got, c.want)
+			}
+		})
+	}
+}

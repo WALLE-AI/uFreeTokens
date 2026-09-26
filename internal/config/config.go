@@ -34,6 +34,12 @@ type GatewayConfig struct {
 	IdleTimeout       time.Duration `koanf:"idle_timeout"`
 	StreamIdleTimeout time.Duration `koanf:"stream_idle_timeout"`
 	ShutdownGrace     time.Duration `koanf:"shutdown_grace"`
+	// CORSOrigins 是逗号分隔的允许跨域调用 /v1 的 Origin 白名单（环境变量
+	// UFT_GATEWAY_CORS_ORIGINS）；留空（默认）不启用 CORS，同源反代场景不需要它
+	// （dev 用 Vite proxy，prod 用 Nginx，见 frontend/web/README.md）。存成单个
+	// 字符串而不是 []string：koanf 的环境变量 provider 不会把逗号分隔的字符串
+	// 拆成 slice，拆分交给 app.NewGatewayRouter 做。
+	CORSOrigins string `koanf:"cors_origins"`
 }
 
 type MetricsConfig struct {

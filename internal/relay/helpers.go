@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -117,15 +119,57 @@ func tierCanSee(visibleTiers []string, tier string) bool {
 }
 
 // fallbackUsage 在上游完全没有返回 usage（且流式场景下也没能从任何 chunk 里
-// 提取到）时使用：按预扣时的估算上限计费，而不是按 0 计费——宁可少数情况下
-// 对用户略微多算，也不能让平台在计费信息缺失时系统性地少收钱甚至倒贴
-// （技术方案 §7.9.4 的兜底原则；基于 tokenizer 的精确估算留作后续）。
-func fallbackUsage(estInput, reserveOutput int) schema.Usage {
+// 提取到）时使用，宁可略微多算也不能系统性地少收钱甚至倒贴（技术方案 §7.9.4
+// 的兜底原则；基于 tokenizer 的精确估算留作后续）。output 参数由调用方决定：
+// 非流式路径、以及流式但完全没转发出任何内容的场景，用预扣时的估算上限
+// reserveOutput；流式场景下客户端已经收到了部分内容后断开，用
+// estimateTokens(转发字节数) 而不是 reserveOutput——那是"最多可能用掉多少"，
+// 而不是"实际输出了多少"，见 handleStream。
+func fallbackUsage(estInput, output int) schema.Usage {
 	return schema.Usage{
 		InputTokens:  int64(estInput),
-		OutputTokens: int64(reserveOutput),
+		OutputTokens: int64(output),
 		Source:       schema.UsageSourceEstimated,
 	}
+}
+
+// clientRequestedStreamUsage 判断客户端自己的请求体里是不是主动带了
+// stream_options.include_usage=true。relay 会无条件让上游带上这个参数
+// （adapter/openai.go 的 BuildRequest）以便准确计费，但客户端看不看得到那个
+// usage-only chunk 应该完全取决于客户端自己有没有要——这个函数就是那个判断
+// 依据，供 handleStream 决定要不要转发（isUsageOnlyChunk）。
+func clientRequestedStreamUsage(reqMap map[string]any) bool {
+	so, ok := reqMap["stream_options"].(map[string]any)
+	if !ok {
+		return false
+	}
+	v, _ := so["include_usage"].(bool)
+	return v
+}
+
+// isUsageOnlyChunk 判断一个 StreamDecoder.Next() 返回的 SSE chunk
+// （"data: {...}\n\n" 形状）是不是只携带 usage、不携带任何内容增量——也就是
+// BuildRequest 为了计费注入 include_usage 换来的那个额外 chunk（OpenAI 兼容
+// 上游的约定是这类 chunk 的 choices 为空数组）。解析失败时保守地返回 false，
+// 原样转发，绝不能因为解析失败误吞掉真实内容。
+func isUsageOnlyChunk(chunk []byte) bool {
+	payload := bytes.TrimSpace(chunk)
+	payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
+	if len(payload) == 0 || payload[0] != '{' {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return false
+	}
+	usage, hasUsage := m["usage"]
+	if !hasUsage || usage == nil {
+		return false
+	}
+	if choices, ok := m["choices"].([]any); ok && len(choices) > 0 {
+		return false
+	}
+	return true
 }
 
 // computeCostAmount 用渠道的成本价（costBook，可能是零值——没配置成本价）算出

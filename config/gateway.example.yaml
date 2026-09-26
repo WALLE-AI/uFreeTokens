@@ -8,6 +8,7 @@ gateway:
   idle_timeout: 120s
   stream_idle_timeout: 120s
   shutdown_grace: 30s
+  cors_origins: ""               # 逗号分隔；留空不启用（同源反代场景，见 frontend/web）
 
 metrics:
   addr: ":9090"

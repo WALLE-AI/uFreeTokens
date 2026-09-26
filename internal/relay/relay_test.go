@@ -9,6 +9,7 @@
 package relay_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -739,6 +740,245 @@ func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
 	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
 	if cash != 1_000_000-wantCharge {
 		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+}
+
+// TestChatCompletions_Stream_InjectsIncludeUsage_ChargesRealUsage 验证迭代1的
+// include_usage 注入（adapter/openai.go 的 BuildRequest）：即使客户端自己的
+// 请求体完全没带 stream_options，上游收到的请求也必须带
+// stream_options.include_usage=true，这样才能按上游返回的真实 usage 计费，
+// 而不是退化成保守估算兜底。
+func TestChatCompletions_Stream_InjectsIncludeUsage_ChargesRealUsage(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var gotStreamOptions any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var reqBody map[string]any
+		_ = json.Unmarshal(raw, &reqBody)
+		gotStreamOptions = reqBody["stream_options"]
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			`data: {"id":"up-1","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n",
+			`data: {"id":"up-1","choices":[],"usage":{"prompt_tokens":321,"completion_tokens":654}}` + "\n\n",
+			"data: [DONE]\n\n",
+		} {
+			_, _ = w.Write([]byte(line))
+			fl.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 10_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	// 客户端自己没带 stream_options，relay 仍然应该在转发给上游的请求里注入它。
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "stream": true, "messages": []any{}})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	so, _ := gotStreamOptions.(map[string]any)
+	if so["include_usage"] != true {
+		t.Errorf("upstream did not receive stream_options.include_usage=true: %v", gotStreamOptions)
+	}
+
+	// 321 input + 654 output, 单价 1 元/百万 -> 975 微元（真实 usage，不是估算兜底）。
+	wantCharge := int64(975)
+	cash, _ := awaitSettled(t, pool, fx.accountID, 10_000_000)
+	if cash != 10_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 10_000_000-wantCharge)
+	}
+}
+
+// TestChatCompletions_Stream_SuppressesUsageOnlyChunkWhenClientDidNotAskForIt
+// 和下面的 TestChatCompletions_Stream_ForwardsUsageChunkWhenClientAskedForIt
+// 一起验证：relay 为了计费无条件让上游带 usage（上一个测试），但客户端能不能在
+// SSE 里看到那个 usage-only chunk，完全取决于客户端自己的请求是否带了
+// stream_options.include_usage=true——不能因为 relay 内部需要 usage 就悄悄
+// 改变了客户端看到的协议行为（技术方案 §7.4）。
+func TestChatCompletions_Stream_SuppressesUsageOnlyChunkWhenClientDidNotAskForIt(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			`data: {"id":"up-1","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n",
+			`data: {"id":"up-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}` + "\n\n",
+			"data: [DONE]\n\n",
+		} {
+			_, _ = w.Write([]byte(line))
+			fl.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "stream": true, "messages": []any{}})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `"usage"`) {
+		t.Errorf("stream body should not contain the usage-only chunk when the client did not ask for it: %s", body)
+	}
+	if !strings.Contains(string(body), "Hi") {
+		t.Errorf("stream body should still contain the content delta: %s", body)
+	}
+}
+
+func TestChatCompletions_Stream_ForwardsUsageChunkWhenClientAskedForIt(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			`data: {"id":"up-1","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n",
+			`data: {"id":"up-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}` + "\n\n",
+			"data: [DONE]\n\n",
+		} {
+			_, _ = w.Write([]byte(line))
+			fl.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
+		"model": vmName, "stream": true, "messages": []any{},
+		"stream_options": map[string]any{"include_usage": true},
+	})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"usage"`) {
+		t.Errorf("stream body should contain the usage chunk since the client asked for it: %s", body)
+	}
+}
+
+// TestChatCompletions_Stream_ClientDisconnect_EstimatesFromForwardedContent 验证
+// 客户端在上游还没来得及吐出 usage 之前就断开连接时，计费不再按预扣上限
+// reserveOutput 估算（那会系统性地对提前断开的用户多收钱），而是按已经转发给
+// 客户端的内容字节数估算（技术方案 §7.9.4）。种子虚拟模型的
+// reserveOutput（= max_output = 8192，未被 ReserveOutputCap 裁剪）远大于这里
+// 会转发的那几十个字节对应的估算 token 数，用来和旧行为区分开。
+func TestChatCompletions_Stream_ClientDisconnect_EstimatesFromForwardedContent(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	clientDisconnected := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		_, _ = w.Write([]byte(`data: {"id":"up-1","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n"))
+		fl.Flush()
+
+		select {
+		case <-clientDisconnected:
+		case <-time.After(2 * time.Second):
+		}
+		// 客户端这时候已经断开了：接下来几次转发给客户端的写入应该会失败，
+		// 让 relay 的转发循环 break，upstream 后面永远不会发出 usage chunk。
+		for i := 0; i < 5; i++ {
+			if _, werr := w.Write([]byte(fmt.Sprintf(`data: {"id":"up-1","choices":[{"delta":{"content":" more-%d"}}]}`, i) + "\n\n")); werr != nil {
+				return
+			}
+			fl.Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	raw, _ := json.Marshal(map[string]any{"model": vmName, "stream": true, "messages": []any{}})
+	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(string(raw)))
+	req.Header.Set("Authorization", "Bearer "+fx.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+
+	br := bufio.NewReader(resp.Body)
+	line, rerr := br.ReadString('\n')
+	if rerr != nil || !strings.Contains(line, "Hi") {
+		t.Fatalf("first line = %q (err=%v), want it to contain the first chunk", line, rerr)
+	}
+	_ = resp.Body.Close() // 模拟客户端中途断开
+	close(clientDisconnected)
+
+	// 不在这里手动调用 reqLogW.Close() 强制 flush：settleQuietly/logSuccess
+	// 是在处理这次请求的 handler goroutine 里异步跑的（转发循环要等 w.Write
+	// 失败才会 break），这里没法保证那个 goroutine 已经跑到 ReqLog.Write——
+	// 提前 Close() 会关掉 reqlog.Writer 的 channel，讓那个 goroutine 往一个
+	// 已关闭的 channel 发送而 panic（一个之前真的踩过的 bug）。改成等
+	// reqlog.Writer 自己的 1 秒定时器 flush，轮询查询直到记录出现；
+	// defer reqLogW.Close() 留到 test 结束、断开处理必然早已完成之后再关。
+	var (
+		usageSource  string
+		outputTokens int64
+		status       string
+	)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		err := pool.QueryRow(context.Background(),
+			`SELECT usage_source, output_tokens, status FROM request_logs WHERE request_id = $1`, requestID,
+		).Scan(&usageSource, &outputTokens, &status)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("query request_logs: %v (row never appeared)", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if status != "success" {
+		t.Errorf("status = %q, want success (headers were already sent before the disconnect)", status)
+	}
+	if usageSource != "estimated" {
+		t.Errorf("usage_source = %q, want estimated (upstream never sent a usage chunk)", usageSource)
+	}
+	// 只转发了 "Hi" 那一小段内容，估算出的 output token 数应该远小于
+	// reserveOutput（虚拟模型 max_output=8192）——旧行为会直接按 8192 计费。
+	if outputTokens <= 0 || outputTokens >= 100 {
+		t.Errorf("output_tokens = %d, want a small positive number derived from the ~1 forwarded chunk, not the 8192 reserveOutput cap", outputTokens)
 	}
 }
 

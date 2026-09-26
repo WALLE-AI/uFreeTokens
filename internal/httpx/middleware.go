@@ -94,6 +94,43 @@ func extractBearerToken(header string) (string, bool) {
 	return token, true
 }
 
+// CORS 允许配置的 Origin 列表跨域调用 /v1（技术方案：BYOK 浏览器客户端直接
+// 用自己的 API Key 调网关，不经过同源反代）。只做精确匹配的白名单，不开
+// credentials——鉴权信息走 Authorization: Bearer <api-key>，不依赖 Cookie，
+// 也就不需要、不应该允许带 Cookie 跨域（/console 的 Cookie 会话只走同源，
+// 完全不挂这个中间件）。调用方应该只在 origins 非空时挂载：origins 为空
+// 表示不启用跨域，调用方不应该挂一个允许列表为空的 CORS 中间件。
+//
+// 必须挂在 auth.APIKey 之前：预检请求（OPTIONS）不带 Authorization 头，
+// 如果先过鉴权中间件会被判 401，浏览器就看不到这里设置的 CORS 头，等于
+// 跨域请求整体失败。
+func CORS(origins []string) func(http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(origins))
+	for _, o := range origins {
+		allowed[o] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && allowed[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, Retry-After")
+			}
+			if r.Method == http.MethodOptions {
+				if origin != "" && allowed[origin] {
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id")
+					w.Header().Set("Access-Control-Max-Age", "600")
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // statusRecorder 包装 ResponseWriter 以捕获实际写出的状态码，供访问日志使用。
 type statusRecorder struct {
 	http.ResponseWriter

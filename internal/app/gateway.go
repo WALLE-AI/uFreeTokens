@@ -6,6 +6,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,12 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 	r.Get("/", serveStaticHTML(d.TestWebDir, "user.html"))
 
 	r.Route("/v1", func(v1 chi.Router) {
+		// CORS 只挂在 /v1（BYOK 浏览器客户端跨域调用），且必须在 auth.APIKey
+		// 之前，否则不带 Authorization 的预检 OPTIONS 会被鉴权中间件拦成 401
+		// （见 httpx.CORS 的包注释）。/console 的 Cookie 会话只走同源，不挂这个。
+		if origins := splitCommaList(d.Cfg); len(origins) > 0 {
+			v1.Use(httpx.CORS(origins))
+		}
 		v1.Use(auth.APIKey(d.AuthStore, d.Pepper))
 
 		v1.Get("/models", listModelsHandler(d.PG))
@@ -73,6 +80,23 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 	})
 
 	return r
+}
+
+// splitCommaList 把 gateway.cors_origins 的逗号分隔字符串拆成 Origin 列表，
+// 修剪空白、丢弃空项；cfg 为 nil（测试里直接构造 GatewayDeps 不带 Cfg 的场景）
+// 或字段为空都返回 nil，调用方据此判断"不启用 CORS"。
+func splitCommaList(cfg *config.Config) []string {
+	if cfg == nil || cfg.Gateway.CORSOrigins == "" {
+		return nil
+	}
+	parts := strings.Split(cfg.Gateway.CORSOrigins, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if o := strings.TrimSpace(p); o != "" {
+			origins = append(origins, o)
+		}
+	}
+	return origins
 }
 
 func notImplementedHandler(endpoint string) http.HandlerFunc {

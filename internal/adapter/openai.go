@@ -72,6 +72,22 @@ func (a *OpenAIAdapter) BuildRequest(ctx context.Context, target Target, endpoin
 	}
 	payload["model"] = target.Channel.UpstreamModel
 
+	// 流式请求总是向上游要 usage（即便客户端没主动带 stream_options），这样
+	// relay 层才能按真实用量计费而不是保守估算兜底（技术方案 §7.9.4）；客户端
+	// 自己看不看得到这个 usage-only chunk 由 relay.isUsageOnlyChunk 在转发时
+	// 决定，不影响这里的上游请求。渠道如果不支持这个参数，用
+	// channel.param_overrides: {"stream_options": null} 剔除（下面的循环会处理）。
+	if stream, _ := payload["stream"].(bool); stream {
+		merged := map[string]any{"include_usage": true}
+		if existing, ok := payload["stream_options"].(map[string]any); ok {
+			for k, v := range existing {
+				merged[k] = v
+			}
+			merged["include_usage"] = true
+		}
+		payload["stream_options"] = merged
+	}
+
 	for k, v := range target.Channel.ParamOverrides {
 		if v == nil {
 			delete(payload, k)

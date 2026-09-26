@@ -110,9 +110,11 @@ type requestMeta struct {
 	accountTier string
 	vmName      string
 	isStream    bool
-	clientIP    string
-	userAgent   string
-	start       time.Time
+	// clientWantsUsage 见 ChatCompletions 里的赋值处；只有流式请求会用到。
+	clientWantsUsage bool
+	clientIP         string
+	userAgent        string
+	start            time.Time
 	// logEndpoint 是 request_logs.endpoint 里记录的名字（logEndpointChat /
 	// logEndpointEmbeddings），不是字面的上游 URL 路径。handleNonStream 在
 	// ChatCompletions 和 Embeddings 之间共用，靠这个字段区分是谁调用的。
@@ -182,6 +184,12 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream, _ := reqMap["stream"].(bool)
+	// clientWantsUsage 记录客户端是不是自己主动要了 stream_options.include_usage
+	// （技术方案 §7.4：注入 include_usage 是为了让 relay 层拿到真实用量计费，
+	// 不代表客户端自己也想在 SSE 里看到那个额外的 usage-only chunk——上游总是
+	// 会被要求带上 usage，见 adapter/openai.go 的 BuildRequest，这里只决定
+	// handleStream 要不要把那个 chunk 转发给客户端，见 isUsageOnlyChunk）。
+	clientWantsUsage := clientRequestedStreamUsage(reqMap)
 	estInput := estimateTokens(len(body))
 	reserveOutput := reserveOutputTokens(reqMap, vm.MaxOutput, s.Cfg.ReserveOutputCap)
 
@@ -221,7 +229,8 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta := requestMeta{
 		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
 		accountTier: principal.AccountTier,
-		vmName:      vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
+		vmName:      vm.Name, isStream: stream, clientWantsUsage: clientWantsUsage,
+		clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 		logEndpoint: logEndpointChat,
 	}
 
@@ -506,21 +515,40 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	var forwardedBytes int
 	for {
 		chunk, err := dec.Next()
 		if err != nil {
 			break // io.EOF（正常结束）或读取错误（客户端断开/上游中断）都在这里停止转发
 		}
+		// 客户端没有自己要 include_usage 时，不把 relay 为了计费而注入的
+		// usage-only chunk 转发出去——协议行为要和客户端自己发起、不带
+		// stream_options 的请求完全一致（技术方案 §7.4）。usage 已经在
+		// dec.Next() 内部解析并累计进 dec.Usage()，跳过转发不影响计费。
+		if !meta.clientWantsUsage && isUsageOnlyChunk(chunk) {
+			continue
+		}
 		if _, werr := w.Write(chunk); werr != nil {
 			break // 客户端已断开，停止写入；下面仍然会按已产生内容结算
 		}
+		forwardedBytes += len(chunk)
 		flusher.Flush()
 	}
 
 	usage := dec.Usage()
 	if usage.IsZero() {
-		usage = fallbackUsage(estInput, reserveOutput)
-		log.Warn("stream ended without usage, using conservative fallback", "request_id", meta.requestID)
+		// 上游完全没给 usage（多数场景是客户端中途断开，上游还没来得及吐出
+		// 最后的 usage chunk）：不能再按 reserveOutput 这个预扣上限收费——
+		// 那是"最多可能用掉多少"，用户实际可能只看到了几个字就断开了。改成按
+		// 已经转发给客户端的字节数估算，同时仍然不超过 reserveOutput（防止
+		// 估算函数本身出问题时超收）。usage_source 仍然是 estimated：这依旧是
+		// 估算值，不是上游确认的真实用量。
+		estOutput := estimateTokens(forwardedBytes)
+		if estOutput > reserveOutput {
+			estOutput = reserveOutput
+		}
+		usage = fallbackUsage(estInput, estOutput)
+		log.Warn("stream ended without usage, estimating from forwarded content", "request_id", meta.requestID, "forwarded_bytes", forwardedBytes)
 	}
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage, fxRates)

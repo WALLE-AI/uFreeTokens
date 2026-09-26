@@ -69,6 +69,29 @@ func TestLoad_FileOverride(t *testing.T) {
 	}
 }
 
+func TestLoad_Defaults_CORSOriginsEmpty(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Gateway.CORSOrigins != "" {
+		t.Errorf("Gateway.CORSOrigins = %q, want empty (CORS disabled by default)", cfg.Gateway.CORSOrigins)
+	}
+}
+
+func TestLoad_EnvOverride_CORSOrigins(t *testing.T) {
+	t.Setenv("UFT_GATEWAY_CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := "https://app.example.com,https://admin.example.com"
+	if cfg.Gateway.CORSOrigins != want {
+		t.Errorf("Gateway.CORSOrigins = %q, want %q", cfg.Gateway.CORSOrigins, want)
+	}
+}
+
 func TestLoad_EnvOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/gateway.yaml"
