@@ -325,3 +325,70 @@ func TestStore_LoadCostPrices(t *testing.T) {
 		t.Errorf("book.ID = %d, want %d", book.ID, bookID)
 	}
 }
+
+func TestStore_LoadFXRates(t *testing.T) {
+	pool := testPool(t)
+	box := testBox(t)
+	ctx := context.Background()
+
+	// 用一个本次测试专属的假币种代码而不是真的 "USD"——fx_rates 主键是
+	// (base, quote, effective_date)，多个测试/多次运行共用同一个长期开发库，
+	// 撞上同一天同一个真实币种代码的行会导致 INSERT 冲突或读到别的测试留下的数据。
+	base := fmt.Sprintf("T%d", time.Now().UnixNano())
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO fx_rates (base, quote, rate, source, effective_date)
+		 VALUES ($1, 'CNY', 7.2, 'test', CURRENT_DATE - 1), ($1, 'CNY', 7.25, 'test', CURRENT_DATE)`,
+		base,
+	); err != nil {
+		t.Fatalf("insert fx_rates: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM fx_rates WHERE base = $1`, base)
+	})
+
+	store := NewStore(pool, box, time.Hour)
+	snap, err := store.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	rate, ok := snap.FXRates[base]
+	if !ok {
+		t.Fatalf("expected an fx_rate for base %q", base)
+	}
+	if !rate.Equal(decimal.NewFromFloat(7.25)) {
+		t.Errorf("rate = %s, want 7.25 (the most recent effective_date, not the older one)", rate)
+	}
+}
+
+func TestStore_LoadFXRates_IgnoresFutureEffectiveDate(t *testing.T) {
+	pool := testPool(t)
+	box := testBox(t)
+	ctx := context.Background()
+
+	base := fmt.Sprintf("T%d", time.Now().UnixNano())
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO fx_rates (base, quote, rate, source, effective_date)
+		 VALUES ($1, 'CNY', 7.0, 'test', CURRENT_DATE), ($1, 'CNY', 99, 'test', CURRENT_DATE + 30)`,
+		base,
+	); err != nil {
+		t.Fatalf("insert fx_rates: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM fx_rates WHERE base = $1`, base)
+	})
+
+	store := NewStore(pool, box, time.Hour)
+	snap, err := store.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	rate, ok := snap.FXRates[base]
+	if !ok {
+		t.Fatalf("expected an fx_rate for base %q", base)
+	}
+	if !rate.Equal(decimal.NewFromInt(7)) {
+		t.Errorf("rate = %s, want 7 (a rate scheduled 30 days in the future must not be picked up yet)", rate)
+	}
+}

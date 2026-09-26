@@ -451,6 +451,68 @@ func TestGrantCredit_SpentByRealSettle(t *testing.T) {
 	}
 }
 
+func TestSetFXRate_InsertsAndUpsertsSameDay(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+	base := uniqueCode(t) // 假币种代码，避免和真实 "USD" 撞车（同一开发库长期共享）
+
+	if err := s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.2)}); err != nil {
+		t.Fatalf("SetFXRate: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM fx_rates WHERE base = $1`, base) })
+
+	var quote, source string
+	var rate decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT quote, rate, source FROM fx_rates WHERE base = $1`, base).
+		Scan(&quote, &rate, &source); err != nil {
+		t.Fatalf("query fx_rates: %v", err)
+	}
+	if quote != "CNY" {
+		t.Errorf("quote = %q, want default CNY", quote)
+	}
+	if source != "manual" {
+		t.Errorf("source = %q, want default manual", source)
+	}
+	if !rate.Equal(decimal.NewFromFloat(7.2)) {
+		t.Errorf("rate = %s, want 7.2", rate)
+	}
+
+	// 同一天再写一次：应该更新而不是报唯一约束冲突或产生第二行。
+	if err := s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.3)}); err != nil {
+		t.Fatalf("SetFXRate (update): %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM fx_rates WHERE base = $1`, base).Scan(&count); err != nil {
+		t.Fatalf("count fx_rates: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (same-day write should upsert, not insert a second row)", count)
+	}
+	if err := pool.QueryRow(ctx, `SELECT rate FROM fx_rates WHERE base = $1`, base).Scan(&rate); err != nil {
+		t.Fatalf("query fx_rates after update: %v", err)
+	}
+	if !rate.Equal(decimal.NewFromFloat(7.3)) {
+		t.Errorf("rate after update = %s, want 7.3", rate)
+	}
+}
+
+func TestSetFXRate_ValidatesInput(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "", Rate: decimal.NewFromInt(1)}); err == nil {
+		t.Error("expected error for empty base currency")
+	}
+	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(0)}); err == nil {
+		t.Error("expected error for zero rate")
+	}
+	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(-1)}); err == nil {
+		t.Error("expected error for negative rate")
+	}
+}
+
 func TestSetCostPrice_CreatesVersionAndDefaultsToCNY(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)

@@ -230,11 +230,18 @@ func seedChannel(t *testing.T, pool *pgxpool.Pool, vmID, providerAccountID int64
 // 用于验证 relay 结算时会把 request_logs.cost_amount 算出来。
 func seedCostPrice(t *testing.T, pool *pgxpool.Pool, channelID int64) {
 	t.Helper()
+	seedCostPriceWithCurrency(t, pool, channelID, "CNY")
+}
+
+// seedCostPriceWithCurrency 和 seedCostPrice 一样，但允许指定币种——用于测试
+// 非 CNY 成本价配合 fx_rates 折算（技术方案 §7.16.9）的场景。
+func seedCostPriceWithCurrency(t *testing.T, pool *pgxpool.Pool, channelID int64, currency string) {
+	t.Helper()
 	ctx := context.Background()
 	var bookID int64
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO price_books (kind, channel_id, currency, effective_from) VALUES ('cost', $1, 'CNY', now() - interval '1 hour') RETURNING id`,
-		channelID,
+		`INSERT INTO price_books (kind, channel_id, currency, effective_from) VALUES ('cost', $1, $2, now() - interval '1 hour') RETURNING id`,
+		channelID, currency,
 	).Scan(&bookID); err != nil {
 		t.Fatalf("insert cost price_book: %v", err)
 	}
@@ -1140,6 +1147,64 @@ func TestChatCompletions_RecordsCostAmountWhenCostPriceConfigured(t *testing.T) 
 	// 2000 token 合计，成本单价 1 元/百万 -> 原始成本 2000 微元，× 0.5 折扣 -> 1000。
 	if costAmount == nil || *costAmount != 1000 {
 		t.Errorf("cost_amount = %v, want 1000", costAmount)
+	}
+}
+
+// TestChatCompletions_RecordsCostAmountForNonCNYCostPriceUsingFXRate 验证一个
+// 以非 CNY 币种计价的成本价（技术方案 §7.16.9），配合 fx_rates 表里的汇率，
+// 也能正确算出 request_logs.cost_amount——用一个本次测试专属的假币种代码而不是
+// 真的 "USD"，理由同 catalog 包里 TestStore_LoadFXRates 的注释：fx_rates 是
+// (base, quote, effective_date) 为主键的共享表，不能用真实币种代码，会跟其它
+// 测试/其它次运行撞车。
+func TestChatCompletions_RecordsCostAmountForNonCNYCostPriceUsingFXRate(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1000, "completion_tokens": 1000}}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccount(t, pool, upstream.URL)
+	seedKey(t, pool, box, accID, "sk-mock-upstream-secret")
+	vmID, vmName := seedVirtualModel(t, pool)
+	channelID := seedChannel(t, pool, vmID, accID, 0)
+
+	fakeCurrency := fmt.Sprintf("T%d", time.Now().UnixNano())
+	seedCostPriceWithCurrency(t, pool, channelID, fakeCurrency) // 1 单位/百万 token
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO fx_rates (base, quote, rate, source, effective_date) VALUES ($1, 'CNY', 7.5, 'test', CURRENT_DATE)`,
+		fakeCurrency,
+	); err != nil {
+		t.Fatalf("insert fx_rate: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM fx_rates WHERE base = $1`, fakeCurrency)
+	})
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	reqLogW.Close()
+
+	var costAmount *int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cost_amount FROM request_logs WHERE request_id = $1`, requestID,
+	).Scan(&costAmount); err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+	// 2000 token 合计，单价 1/百万 -> 原始成本 2000 微单位，汇率 7.5 -> 15000 微元。
+	if costAmount == nil || *costAmount != 15000 {
+		t.Errorf("cost_amount = %v, want 15000", costAmount)
 	}
 }
 

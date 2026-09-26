@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -343,4 +344,45 @@ func (s *Service) setPrice(ctx context.Context, target priceTarget, components [
 		return 0, fmt.Errorf("admin: commit: %w", err)
 	}
 	return bookID, nil
+}
+
+// SetFXRateInput 对应一条 fx_rates（技术方案 §7.16.9）。
+type SetFXRateInput struct {
+	Base          string          // 原币种，如 "USD"
+	Quote         string          // 空则默认 "CNY"（平台结算币种）
+	Rate          decimal.Decimal // 1 单位 Base = 多少 Quote
+	Source        string          // 空则默认 "manual"
+	EffectiveDate time.Time       // 零值则默认今天
+}
+
+// SetFXRate 写入/更新某一天生效的汇率。和价格表不同，这里用 upsert 而不是
+// 只追加新版本——同一天的汇率写错了应该能直接改，不需要背上一条"错误历史版本"
+// 永久留痕（fx_rates 不像 price_books 那样承担"账单纠纷时查历史价格"的审计职责）。
+func (s *Service) SetFXRate(ctx context.Context, in SetFXRateInput) error {
+	if in.Base == "" {
+		return errors.New("admin: fx_rate base currency is required")
+	}
+	if !in.Rate.IsPositive() {
+		return errors.New("admin: fx_rate rate must be positive")
+	}
+	quote := in.Quote
+	if quote == "" {
+		quote = "CNY"
+	}
+	source := in.Source
+	if source == "" {
+		source = "manual"
+	}
+	effDate := in.EffectiveDate
+	if effDate.IsZero() {
+		effDate = time.Now()
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO fx_rates (base, quote, rate, source, effective_date) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (base, quote, effective_date) DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
+		in.Base, quote, in.Rate, source, effDate,
+	); err != nil {
+		return fmt.Errorf("admin: upsert fx_rate: %w", err)
+	}
+	return nil
 }

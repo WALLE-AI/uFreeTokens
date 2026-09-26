@@ -13,20 +13,40 @@ import (
 )
 
 func TestComputeCostAmount_NoComponentsReturnsNil(t *testing.T) {
-	got := computeCostAmount(pricing.Book{}, decimal.NewFromInt(1), schema.Usage{InputTokens: 1000})
+	got := computeCostAmount(pricing.Book{}, decimal.NewFromInt(1), schema.Usage{InputTokens: 1000}, nil)
 	if got != nil {
 		t.Errorf("computeCostAmount() = %v, want nil (no cost price configured)", got)
 	}
 }
 
-func TestComputeCostAmount_NonCNYCurrencyReturnsNil(t *testing.T) {
+func TestComputeCostAmount_NonCNYCurrencyWithoutFXRateReturnsNil(t *testing.T) {
 	book := pricing.Book{
 		Currency:   "USD",
 		Components: []pricing.Component{{Meter: pricing.MeterInput, Unit: pricing.UnitPer1MTokens, UnitPrice: decimal.NewFromInt(1)}},
 	}
-	got := computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{InputTokens: 1000})
+	got := computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{InputTokens: 1000}, nil)
 	if got != nil {
-		t.Errorf("computeCostAmount() = %v, want nil (non-CNY currency, no FX support yet)", got)
+		t.Errorf("computeCostAmount() = %v, want nil (no fx_rate for USD)", got)
+	}
+	// 有汇率表，但里面没有这个币种：同样应该是 nil，不能悄悄当成 1:1。
+	got = computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{InputTokens: 1000}, map[string]decimal.Decimal{"EUR": decimal.NewFromInt(8)})
+	if got != nil {
+		t.Errorf("computeCostAmount() = %v, want nil (fx_rates has EUR but not USD)", got)
+	}
+}
+
+func TestComputeCostAmount_NonCNYCurrencyConvertsUsingFXRate(t *testing.T) {
+	book := pricing.Book{
+		Currency:   "USD",
+		Components: []pricing.Component{{Meter: pricing.MeterInput, Unit: pricing.UnitPer1MTokens, UnitPrice: decimal.NewFromInt(1)}},
+	}
+	// 1,000,000 input token × 1 美元/百万 = 1 美元 = 1,000,000 微美元；汇率 7.2 -> 7,200,000 微元。
+	got := computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{InputTokens: 1_000_000}, map[string]decimal.Decimal{"USD": decimal.NewFromFloat(7.2)})
+	if got == nil {
+		t.Fatal("computeCostAmount() = nil, want a computed value")
+	}
+	if *got != 7_200_000 {
+		t.Errorf("computeCostAmount() = %d, want 7200000", *got)
 	}
 }
 
@@ -36,7 +56,7 @@ func TestComputeCostAmount_ComputesAndAppliesMultiplier(t *testing.T) {
 		Components: []pricing.Component{{Meter: pricing.MeterInput, Unit: pricing.UnitPer1MTokens, UnitPrice: decimal.NewFromInt(10)}},
 	}
 	// 1,000,000 input token × 10 元/百万 = 10 元 = 10,000,000 微元，再乘以 0.8 折扣 = 8,000,000。
-	got := computeCostAmount(book, decimal.NewFromFloat(0.8), schema.Usage{InputTokens: 1_000_000})
+	got := computeCostAmount(book, decimal.NewFromFloat(0.8), schema.Usage{InputTokens: 1_000_000}, nil)
 	if got == nil {
 		t.Fatal("computeCostAmount() = nil, want a computed value")
 	}
@@ -52,7 +72,7 @@ func TestComputeCostAmount_ZeroMultiplierMeansZeroCost(t *testing.T) {
 		Currency:   "CNY",
 		Components: []pricing.Component{{Meter: pricing.MeterInput, Unit: pricing.UnitPer1MTokens, UnitPrice: decimal.NewFromInt(10)}},
 	}
-	got := computeCostAmount(book, decimal.NewFromInt(0), schema.Usage{InputTokens: 1_000_000})
+	got := computeCostAmount(book, decimal.NewFromInt(0), schema.Usage{InputTokens: 1_000_000}, nil)
 	if got == nil {
 		t.Fatal("computeCostAmount() = nil, want a computed zero value (not nil)")
 	}
@@ -68,7 +88,7 @@ func TestComputeCostAmount_NoMatchingMeterReturnsNil(t *testing.T) {
 		Currency:   "CNY",
 		Components: []pricing.Component{{Meter: pricing.MeterInput, Unit: pricing.UnitPer1MTokens, UnitPrice: decimal.NewFromInt(10)}},
 	}
-	got := computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{OutputTokens: 1000})
+	got := computeCostAmount(book, decimal.NewFromInt(1), schema.Usage{OutputTokens: 1000}, nil)
 	if got != nil {
 		t.Errorf("computeCostAmount() = %v, want nil (no meter matched this usage)", got)
 	}

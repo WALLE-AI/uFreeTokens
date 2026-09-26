@@ -130,16 +130,22 @@ func fallbackUsage(estInput, reserveOutput int) schema.Usage {
 
 // computeCostAmount 用渠道的成本价（costBook，可能是零值——没配置成本价）算出
 // 这次请求的平台成本（微元，CNY），乘上渠道的合同折扣系数（costMultiplier，
-// 技术方案 §6.4：渠道成本 = 挂牌价 × cost_multiplier）。返回 nil 表示"这次
-// 算不出成本"（没配成本价，或成本价币种不是 CNY——汇率同步 §7.16.9 尚未实现，
-// 外币成本暂时没法折算），而不是返回一个具有欺骗性的 0：0 成本会让毛利报表
-// 显得"每一分钱都是利润"，比"缺这条数据"更容易误导人。
-func computeCostAmount(costBook pricing.Book, costMultiplier decimal.Decimal, usage schema.Usage) *int64 {
+// 技术方案 §6.4：渠道成本 = 挂牌价 × cost_multiplier）。非 CNY 计价的成本价会先
+// 按 fxRates（来自 catalog.Snapshot.FXRates，技术方案 §7.16.9）折算成 CNY。
+// 返回 nil 表示"这次算不出成本"（没配成本价，或成本价币种没有对应的汇率数据），
+// 而不是返回一个具有欺骗性的 0：0 成本会让毛利报表显得"每一分钱都是利润"，
+// 比"缺这条数据"更容易误导人。
+func computeCostAmount(costBook pricing.Book, costMultiplier decimal.Decimal, usage schema.Usage, fxRates map[string]decimal.Decimal) *int64 {
 	if len(costBook.Components) == 0 {
 		return nil
 	}
+	fxRate := decimal.NewFromInt(1)
 	if costBook.Currency != "" && costBook.Currency != "CNY" {
-		return nil
+		rate, ok := fxRates[costBook.Currency]
+		if !ok {
+			return nil
+		}
+		fxRate = rate
 	}
 	amount, matched := pricing.Charge(costBook, usage.ToPricing(), "default", time.Now(), pricing.RoundCeil)
 	if !matched {
@@ -150,7 +156,7 @@ func computeCostAmount(costBook pricing.Book, costMultiplier decimal.Decimal, us
 	// 如果那个值就是 0（比如上游整月免费的渠道），这里就应该算出成本为 0，
 	// 而不是悄悄当成"没配置"改回 1 倍，那样会让一个真实的零成本渠道在毛利
 	// 报表上显得像是照单全价支付。
-	adjusted := decimal.NewFromInt(amount).Mul(costMultiplier).Ceil().IntPart()
+	adjusted := decimal.NewFromInt(amount).Mul(fxRate).Mul(costMultiplier).Ceil().IntPart()
 	return &adjusted
 }
 

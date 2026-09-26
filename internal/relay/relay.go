@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
@@ -235,10 +237,10 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	costBook := snap.CostPriceBooks[picked.Channel.ID]
 
 	if stream {
-		s.handleStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, estInput, reserveOutput, trace)
+		s.handleStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, snap.FXRates, estInput, reserveOutput, trace)
 		return
 	}
-	s.handleNonStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, estInput, reserveOutput, trace)
+	s.handleNonStream(ctx, log, w, r, meta, resp, adp, picked, sellBook, costBook, snap.FXRates, estInput, reserveOutput, trace)
 }
 
 // clientIP 尽量拿到客户端地址（去掉端口）；拿不到时原样返回 RemoteAddr，
@@ -444,7 +446,7 @@ func retryAfter(h http.Header, def, max time.Duration) time.Duration {
 }
 
 func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
-	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, fxRates map[string]decimal.Decimal, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
 
 	ttft := time.Since(meta.start).Milliseconds()
 
@@ -471,12 +473,12 @@ func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.
 
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
-	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage)
+	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage, fxRates)
 	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
 
 func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.ResponseWriter, r *http.Request, meta requestMeta,
-	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
+	resp *http.Response, adp adapter.Adapter, picked *router.Picked, sellBook, costBook pricing.Book, fxRates map[string]decimal.Decimal, estInput, reserveOutput int, trace []reqlog.AttemptTraceEntry) {
 
 	ttft := time.Since(meta.start).Milliseconds()
 
@@ -513,7 +515,7 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 		log.Warn("stream ended without usage, using conservative fallback", "request_id", meta.requestID)
 	}
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
-	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage)
+	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage, fxRates)
 	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
 

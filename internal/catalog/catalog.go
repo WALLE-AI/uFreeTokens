@@ -114,10 +114,14 @@ type Snapshot struct {
 	SellPriceBooks map[int64]pricing.Book
 	// CostPriceBooks 按 channel_id 索引，取当前生效的最新版本，用于计算
 	// request_logs.cost_amount（毛利可见性、§7.16 毛利守护的前置数据）。
-	// 只有 currency='CNY' 的成本价会被使用；汇率同步（§7.16.9）尚未实现，
-	// 美元等外币计价的成本暂时算不出来，relay 遇到这种渠道会跳过成本记录
-	// （不影响用户计费，只是少一条毛利可见性数据）。
+	// currency='CNY' 的成本价直接使用；非 CNY 的成本价需要 FXRates 里有对应汇率
+	// 才能折算成 CNY——没有汇率时 relay 会跳过成本记录（不影响用户计费，只是少
+	// 一条毛利可见性数据），而不是假设汇率为 1。
 	CostPriceBooks map[int64]pricing.Book
+	// FXRates 按原始币种（如 "USD"）索引，值是"1 单位该币种 = 多少 CNY"
+	// （技术方案 §7.16.9）。取每个币种 effective_date 最新的一条（不含未来生效的）。
+	// 没有汇率数据的币种不在这个 map 里。
+	FXRates map[string]decimal.Decimal
 }
 
 // Store 负责从数据库加载 Snapshot 并做简单的 TTL 缓存。
@@ -175,6 +179,7 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 		KeysByAccount:    map[int64][]*ProviderKey{},
 		SellPriceBooks:   map[int64]pricing.Book{},
 		CostPriceBooks:   map[int64]pricing.Book{},
+		FXRates:          map[string]decimal.Decimal{},
 	}
 
 	if err := s.loadModels(ctx, snap); err != nil {
@@ -195,7 +200,34 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 	if err := s.loadCostPrices(ctx, snap); err != nil {
 		return nil, err
 	}
+	if err := s.loadFXRates(ctx, snap); err != nil {
+		return nil, err
+	}
 	return snap, nil
+}
+
+// loadFXRates 加载每个 base 币种当前生效（effective_date <= 今天）的最新汇率，
+// quote 固定为 'CNY'（平台以人民币结算，技术方案 §7.16.9）。
+func (s *Store) loadFXRates(ctx context.Context, snap *Snapshot) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (base) base, rate
+		 FROM fx_rates
+		 WHERE quote = 'CNY' AND effective_date <= CURRENT_DATE
+		 ORDER BY base, effective_date DESC`)
+	if err != nil {
+		return fmt.Errorf("catalog: query fx_rates: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var base string
+		var rate decimal.Decimal
+		if err := rows.Scan(&base, &rate); err != nil {
+			return fmt.Errorf("catalog: scan fx_rate: %w", err)
+		}
+		snap.FXRates[base] = rate
+	}
+	return rows.Err()
 }
 
 func (s *Store) loadModels(ctx context.Context, snap *Snapshot) error {

@@ -56,6 +56,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
 	r.Post("/channels", h.createChannel)
 	r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
+	r.Post("/fx-rates", h.setFXRate)
 
 	return r
 }
@@ -370,4 +371,27 @@ func (h *adminHandlers) setCostPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
+}
+
+func (h *adminHandlers) setFXRate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Base          string          `json:"base"`
+		Quote         string          `json:"quote"`
+		Rate          decimal.Decimal `json:"rate"`
+		Source        string          `json:"source"`
+		EffectiveDate *time.Time      `json:"effective_date"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	in := admin.SetFXRateInput{Base: body.Base, Quote: body.Quote, Rate: body.Rate, Source: body.Source}
+	if body.EffectiveDate != nil {
+		in.EffectiveDate = *body.EffectiveDate
+	}
+	if err := h.svc.SetFXRate(r.Context(), in); err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
 }
