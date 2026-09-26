@@ -65,9 +65,10 @@ type SelectOptions struct {
 	KeyHealth       KeyHealth      // nil = 不做冷却过滤
 }
 
-// Pick 从 snapshot 中为 vm 选出一个渠道 + Key。tier 是发起请求账户的分组。
-func Pick(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, opts SelectOptions) (*Picked, error) {
-	candidates := filterChannels(ctx, snapshot, vm, f, tier, opts)
+// Pick 从 snapshot 中为 vm 选出一个渠道 + Key。tier 是发起请求账户的分组，
+// accountID 用来过滤专属渠道（Channel.AllowedAccountIDs，Phase 4 企业专属渠道）。
+func Pick(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, accountID int64, opts SelectOptions) (*Picked, error) {
+	candidates := filterChannels(ctx, snapshot, vm, f, tier, accountID, opts)
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableChannel
 	}
@@ -87,7 +88,7 @@ func Pick(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualMo
 	return &Picked{Channel: channel, Account: account, Key: key}, nil
 }
 
-func filterChannels(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, opts SelectOptions) []*catalog.Channel {
+func filterChannels(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog.VirtualModel, f Features, tier string, accountID int64, opts SelectOptions) []*catalog.Channel {
 	var out []*catalog.Channel
 	for _, c := range snapshot.ChannelsByVM[vm.ID] {
 		if c.Status != "active" {
@@ -100,6 +101,9 @@ func filterChannels(ctx context.Context, snapshot *catalog.Snapshot, vm *catalog
 			continue
 		}
 		if !c.AllowsTier(tier) {
+			continue
+		}
+		if !c.AllowsAccount(accountID) {
 			continue
 		}
 		account, ok := snapshot.ProviderAccounts[c.ProviderAccountID]

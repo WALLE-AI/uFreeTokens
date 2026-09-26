@@ -86,6 +86,11 @@ type Channel struct {
 	// 成本/延迟/成功率——不引入一套平行的路由机制。
 	ExperimentKey *string
 	VariantLabel  *string
+	// AllowedAccountIDs 是专属渠道的账户白名单（Phase 4 企业专属渠道）：
+	// nil/空 = 不限制，非空则只有列在里面的账户能路由到这个渠道——
+	// 语义和 AllowedTiers 完全对称，只是维度从"用户分组"换成"具体账户"，用来
+	// 给企业客户配独享的路由/配额池，不跟公共流量混在一起。
+	AllowedAccountIDs []int64
 }
 
 // EffectiveCapabilities 返回该渠道实际生效的能力集合（渠道未声明则继承虚拟模型）。
@@ -111,6 +116,20 @@ func (c *Channel) AllowsTier(tier string) bool {
 	}
 	for _, t := range c.AllowedTiers {
 		if t == tier {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsAccount 判断该渠道是否对指定账户可见；AllowedAccountIDs 为空表示
+// 不限制（公共渠道，谁都能路由到）。
+func (c *Channel) AllowsAccount(accountID int64) bool {
+	if len(c.AllowedAccountIDs) == 0 {
+		return true
+	}
+	for _, id := range c.AllowedAccountIDs {
+		if id == accountID {
 			return true
 		}
 	}
@@ -380,7 +399,7 @@ func (s *Store) loadChannels(ctx context.Context, snap *Snapshot) error {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, virtual_model_id, provider_account_id, upstream_model, priority, weight,
 		        capabilities, context_window, param_overrides, allowed_tiers, status,
-		        experiment_key, variant_label
+		        experiment_key, variant_label, allowed_account_ids
 		 FROM channels WHERE status = 'active'`)
 	if err != nil {
 		return fmt.Errorf("catalog: load channels: %w", err)
@@ -391,7 +410,7 @@ func (s *Store) loadChannels(ctx context.Context, snap *Snapshot) error {
 		c := &Channel{}
 		if err := rows.Scan(&c.ID, &c.VirtualModelID, &c.ProviderAccountID, &c.UpstreamModel,
 			&c.Priority, &c.Weight, &c.Capabilities, &c.ContextWindow, &c.ParamOverrides,
-			&c.AllowedTiers, &c.Status, &c.ExperimentKey, &c.VariantLabel); err != nil {
+			&c.AllowedTiers, &c.Status, &c.ExperimentKey, &c.VariantLabel, &c.AllowedAccountIDs); err != nil {
 			return fmt.Errorf("catalog: scan channel: %w", err)
 		}
 		snap.ChannelsByVM[c.VirtualModelID] = append(snap.ChannelsByVM[c.VirtualModelID], c)

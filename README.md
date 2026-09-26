@@ -99,6 +99,11 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   `variant_label`（只在请求成功结算时记；失败请求仍然可以用已有的
   `request_logs.channel_id` 关联 `channels` 表查到，不需要额外字段），供按组
   聚合对比成本/延迟/成功率。
+
+  专属渠道（Phase 4 企业 SaaS）也已经接入：`channels.allowed_account_ids`，
+  语义和现有的 `allowed_tiers` 完全对称——空 = 公共渠道，非空则只有白名单里的
+  账户能路由到它。给企业客户配一条独享渠道，不会影响其它账户原有的可用性
+  （它们看不到这条渠道，会落到其它公共渠道，就像它不存在一样）。
 - `internal/health`：渠道熔断器（`sony/gobreaker`，进程内）+ 上游 Key 冷却
   （Redis 共享，429/配额耗尽/Key 失效时跨实例生效，§7.6）。
 - `internal/reqlog`：把每次请求的用量/计费快照/重试轨迹异步批量写入 `request_logs`

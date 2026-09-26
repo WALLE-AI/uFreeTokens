@@ -346,6 +346,27 @@ func TestListAuditLogs_FiltersByTargetTypeOnly(t *testing.T) {
 	}
 }
 
+func TestCreateChannel_WithAllowedAccountIDs(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, _ := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	acc, _ := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	vm, _ := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Type: "chat", ContextWindow: 1000, MaxOutput: 100})
+
+	ch, err := s.CreateChannel(ctx, CreateChannelInput{
+		VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up",
+		AllowedAccountIDs: []int64{101, 202},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if len(ch.AllowedAccountIDs) != 2 || ch.AllowedAccountIDs[0] != 101 || ch.AllowedAccountIDs[1] != 202 {
+		t.Errorf("AllowedAccountIDs = %v, want [101 202]", ch.AllowedAccountIDs)
+	}
+}
+
 func TestCreateChannel_WithExperimentLabel(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)

@@ -221,7 +221,7 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// （技术方案 §7.7 的重试预算比较的是"重试数 vs 正常请求数"，鉴权失败/限流拒绝/
 	// 余额不足这些根本没打到上游的请求不应该稀释这个比例）。
 	s.RetryBudget.RecordRequest()
-	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, reqMap)
+	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, reqMap)
 	if err != nil {
 		s.releaseQuietly(log, requestID)
 		status, code := classifyRelayError(err)
@@ -288,7 +288,7 @@ func classifyRelayError(err error) (status int, code string) {
 // 调用方从这里开始才真正向客户端转发内容——转发开始之后就不再有重试的机会了。
 // trace 记录了每一次真正发起的尝试（无论成败），供 request_logs 落盘审计。
 func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, snap *catalog.Snapshot, vm *catalog.VirtualModel,
-	features router.Features, tier string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
+	features router.Features, tier string, accountID int64, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
 
 	maxAttempts := s.Cfg.Retry.MaxAttempts
 	if maxAttempts <= 0 {
@@ -315,7 +315,7 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 			opts.ChannelHealth = s.Health
 			opts.KeyHealth = s.Health
 		}
-		picked, perr := router.Pick(ctx, snap, vm, features, tier, opts)
+		picked, perr := router.Pick(ctx, snap, vm, features, tier, accountID, opts)
 		if perr != nil {
 			if lastErr != nil {
 				return nil, nil, nil, trace, fmt.Errorf("%w (previous attempt: %v)", perr, lastErr)

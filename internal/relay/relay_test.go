@@ -1208,6 +1208,67 @@ func TestChatCompletions_RecordsCostAmountForNonCNYCostPriceUsingFXRate(t *testi
 	}
 }
 
+// TestChatCompletions_DedicatedChannelInvisibleToOtherAccounts 验证专属渠道
+// （技术方案 Phase 4）真的只对白名单账户可见：没有资格的账户永远打不到专属
+// 渠道背后的上游，只会落到公共渠道；即便如此，请求依然能成功——专属渠道存在
+// 不应该影响其它账户原有的可用性。
+func TestChatCompletions_DedicatedChannelInvisibleToOtherAccounts(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	var dedicatedCalls, publicCalls int32
+	dedicatedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dedicatedCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1, "completion_tokens": 1}}`))
+	}))
+	defer dedicatedUpstream.Close()
+	publicUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&publicCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 1, "completion_tokens": 1}}`))
+	}))
+	defer publicUpstream.Close()
+
+	// 专属渠道的白名单账户从来不会真的发请求——它的存在只是为了证明"有一个只属于
+	// 别人的专属渠道"不会被误路由到。
+	fx := seedAccount(t, pool, 1_000_000)
+	dedicatedAcc := seedProviderAccount(t, pool, dedicatedUpstream.URL)
+	seedKey(t, pool, box, dedicatedAcc, "sk-dedicated")
+	publicAcc := seedProviderAccount(t, pool, publicUpstream.URL)
+	seedKey(t, pool, box, publicAcc, "sk-public")
+
+	vmID, vmName := seedVirtualModel(t, pool)
+	dedicatedChannelID := seedChannel(t, pool, vmID, dedicatedAcc, 0)
+	seedChannel(t, pool, vmID, publicAcc, 0) // 同优先级的公共渠道
+
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE channels SET allowed_account_ids = $2 WHERE id = $1`, dedicatedChannelID, []int64{fx.accountID + 999999},
+	); err != nil {
+		t.Fatalf("tag channel as dedicated: %v", err)
+	}
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	for i := 0; i < 10; i++ {
+		resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+		}
+	}
+
+	if atomic.LoadInt32(&dedicatedCalls) != 0 {
+		t.Errorf("dedicated upstream call count = %d, want 0 (this account is not in the whitelist)", dedicatedCalls)
+	}
+	if got := atomic.LoadInt32(&publicCalls); got != 10 {
+		t.Errorf("public upstream call count = %d, want 10 (all requests should fall back to the public channel)", got)
+	}
+}
+
 // TestChatCompletions_RecordsExperimentLabelFromChannel 验证 A/B 路由分组标签
 // （Phase 3）会从命中的渠道原样记进 request_logs，供事后按 experiment_key/
 // variant_label 聚合对比。

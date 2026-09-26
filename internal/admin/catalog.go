@@ -200,6 +200,7 @@ type Channel struct {
 	Weight            int
 	ExperimentKey     *string
 	VariantLabel      *string
+	AllowedAccountIDs []int64
 }
 
 type CreateChannelInput struct {
@@ -215,6 +216,9 @@ type CreateChannelInput struct {
 	// request_logs 记得下来"这次请求走了哪个分组"，供事后按组聚合对比。
 	ExperimentKey string
 	VariantLabel  string
+	// AllowedAccountIDs 给这个渠道配专属账户白名单（Phase 4）：空 = 公共渠道，
+	// 非空则只有列在里面的账户能路由到它，语义和 AllowedTiers 完全对称。
+	AllowedAccountIDs []int64
 }
 
 // CreateChannel 把一个虚拟模型接到某个上游账号上（技术方案 §6.3，路由的最小单位）。
@@ -235,10 +239,10 @@ func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Ch
 		UpstreamModel: in.UpstreamModel, Priority: in.Priority, Weight: weight,
 	}
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), 'active') RETURNING id, experiment_key, variant_label`,
-		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel,
-	).Scan(&ch.ID, &ch.ExperimentKey, &ch.VariantLabel); err != nil {
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, allowed_account_ids, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, 'active') RETURNING id, experiment_key, variant_label, allowed_account_ids`,
+		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel, in.AllowedAccountIDs,
+	).Scan(&ch.ID, &ch.ExperimentKey, &ch.VariantLabel, &ch.AllowedAccountIDs); err != nil {
 		return nil, fmt.Errorf("admin: insert channel: %w", err)
 	}
 	return ch, nil

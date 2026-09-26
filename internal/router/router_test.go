@@ -40,7 +40,12 @@ func vm(s *catalog.Snapshot) *catalog.VirtualModel { return s.Models["deepseek-v
 
 func pick(t *testing.T, s *catalog.Snapshot, f Features, tier string, opts SelectOptions) (*Picked, error) {
 	t.Helper()
-	return Pick(context.Background(), s, vm(s), f, tier, opts)
+	return pickForAccount(t, s, f, tier, 0, opts)
+}
+
+func pickForAccount(t *testing.T, s *catalog.Snapshot, f Features, tier string, accountID int64, opts SelectOptions) (*Picked, error) {
+	t.Helper()
+	return Pick(context.Background(), s, vm(s), f, tier, accountID, opts)
 }
 
 func TestPick_NoChannelsReturnsError(t *testing.T) {
@@ -101,6 +106,56 @@ func TestPick_FiltersByTier(t *testing.T) {
 	}
 	if picked.Channel.ID != 1 {
 		t.Errorf("picked channel = %d, want 1", picked.Channel.ID)
+	}
+}
+
+// TestPick_FiltersByDedicatedAccount 验证专属渠道（技术方案 Phase 4）：
+// AllowedAccountIDs 非空时只有白名单里的账户能路由到它。
+func TestPick_FiltersByDedicatedAccount(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addKey(s, 1, 1, 100, "active")
+	addChannel(s, &catalog.Channel{
+		ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0,
+		AllowedAccountIDs: []int64{42},
+	})
+
+	if _, err := pickForAccount(t, s, Features{}, "free", 99, SelectOptions{}); err != ErrNoAvailableChannel {
+		t.Fatalf("account not in the whitelist should be rejected: err = %v", err)
+	}
+	picked, err := pickForAccount(t, s, Features{}, "free", 42, SelectOptions{})
+	if err != nil {
+		t.Fatalf("whitelisted account should be allowed: %v", err)
+	}
+	if picked.Channel.ID != 1 {
+		t.Errorf("picked channel = %d, want 1", picked.Channel.ID)
+	}
+}
+
+// TestPick_DedicatedChannelDoesNotLeakToOtherAccountsWhenPublicAlternativeExists
+// 验证专属渠道和公共渠道并存时，没有白名单资格的账户会落到公共渠道，而不是
+// 报错——专属渠道只是"多一个只属于某个账户的选项"，不影响其它账户原有的
+// 可用性。
+func TestPick_DedicatedChannelDoesNotLeakToOtherAccountsWhenPublicAlternativeExists(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addAccount(s, 2, "active")
+	addKey(s, 1, 1, 100, "active")
+	addKey(s, 2, 2, 100, "active")
+	addChannel(s, &catalog.Channel{
+		ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0,
+		AllowedAccountIDs: []int64{42}, // 专属
+	})
+	addChannel(s, &catalog.Channel{
+		ID: 2, VirtualModelID: 1, ProviderAccountID: 2, Status: "active", Priority: 0, // 公共
+	})
+
+	picked, err := pickForAccount(t, s, Features{}, "free", 99, SelectOptions{})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if picked.Channel.ID != 2 {
+		t.Errorf("picked channel = %d, want 2 (the public channel, dedicated channel 1 must stay invisible)", picked.Channel.ID)
 	}
 }
 
