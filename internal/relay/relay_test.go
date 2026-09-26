@@ -134,13 +134,20 @@ func seedAccount(t *testing.T, pool *pgxpool.Pool, cashMicro int64) fixture {
 // seedProviderAccount 建一个指向 upstreamURL 的 provider + provider_account，返回其 ID。
 func seedProviderAccount(t *testing.T, pool *pgxpool.Pool, upstreamURL string) int64 {
 	t.Helper()
+	return seedProviderAccountWithProtocol(t, pool, upstreamURL, "openai")
+}
+
+// seedProviderAccountWithProtocol 和 seedProviderAccount 一样，但允许指定
+// providers.protocol（比如 "anthropic"），用于测试非 openai 协议适配器的完整链路。
+func seedProviderAccountWithProtocol(t *testing.T, pool *pgxpool.Pool, upstreamURL, protocol string) int64 {
+	t.Helper()
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var providerID int64
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO providers (code, name, protocol, status) VALUES ($1, 'Mock', 'openai', 'active') RETURNING id`,
-		"mock-"+suffix,
+		`INSERT INTO providers (code, name, protocol, status) VALUES ($1, 'Mock', $2, 'active') RETURNING id`,
+		"mock-"+suffix, protocol,
 	).Scan(&providerID); err != nil {
 		t.Fatalf("insert provider: %v", err)
 	}
@@ -470,6 +477,150 @@ func TestChatCompletions_Stream_ChargesFromFinalUsageChunk(t *testing.T) {
 	}
 
 	// 500 input + 100 output, 单价 1 元/百万 -> (500+100)/1e6 元 = 600 微元。
+	wantCharge := int64(600)
+	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+}
+
+// TestChatCompletions_AnthropicProtocol_NonStream_TranslatesAndCharges 验证一个
+// providers.protocol='anthropic' 的渠道能走完整链路：网关收到 OpenAI 兼容请求，
+// AnthropicAdapter 把它翻译成 Anthropic Messages API 请求打给上游，上游返回
+// Anthropic 形状的响应，网关再翻译回 OpenAI 兼容响应给客户端，并按 Anthropic 的
+// usage 字段正确计费——这是唯一一条真正验证"多协议路由"跑通的测试，其它测试
+// 都只覆盖 openai 协议。
+func TestChatCompletions_AnthropicProtocol_NonStream_TranslatesAndCharges(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messages" {
+			t.Errorf("upstream got unexpected path %q, want /messages", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "sk-mock-anthropic-secret" {
+			t.Errorf("upstream x-api-key = %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got == "" {
+			t.Error("upstream did not receive anthropic-version header")
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), `"role":"system"`) {
+			t.Errorf("system message should have been pulled out of messages[] into a top-level system field: %s", raw)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_upstream_1",
+			"content": [{"type":"text","text":"hi there"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 1000, "output_tokens": 2000}
+		}`))
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000) // 1 元
+	accID := seedProviderAccountWithProtocol(t, pool, upstream.URL, "anthropic")
+	seedKey(t, pool, box, accID, "sk-mock-anthropic-secret")
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{
+		"model": vmName,
+		"messages": []any{
+			map[string]any{"role": "system", "content": "be terse"},
+			map[string]any{"role": "user", "content": "hi"},
+		},
+	})
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, respBody)
+	}
+	if m["model"] != vmName {
+		t.Errorf("model = %v, want %v (must not leak upstream model name)", m["model"], vmName)
+	}
+	choices, _ := m["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("choices = %v, want exactly 1 (translated from Anthropic's content blocks)", choices)
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message["content"] != "hi there" {
+		t.Errorf("message.content = %v, want %q", message["content"], "hi there")
+	}
+
+	// 1000 input + 2000 output，单价都是 1 元/百万 token -> 3000 微元。
+	wantCharge := int64(3000)
+	cash, frozen := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0 (reservation must be fully settled)", frozen)
+	}
+}
+
+// TestChatCompletions_AnthropicProtocol_Stream_TranslatesAndCharges 和上面的非流式
+// 版本一样，但走流式路径：验证 AnthropicAdapter 的 SSE 事件翻译在真实网关链路里
+// 也能正确转发内容、正确停止、正确计费。
+func TestChatCompletions_AnthropicProtocol_Stream_TranslatesAndCharges(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			"event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":500}}}` + "\n\n",
+			"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}` + "\n\n",
+			"event: message_delta\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":100}}` + "\n\n",
+			"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		} {
+			_, _ = w.Write([]byte(line))
+			fl.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fx := seedAccount(t, pool, 1_000_000)
+	accID := seedProviderAccountWithProtocol(t, pool, upstream.URL, "anthropic")
+	seedKey(t, pool, box, accID, "sk-mock-anthropic-secret")
+	vmID, vmName := seedVirtualModel(t, pool)
+	seedChannel(t, pool, vmID, accID, 0)
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "stream": true, "messages": []any{}})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Hello") {
+		t.Errorf("stream body should contain the forwarded text: %s", body)
+	}
+	if !strings.Contains(string(body), vmName) {
+		t.Errorf("stream body should contain rewritten model name %q: %s", vmName, body)
+	}
+
+	// 500 input + 100 output, 单价 1 元/百万 -> 600 微元。
 	wantCharge := int64(600)
 	cash, _ := awaitSettled(t, pool, fx.accountID, 1_000_000)
 	if cash != 1_000_000-wantCharge {

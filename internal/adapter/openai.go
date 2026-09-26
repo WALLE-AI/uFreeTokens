@@ -14,11 +14,16 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/schema"
 )
 
-// Adapter 把统一请求/响应转换成某个上游协议的形态。当前只有 OpenAI 一种实现，
-// 但接口独立出来是为了后续接入 Anthropic/Gemini 协议时不用改 relay 层代码
-// （技术方案 §7.4）。
+// Adapter 把统一请求/响应转换成某个上游协议的形态（技术方案 §7.4）。目前有
+// openai（直通，覆盖绝大多数 OpenAI 兼容上游）和 anthropic（协议翻译：请求/
+// 响应/流式事件的形状都不一样，见 anthropic.go 的包级注释和已知范围限制）两种
+// 实现。Gemini 协议留作后续。
 type Adapter interface {
 	Protocol() string
+	// endpoint 是 relay 层对外的逻辑端点名（目前只有 chatEndpoint 一个取值），
+	// 不是字面的上游 URL 路径——OpenAIAdapter 直接把它当路径后缀拼接（两者当前
+	// 恰好相等），但协议差异更大的适配器（如 AnthropicAdapter）会忽略这个参数，
+	// 自己决定真正的上游路径（比如 /messages）。
 	BuildRequest(ctx context.Context, target Target, endpoint string, body map[string]any) (*http.Request, error)
 	DecodeResponse(body []byte, vmName, requestID string) (rewritten map[string]any, usage schema.Usage, err error)
 	NewStreamDecoder(body io.ReadCloser, vmName, requestID string) StreamDecoder
@@ -42,6 +47,7 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{byProtocol: map[string]Adapter{}}
 	r.Register(&OpenAIAdapter{})
+	r.Register(&AnthropicAdapter{})
 	return r
 }
 

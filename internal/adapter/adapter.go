@@ -1,7 +1,8 @@
 // Package adapter 把网关内部统一表示转换成各上游协议的请求/响应（技术方案 §7.4）。
-// Phase1 只实现 openai 协议适配器——它覆盖绝大多数国内外 OpenAI 兼容上游
-// （DeepSeek、SiliconFlow、火山方舟、阿里百炼、OpenRouter 等），差异通过
-// channel.param_overrides 配置消化，不为每家写专门代码。
+// 已实现 openai（直通，覆盖绝大多数国内外 OpenAI 兼容上游：DeepSeek、SiliconFlow、
+// 火山方舟、阿里百炼、OpenRouter 等，差异通过 channel.param_overrides 配置消化，
+// 不为每家写专门代码）和 anthropic（协议翻译，见 anthropic.go 的已知范围限制：
+// 不支持 tool/function calling、多模态内容只做直通）两种协议。Gemini 留作后续。
 package adapter
 
 import (
