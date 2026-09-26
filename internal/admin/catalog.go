@@ -191,6 +191,27 @@ func (s *Service) CreateVirtualModel(ctx context.Context, in CreateVirtualModelI
 	return vm, nil
 }
 
+var ErrVirtualModelNotFound = errors.New("admin: virtual model not found")
+
+// GetVirtualModelByName 按 virtual_models.name（唯一约束）查一条记录，供调用方
+// 在创建前先判断"这个名字是不是已经存在了"——比如手工联调工具反复点"导入"
+// 时，直接照着上游模型 ID 建虚拟模型名字，重复导入会撞 name 的唯一约束，
+// 调用方应该先查一遍、存在就复用，而不是每次都硬 INSERT 再处理冲突错误。
+func (s *Service) GetVirtualModelByName(ctx context.Context, name string) (*VirtualModel, error) {
+	vm := &VirtualModel{}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT id, name, family, type, context_window, max_output, capabilities, visible_tiers
+		 FROM virtual_models WHERE name = $1`,
+		name,
+	).Scan(&vm.ID, &vm.Name, &vm.Family, &vm.Type, &vm.ContextWindow, &vm.MaxOutput, &vm.Capabilities, &vm.VisibleTiers); err != nil {
+		if isNoRows(err) {
+			return nil, ErrVirtualModelNotFound
+		}
+		return nil, fmt.Errorf("admin: get virtual_model by name: %w", err)
+	}
+	return vm, nil
+}
+
 type Channel struct {
 	ID                int64
 	VirtualModelID    int64
@@ -244,6 +265,27 @@ func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Ch
 		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel, in.AllowedAccountIDs,
 	).Scan(&ch.ID, &ch.ExperimentKey, &ch.VariantLabel, &ch.AllowedAccountIDs); err != nil {
 		return nil, fmt.Errorf("admin: insert channel: %w", err)
+	}
+	return ch, nil
+}
+
+var ErrChannelNotFound = errors.New("admin: channel not found")
+
+// FindChannel 按 (virtual_model_id, provider_account_id, upstream_model) 这个
+// 唯一约束的自然键查一条渠道——和 GetVirtualModelByName 同样的道理：调用方
+// 想要"这三元组已经存在就复用，不存在才创建"的幂等语义时，先查一遍比硬
+// INSERT 再解析冲突错误更直接。
+func (s *Service) FindChannel(ctx context.Context, virtualModelID, providerAccountID int64, upstreamModel string) (*Channel, error) {
+	ch := &Channel{}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT id, virtual_model_id, provider_account_id, upstream_model, priority, weight, experiment_key, variant_label, allowed_account_ids
+		 FROM channels WHERE virtual_model_id = $1 AND provider_account_id = $2 AND upstream_model = $3`,
+		virtualModelID, providerAccountID, upstreamModel,
+	).Scan(&ch.ID, &ch.VirtualModelID, &ch.ProviderAccountID, &ch.UpstreamModel, &ch.Priority, &ch.Weight, &ch.ExperimentKey, &ch.VariantLabel, &ch.AllowedAccountIDs); err != nil {
+		if isNoRows(err) {
+			return nil, ErrChannelNotFound
+		}
+		return nil, fmt.Errorf("admin: find channel: %w", err)
 	}
 	return ch, nil
 }

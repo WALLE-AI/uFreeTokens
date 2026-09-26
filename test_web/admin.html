@@ -119,7 +119,10 @@ function log(line, cls) {
   box.scrollTop = box.scrollHeight;
 }
 
-async function call(method, path, body) {
+// allow404=true 时，404 不当错误抛出，直接返回 null——给"先查一下这条记录
+// 是不是已经存在，不存在才创建"的幂等逻辑用（见 importSelected），404 是
+// 这种查询里的正常结果之一，不是异常。
+async function call(method, path, body, { allow404 = false } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const token = $('adminToken').value.trim();
   if (token) headers['Authorization'] = 'Bearer ' + token;
@@ -131,6 +134,10 @@ async function call(method, path, body) {
   } catch (e) {
     log(`<-- network error: ${e}`, 'err');
     throw e;
+  }
+  if (allow404 && resp.status === 404) {
+    log(`<-- 404 (不存在，稍后会创建)`);
+    return null;
   }
   let json;
   try { json = text ? JSON.parse(text) : null; } catch { json = text; }
@@ -208,14 +215,31 @@ async function importSelected() {
   for (const cb of boxes) {
     const model = lastModels[parseInt(cb.value, 10)];
     try {
-      const vm = await call('POST', '/virtual-models', {
-        Name: model.ID, Family: model.OwnedBy || 'unknown', Type: 'chat',
-        ContextWindow: ctxWindow, MaxOutput: maxOut, Capabilities: ['stream'],
-      });
-      const channel = await call('POST', '/channels', {
-        VirtualModelID: vm.ID, ProviderAccountID: parseInt(accountID, 10),
-        UpstreamModel: model.ID, Priority: 0, Weight: 100,
-      });
+      // 先查、不存在才创建：virtual_models.name 和 channels 的
+      // (virtual_model_id, provider_account_id, upstream_model) 都是唯一
+      // 约束，重复点"导入"（比如上次卡在某一步、这次重新点）不应该每次都
+      // 硬报错，应该直接复用已经建好的记录，继续往下走。
+      let vm = await call('GET', `/virtual-models?name=${encodeURIComponent(model.ID)}`, null, { allow404: true });
+      if (vm) {
+        log(`复用已存在的虚拟模型: ${model.ID} (ID=${vm.ID})`);
+      } else {
+        vm = await call('POST', '/virtual-models', {
+          Name: model.ID, Family: model.OwnedBy || 'unknown', Type: 'chat',
+          ContextWindow: ctxWindow, MaxOutput: maxOut, Capabilities: ['stream'],
+        });
+      }
+
+      let channel = await call('GET',
+        `/channels?virtual_model_id=${vm.ID}&provider_account_id=${accountID}&upstream_model=${encodeURIComponent(model.ID)}`,
+        null, { allow404: true });
+      if (channel) {
+        log(`复用已存在的渠道: ${model.ID} (channel_id=${channel.ID})`);
+      } else {
+        channel = await call('POST', '/channels', {
+          VirtualModelID: vm.ID, ProviderAccountID: parseInt(accountID, 10),
+          UpstreamModel: model.ID, Priority: 0, Weight: 100,
+        });
+      }
       await call('POST', `/channels/${channel.ID}/cost-price`, { components: priceComponents(costIn, costOut) });
       await call('POST', `/virtual-models/${vm.ID}/sell-price`, { tier, components: priceComponents(sellIn, sellOut) });
       log(`导入成功: ${model.ID}`, 'ok');

@@ -70,8 +70,10 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Get("/provider-accounts/{providerAccountID}/upstream-models", h.listUpstreamModels)
 
 		r.Post("/virtual-models", h.createVirtualModel)
+		r.Get("/virtual-models", h.getVirtualModelByName)
 		r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
 		r.Post("/channels", h.createChannel)
+		r.Get("/channels", h.findChannel)
 		r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
 		r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
 		r.Post("/fx-rates", h.setFXRate)
@@ -124,6 +126,7 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, e
 	switch {
 	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound),
 		errors.Is(err, admin.ErrProviderAccountNotFound),
+		errors.Is(err, admin.ErrVirtualModelNotFound), errors.Is(err, admin.ErrChannelNotFound),
 		errors.Is(err, pricesync.ErrChangeRequestNotFound), errors.Is(err, pricesync.ErrListingNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, pricesync.ErrChangeRequestNotPending), errors.Is(err, pricesync.ErrListingNotPending),
@@ -414,6 +417,24 @@ func (h *adminHandlers) createVirtualModel(w http.ResponseWriter, r *http.Reques
 	httpx.WriteJSON(w, http.StatusCreated, vm)
 }
 
+// getVirtualModelByName 是"这个名字的虚拟模型是不是已经存在了"的查询入口——
+// 主要给"先查、不存在才创建"的幂等导入流程用（比如 test_web 反复点"导入"
+// 不应该每次都撞 virtual_models.name 的唯一约束）。?name= 是必填的，这里
+// 没有做成通用的"列出全部虚拟模型"接口。
+func (h *adminHandlers) getVirtualModelByName(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "query param 'name' is required")
+		return
+	}
+	vm, err := h.svc.GetVirtualModelByName(r.Context(), name)
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, vm)
+}
+
 func (h *adminHandlers) createChannel(w http.ResponseWriter, r *http.Request) {
 	var in admin.CreateChannelInput
 	if err := decodeJSON(r, &in); err != nil {
@@ -426,6 +447,27 @@ func (h *adminHandlers) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, ch)
+}
+
+// findChannel 是"这个 (虚拟模型, 上游账号, 上游模型) 三元组是不是已经有渠道了"
+// 的查询入口，三个查询参数都必填——同 getVirtualModelByName，服务幂等导入
+// 流程，不是通用的渠道列表接口。
+func (h *adminHandlers) findChannel(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	vmID, err1 := strconv.ParseInt(q.Get("virtual_model_id"), 10, 64)
+	paID, err2 := strconv.ParseInt(q.Get("provider_account_id"), 10, 64)
+	upstreamModel := q.Get("upstream_model")
+	if err1 != nil || err2 != nil || upstreamModel == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request",
+			"query params 'virtual_model_id', 'provider_account_id' (both integers) and 'upstream_model' are required")
+		return
+	}
+	ch, err := h.svc.FindChannel(r.Context(), vmID, paID, upstreamModel)
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, ch)
 }
 
 func (h *adminHandlers) setSellPrice(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -269,6 +270,67 @@ func TestCreateVirtualModelAndChannel(t *testing.T) {
 	}
 	if ch.Weight != 100 {
 		t.Errorf("Weight = %d, want default 100", ch.Weight)
+	}
+}
+
+func TestGetVirtualModelByName(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	name := uniqueCode(t)
+	created, err := s.CreateVirtualModel(ctx, CreateVirtualModelInput{
+		Name: name, Family: "test", Type: "chat", ContextWindow: 32000, MaxOutput: 4096,
+	})
+	if err != nil {
+		t.Fatalf("CreateVirtualModel: %v", err)
+	}
+
+	got, err := s.GetVirtualModelByName(ctx, name)
+	if err != nil {
+		t.Fatalf("GetVirtualModelByName: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("GetVirtualModelByName ID = %d, want %d", got.ID, created.ID)
+	}
+
+	if _, err := s.GetVirtualModelByName(ctx, name+"-does-not-exist"); !errors.Is(err, ErrVirtualModelNotFound) {
+		t.Errorf("err = %v, want ErrVirtualModelNotFound", err)
+	}
+}
+
+func TestFindChannel(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, err := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	acc, err := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	if err != nil {
+		t.Fatalf("CreateProviderAccount: %v", err)
+	}
+	vm, err := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Family: "test", Type: "chat", ContextWindow: 32000, MaxOutput: 4096})
+	if err != nil {
+		t.Fatalf("CreateVirtualModel: %v", err)
+	}
+	created, err := s.CreateChannel(ctx, CreateChannelInput{VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "some/upstream-model"})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	got, err := s.FindChannel(ctx, vm.ID, acc.ID, "some/upstream-model")
+	if err != nil {
+		t.Fatalf("FindChannel: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("FindChannel ID = %d, want %d", got.ID, created.ID)
+	}
+
+	if _, err := s.FindChannel(ctx, vm.ID, acc.ID, "some/other-model"); !errors.Is(err, ErrChannelNotFound) {
+		t.Errorf("err = %v, want ErrChannelNotFound", err)
 	}
 }
 
