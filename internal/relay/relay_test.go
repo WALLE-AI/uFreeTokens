@@ -1208,6 +1208,56 @@ func TestChatCompletions_RecordsCostAmountForNonCNYCostPriceUsingFXRate(t *testi
 	}
 }
 
+// TestChatCompletions_RecordsExperimentLabelFromChannel 验证 A/B 路由分组标签
+// （Phase 3）会从命中的渠道原样记进 request_logs，供事后按 experiment_key/
+// variant_label 聚合对比。
+func TestChatCompletions_RecordsExperimentLabelFromChannel(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage": {"prompt_tokens": 10, "completion_tokens": 10}}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000)
+	var channelID int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM channels WHERE virtual_model_id = (SELECT id FROM virtual_models WHERE name = $1)`, vmName).Scan(&channelID); err != nil {
+		t.Fatalf("find seeded channel: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE channels SET experiment_key = 'ab-cost-test', variant_label = 'treatment' WHERE id = $1`, channelID,
+	); err != nil {
+		t.Fatalf("tag channel with experiment label: %v", err)
+	}
+
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doChatCompletion(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "messages": []any{}})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	requestID := resp.Header.Get("X-Request-Id")
+	reqLogW.Close()
+
+	var experimentKey, variantLabel *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT experiment_key, variant_label FROM request_logs WHERE request_id = $1`, requestID,
+	).Scan(&experimentKey, &variantLabel); err != nil {
+		t.Fatalf("query request_logs: %v", err)
+	}
+	if experimentKey == nil || *experimentKey != "ab-cost-test" {
+		t.Errorf("experiment_key = %v, want ab-cost-test", experimentKey)
+	}
+	if variantLabel == nil || *variantLabel != "treatment" {
+		t.Errorf("variant_label = %v, want treatment", variantLabel)
+	}
+}
+
 // TestChatCompletions_LogsFailureToRequestLogs 验证重试耗尽后的失败也会留下审计记录，
 // 且 attempt_trace 里包含每一次尝试的渠道/Key/结果。
 func TestChatCompletions_LogsFailureToRequestLogs(t *testing.T) {

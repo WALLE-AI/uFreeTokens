@@ -570,6 +570,10 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 	if picked != nil {
 		rec.ChannelID = &picked.Channel.ID
 		rec.ProviderKeyID = &picked.Key.ID
+		if picked.Channel.ExperimentKey != nil {
+			rec.ExperimentKey = *picked.Channel.ExperimentKey
+			rec.VariantLabel = *picked.Channel.VariantLabel
+		}
 	}
 	if sellBookID != 0 {
 		rec.SellBookID = &sellBookID

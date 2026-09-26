@@ -84,6 +84,15 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   10% 折扣（不是硬性排除，只是同层有健康渠道时流量会被自动挤过去）。这是"挂牌价"
   毛利，不是按近 7 天实际用量加权的"典型毛利"，也没有"无替代渠道时自动降级
   cost_plus/拒绝新请求"那部分（见 `internal/pricesync` 包注释的范围限制）。
+
+  A/B 路由（Phase 3）已经接入：`channels` 表新增 `experiment_key`/
+  `variant_label`（要么都填、要么都空，DB 有 CHECK 约束），`cmd/admin` 建渠道
+  时可以指定；分流不需要新机制，本来就可以给同一个 `experiment_key` 下的几个
+  渠道配相同 `priority`、用现有的 `weight` 分比例。这里补的是"事后能看出哪个
+  请求走了哪个分组"——命中渠道的标签会原样记进 `request_logs.experiment_key`/
+  `variant_label`（只在请求成功结算时记；失败请求仍然可以用已有的
+  `request_logs.channel_id` 关联 `channels` 表查到，不需要额外字段），供按组
+  聚合对比成本/延迟/成功率。
 - `internal/health`：渠道熔断器（`sony/gobreaker`，进程内）+ 上游 Key 冷却
   （Redis 共享，429/配额耗尽/Key 失效时跨实例生效，§7.6）。
 - `internal/reqlog`：把每次请求的用量/计费快照/重试轨迹异步批量写入 `request_logs`

@@ -79,6 +79,13 @@ type Channel struct {
 	// 或"成本价币种没有汇率"为负毛利：数据不全不等于亏钱，见 loadCostPrices 的
 	// 同款原则。
 	NegativeMargin bool
+	// ExperimentKey/VariantLabel 是 A/B 路由的分组标签（Phase 3）：两者要么都是
+	// nil（不参与实验），要么都非 nil（DB 有 CHECK 约束保证成对出现）。分流本身
+	// 复用现有的 priority/weight 加权随机（§7.5），这两个字段只用来在
+	// request_logs 里记录"这次请求实际走了哪个分组"，供事后按分组聚合对比
+	// 成本/延迟/成功率——不引入一套平行的路由机制。
+	ExperimentKey *string
+	VariantLabel  *string
 }
 
 // EffectiveCapabilities 返回该渠道实际生效的能力集合（渠道未声明则继承虚拟模型）。
@@ -372,7 +379,8 @@ func (s *Store) loadProviderKeys(ctx context.Context, snap *Snapshot) error {
 func (s *Store) loadChannels(ctx context.Context, snap *Snapshot) error {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, virtual_model_id, provider_account_id, upstream_model, priority, weight,
-		        capabilities, context_window, param_overrides, allowed_tiers, status
+		        capabilities, context_window, param_overrides, allowed_tiers, status,
+		        experiment_key, variant_label
 		 FROM channels WHERE status = 'active'`)
 	if err != nil {
 		return fmt.Errorf("catalog: load channels: %w", err)
@@ -383,7 +391,7 @@ func (s *Store) loadChannels(ctx context.Context, snap *Snapshot) error {
 		c := &Channel{}
 		if err := rows.Scan(&c.ID, &c.VirtualModelID, &c.ProviderAccountID, &c.UpstreamModel,
 			&c.Priority, &c.Weight, &c.Capabilities, &c.ContextWindow, &c.ParamOverrides,
-			&c.AllowedTiers, &c.Status); err != nil {
+			&c.AllowedTiers, &c.Status, &c.ExperimentKey, &c.VariantLabel); err != nil {
 			return fmt.Errorf("catalog: scan channel: %w", err)
 		}
 		snap.ChannelsByVM[c.VirtualModelID] = append(snap.ChannelsByVM[c.VirtualModelID], c)

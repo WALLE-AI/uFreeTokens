@@ -272,6 +272,51 @@ func TestCreateVirtualModelAndChannel(t *testing.T) {
 	}
 }
 
+func TestCreateChannel_WithExperimentLabel(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, _ := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	acc, _ := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	vm, _ := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Type: "chat", ContextWindow: 1000, MaxOutput: 100})
+
+	ch, err := s.CreateChannel(ctx, CreateChannelInput{
+		VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up",
+		ExperimentKey: "ab-test-1", VariantLabel: "treatment",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if ch.ExperimentKey == nil || *ch.ExperimentKey != "ab-test-1" {
+		t.Errorf("ExperimentKey = %v, want ab-test-1", ch.ExperimentKey)
+	}
+	if ch.VariantLabel == nil || *ch.VariantLabel != "treatment" {
+		t.Errorf("VariantLabel = %v, want treatment", ch.VariantLabel)
+	}
+}
+
+func TestCreateChannel_RejectsMismatchedExperimentFields(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, _ := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	acc, _ := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	vm, _ := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Type: "chat", ContextWindow: 1000, MaxOutput: 100})
+
+	if _, err := s.CreateChannel(ctx, CreateChannelInput{
+		VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up", ExperimentKey: "ab-test-1",
+	}); err == nil {
+		t.Error("expected an error when experiment_key is set without variant_label")
+	}
+	if _, err := s.CreateChannel(ctx, CreateChannelInput{
+		VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up", VariantLabel: "treatment",
+	}); err == nil {
+		t.Error("expected an error when variant_label is set without experiment_key")
+	}
+}
+
 func TestCreateVirtualModel_ValidatesInput(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)

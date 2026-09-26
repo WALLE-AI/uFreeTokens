@@ -198,6 +198,8 @@ type Channel struct {
 	UpstreamModel     string
 	Priority          int
 	Weight            int
+	ExperimentKey     *string
+	VariantLabel      *string
 }
 
 type CreateChannelInput struct {
@@ -207,12 +209,21 @@ type CreateChannelInput struct {
 	Priority          int // 数字越小越优先，默认 0（主）
 	Weight            int // <=0 时用默认值 100
 	AllowedTiers      []string
+	// ExperimentKey/VariantLabel 给这个渠道打 A/B 实验分组标签（Phase 3）：
+	// 要么都留空，要么都填——分流仍然用 Priority/Weight（同一个 ExperimentKey
+	// 下的几个渠道通常配相同 Priority、按 Weight 分比例），这两个字段只是让
+	// request_logs 记得下来"这次请求走了哪个分组"，供事后按组聚合对比。
+	ExperimentKey string
+	VariantLabel  string
 }
 
 // CreateChannel 把一个虚拟模型接到某个上游账号上（技术方案 §6.3，路由的最小单位）。
 func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Channel, error) {
 	if in.UpstreamModel == "" {
 		return nil, errors.New("admin: upstream_model is required")
+	}
+	if (in.ExperimentKey == "") != (in.VariantLabel == "") {
+		return nil, errors.New("admin: experiment_key and variant_label must be set together")
 	}
 	weight := in.Weight
 	if weight <= 0 {
@@ -224,10 +235,10 @@ func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Ch
 		UpstreamModel: in.UpstreamModel, Priority: in.Priority, Weight: weight,
 	}
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'active') RETURNING id`,
-		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers,
-	).Scan(&ch.ID); err != nil {
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), 'active') RETURNING id, experiment_key, variant_label`,
+		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel,
+	).Scan(&ch.ID, &ch.ExperimentKey, &ch.VariantLabel); err != nil {
 		return nil, fmt.Errorf("admin: insert channel: %w", err)
 	}
 	return ch, nil
