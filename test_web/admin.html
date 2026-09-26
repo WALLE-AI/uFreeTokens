@@ -382,7 +382,10 @@ async function createTestUser() {
   try {
     const suffix = Date.now();
     const account = await call('POST', '/accounts', { Type: 'personal', Name: 'test-user-' + suffix, Tier: 'free' });
-    await call('POST', `/accounts/${account.ID}/wallet/adjust`, { amount: 1000000, ref_id: 'test-web-topup-' + suffix });
+    // 金额单位是"微元"，1 元 = 1,000,000（migrations/00006_billing_wallet.sql）；
+    // 100 元 = 100,000,000——之前这里错填成了 1,000,000（只有 1 元），跟按钮
+    // 文案不符，多聊几条消息很容易就把余额刷穿。
+    await call('POST', `/accounts/${account.ID}/wallet/adjust`, { amount: 100_000_000, ref_id: 'test-web-topup-' + suffix });
     const key = await call('POST', `/accounts/${account.ID}/api-keys`, { name: 'test-web-key' });
     $('testUserResult').innerHTML = `账户 ID: ${account.ID}<br>把下面这个 Key 粘贴到用户页面：<div class="rawkey">${key.RawKey}</div>`;
   } catch (e) { /* 已经记进日志了 */ }

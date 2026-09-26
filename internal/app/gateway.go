@@ -56,6 +56,7 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 		v1.Use(auth.APIKey(d.AuthStore, d.Pepper))
 
 		v1.Get("/models", listModelsHandler(d.PG))
+		v1.Get("/usage", usageHandler(d.PG))
 		if d.Relay != nil {
 			v1.Post("/chat/completions", d.Relay.ChatCompletions)
 			v1.Post("/embeddings", d.Relay.Embeddings)

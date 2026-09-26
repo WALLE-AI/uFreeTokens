@@ -48,6 +48,15 @@
 </section>
 
 <section>
+  <h2>3. 用量与消费</h2>
+  <button onclick="refreshUsage()">刷新</button>
+  <p class="hint">调 <code>GET /v1/usage</code>——钱包余额是实时的；累计用量/消费是从
+    <code>request_logs</code> 聚合出来的，这张表是异步批量写入（每 500 条或 1 秒 flush 一次），
+    刚发完一条消息立刻刷新可能还没算上，等一两秒再刷一次。</p>
+  <div id="usageResult"></div>
+</section>
+
+<section>
   <h2>日志</h2>
   <div id="log"></div>
 </section>
@@ -107,6 +116,29 @@ async function connect() {
       sel.appendChild(opt);
     });
     $('connectResult').innerHTML = `<span class="ok">拿到 ${models.length} 个模型</span>`;
+  } catch (e) { /* 已经记进日志了 */ return; }
+  await refreshUsage();
+}
+
+// microToCNY：金额单位是"微元"（1 元 = 1,000,000，见
+// migrations/00006_billing_wallet.sql），后端接口原样返回整数微元，这里只是
+// 展示层转成人类习惯看的"元"。
+function microToCNY(micro) {
+  return (micro / 1_000_000).toFixed(6);
+}
+
+async function refreshUsage() {
+  try {
+    const res = await call('GET', '/v1/usage', null);
+    const cash = microToCNY(res.wallet.cash_balance_micro);
+    const bonus = microToCNY(res.wallet.bonus_balance_micro);
+    const frozen = microToCNY(res.wallet.frozen_micro);
+    const spent = microToCNY(res.usage.total_charged_amount_micro);
+    const totalTokens = res.usage.total_input_tokens + res.usage.total_output_tokens;
+    $('usageResult').innerHTML = `
+      <div>钱包余额：现金 ${cash} 元 + 赠金 ${bonus} 元（冻结中 ${frozen} 元）</div>
+      <div>累计：${res.usage.total_requests} 次请求，input ${res.usage.total_input_tokens} + output ${res.usage.total_output_tokens} = ${totalTokens} tokens，共花费 ${spent} 元</div>
+    `;
   } catch (e) { /* 已经记进日志了 */ }
 }
 
@@ -127,6 +159,9 @@ async function send() {
       usageLine = `<div class="usage">prompt_tokens=${res.usage.prompt_tokens ?? '?'} completion_tokens=${res.usage.completion_tokens ?? '?'}</div>`;
     }
     $('chatResult').innerHTML = `<div class="reply">${escapeHTML(reply)}</div>${usageLine}`;
+    // request_logs 是异步批量写入的（见下面用量区的提示），这里延迟一点再刷，
+    // 不用用户自己多点一次"刷新"。
+    setTimeout(refreshUsage, 1500);
   } catch (e) { /* 已经记进日志了 */ }
 }
 
