@@ -10,9 +10,12 @@
 // 已知范围限制（明确未实现，不是遗漏——§7.16 本身是一个足够大的独立子系统，
 // 这里先把"来了一条观测该怎么处理"这条确定性流水线做对、做全，调度和外部集成
 // 留给后续按需接入）：
-//   - OpenRouter 这个来源只实现了归一化函数（openrouter.go 的
-//     normalizeOpenRouter），用录制的固定 JSON 作为 golden fixture 测试，没有
-//     真正发 HTTP 请求去抓它的公开接口。
+//   - OpenRouter（openrouter.go 的 OpenRouterFetcher）已经接了真实 HTTP 抓取
+//     （GET /api/v1/models，不需要 API Key），自动化测试仍然只用
+//     httptest.Server 喂固定 fixture，不会真的请求 openrouter.ai。这个来源
+//     比较特殊：它把每个模型的计费直接放进模型列表接口里，是这几个已实现的
+//     来源里唯一能拿到"接口里自带价格"的（internal/app/pricelookup.go 的
+//     test_web 联调接口用到了它）。
 //   - HTML 抓取（html.go 的 HTMLFetcher + ParseHTMLPriceTable）实现了一个
 //     配置驱动的表格解析框架——CSS 选择器 + 单位换算存在 price_sources.config
 //     里，出问题改配置不用发版；但这不是"配一次适配所有网站"的万能方案，各

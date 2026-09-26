@@ -1,5 +1,6 @@
-// 集成测试：GET /pricesync/litellm-lookup 走真实 HTTP 层，假上游用
-// httptest.Server（不发任何真实外部请求，同 internal/pricesync 的一贯约束）。
+// 集成测试：POST /pricesync/reference-price-lookup 走真实 HTTP 层，两个假
+// 上游都用 httptest.Server（不发任何真实外部请求，同 internal/pricesync 的
+// 一贯约束）。
 package app_test
 
 import (
@@ -16,12 +17,24 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
-// litellmDatasetFixture 是手工构造的、遵循 LiteLLM model_prices_and_context_window.json
-// 字段形态的样例——同 internal/pricesync/litellm_test.go 的 fixture，价格是
-// JSON 数字（每 token 的美元），不是字符串。
+// litellmDatasetFixture 同 internal/pricesync/litellm_test.go 的 fixture：
+// 价格是 JSON 数字（每 token 的美元），不是字符串。gpt-4o 和 shared-model
+// 都在这里，shared-model 同时也在 openRouterModelsLookupFixture 里，用来
+// 验证 OpenRouter 优先。
 const litellmDatasetFixture = `{
   "sample_spec": {"input_cost_per_token": 0.0000001, "output_cost_per_token": 0.0000002},
-  "gpt-4o": {"input_cost_per_token": 0.0000025, "output_cost_per_token": 0.00001, "litellm_provider": "openai", "mode": "chat"}
+  "gpt-4o": {"input_cost_per_token": 0.0000025, "output_cost_per_token": 0.00001, "litellm_provider": "openai", "mode": "chat"},
+  "shared-model": {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002, "litellm_provider": "test", "mode": "chat"}
+}`
+
+// openRouterModelsLookupFixture 遵循 OpenRouter GET /api/v1/models 的形状：
+// pricing 下每个数值是 USD/token 字符串。shared-model 的价格和
+// litellmDatasetFixture 里的不一样，用来断言 OpenRouter 优先生效。
+const openRouterModelsLookupFixture = `{
+  "data": [
+    {"id": "shared-model", "pricing": {"prompt": "0.000003", "completion": "0.000006"}},
+    {"id": "openrouter-only-model", "pricing": {"prompt": "0.0000005", "completion": "0.000001"}}
+  ]
 }`
 
 func newAdminRouterForPriceLookup(t *testing.T) *httptest.Server {
@@ -34,54 +47,85 @@ func newAdminRouterForPriceLookup(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func TestLiteLLMPriceLookup_HappyPath(t *testing.T) {
-	fakeDataset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func fakeJSONServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(litellmDatasetFixture))
+		_, _ = w.Write([]byte(body))
 	}))
-	defer fakeDataset.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
 
+func fake500Server(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+type priceLookupResult struct {
+	Matched bool   `json:"matched"`
+	Source  string `json:"source"`
+	Input   string `json:"input"`
+	Output  string `json:"output"`
+}
+
+type priceLookupResponse struct {
+	Data            map[string]priceLookupResult `json:"data"`
+	Currency        string                       `json:"currency"`
+	OpenRouterError string                       `json:"openrouter_error"`
+	LiteLLMError    string                       `json:"litellm_error"`
+}
+
+func TestReferencePriceLookup_OpenRouterTakesPriorityOverLiteLLM(t *testing.T) {
+	litellmSrv := fakeJSONServer(t, litellmDatasetFixture)
+	openrouterSrv := fakeJSONServer(t, openRouterModelsLookupFixture)
 	adminSrv := newAdminRouterForPriceLookup(t)
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
-	var out struct {
-		Data map[string]struct {
-			Matched bool   `json:"matched"`
-			Input   string `json:"input"`
-			Output  string `json:"output"`
-		} `json:"data"`
-		Currency string `json:"currency"`
-	}
-	ac.post("/pricesync/litellm-lookup", map[string]any{
-		"dataset_url":     fakeDataset.URL,
-		"upstream_models": []string{"gpt-4o", "totally-unknown-model"},
+	var out priceLookupResponse
+	ac.post("/pricesync/reference-price-lookup", map[string]any{
+		"litellm_dataset_url":   litellmSrv.URL,
+		"openrouter_models_url": openrouterSrv.URL,
+		"upstream_models":       []string{"shared-model", "gpt-4o", "openrouter-only-model", "totally-unknown-model"},
 	}, &out)
 
 	if out.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD", out.Currency)
 	}
+
+	shared, ok := out.Data["shared-model"]
+	if !ok || !shared.Matched || shared.Source != "openrouter" {
+		t.Fatalf("shared-model = %+v, want matched=true source=openrouter (OpenRouter must win over LiteLLM)", shared)
+	}
+	if shared.Input != "3" || shared.Output != "6" {
+		t.Errorf("shared-model price = input=%s output=%s, want 3/6 (OpenRouter's numbers, not LiteLLM's 1/2)", shared.Input, shared.Output)
+	}
+
 	gpt4o, ok := out.Data["gpt-4o"]
-	if !ok || !gpt4o.Matched {
-		t.Fatalf("gpt-4o result = %+v, want matched=true", gpt4o)
+	if !ok || !gpt4o.Matched || gpt4o.Source != "litellm" {
+		t.Fatalf("gpt-4o = %+v, want matched=true source=litellm (only present in the LiteLLM fixture)", gpt4o)
 	}
-	if gpt4o.Input != "2.5" {
-		t.Errorf("gpt-4o.Input = %q, want 2.5 (0.0000025 USD/token * 1e6)", gpt4o.Input)
-	}
-	if gpt4o.Output != "10" {
-		t.Errorf("gpt-4o.Output = %q, want 10", gpt4o.Output)
+
+	orOnly, ok := out.Data["openrouter-only-model"]
+	if !ok || !orOnly.Matched || orOnly.Source != "openrouter" {
+		t.Fatalf("openrouter-only-model = %+v, want matched=true source=openrouter", orOnly)
 	}
 
 	unknown, ok := out.Data["totally-unknown-model"]
 	if !ok || unknown.Matched {
-		t.Fatalf("totally-unknown-model result = %+v, want matched=false", unknown)
+		t.Fatalf("totally-unknown-model = %+v, want matched=false", unknown)
 	}
 }
 
-func TestLiteLLMPriceLookup_EmptyModelsList_400(t *testing.T) {
+func TestReferencePriceLookup_EmptyModelsList_400(t *testing.T) {
 	adminSrv := newAdminRouterForPriceLookup(t)
 
 	raw := []byte(`{"upstream_models":[]}`)
-	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/litellm-lookup", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/reference-price-lookup", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -98,16 +142,13 @@ func TestLiteLLMPriceLookup_EmptyModelsList_400(t *testing.T) {
 	}
 }
 
-func TestLiteLLMPriceLookup_DatasetUnavailable_502(t *testing.T) {
-	fakeDataset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer fakeDataset.Close()
-
+func TestReferencePriceLookup_BothSourcesUnavailable_502(t *testing.T) {
+	litellmSrv := fake500Server(t)
+	openrouterSrv := fake500Server(t)
 	adminSrv := newAdminRouterForPriceLookup(t)
 
-	raw := []byte(`{"dataset_url":"` + fakeDataset.URL + `","upstream_models":["gpt-4o"]}`)
-	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/litellm-lookup", bytes.NewReader(raw))
+	raw := []byte(`{"litellm_dataset_url":"` + litellmSrv.URL + `","openrouter_models_url":"` + openrouterSrv.URL + `","upstream_models":["gpt-4o"]}`)
+	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/reference-price-lookup", bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -121,5 +162,27 @@ func TestLiteLLMPriceLookup_DatasetUnavailable_502(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 502, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestReferencePriceLookup_OneSourceDown_StillReturnsTheOtherOnesMatches(t *testing.T) {
+	litellmSrv := fakeJSONServer(t, litellmDatasetFixture)
+	openrouterSrv := fake500Server(t)
+	adminSrv := newAdminRouterForPriceLookup(t)
+	ac := &adminClient{t: t, baseURL: adminSrv.URL}
+
+	var out priceLookupResponse
+	ac.post("/pricesync/reference-price-lookup", map[string]any{
+		"litellm_dataset_url":   litellmSrv.URL,
+		"openrouter_models_url": openrouterSrv.URL,
+		"upstream_models":       []string{"gpt-4o"},
+	}, &out)
+
+	gpt4o, ok := out.Data["gpt-4o"]
+	if !ok || !gpt4o.Matched || gpt4o.Source != "litellm" {
+		t.Fatalf("gpt-4o = %+v, want matched=true source=litellm even though openrouter is down", gpt4o)
+	}
+	if out.OpenRouterError == "" {
+		t.Error("expected openrouter_error to be set when that source failed")
 	}
 }

@@ -1,7 +1,10 @@
 package pricesync
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -140,5 +143,44 @@ func TestNormalizeOpenRouter_RejectsNonNumericPrice(t *testing.T) {
 	_, err := normalizeOpenRouter(map[string]json.RawMessage{"prompt": json.RawMessage(`"abc"`)})
 	if err == nil {
 		t.Error("expected an error for a non-numeric price string")
+	}
+}
+
+func TestOpenRouterFetcher_Fetch_RequiresURL(t *testing.T) {
+	fetcher := OpenRouterFetcher{}
+	if _, err := fetcher.Fetch(context.Background(), Source{}); err == nil {
+		t.Error("expected an error when source has no URL")
+	}
+}
+
+func TestOpenRouterFetcher_Fetch_ParsesLocalTestServerResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(openRouterModelsFixture))
+	}))
+	defer srv.Close()
+
+	fetcher := OpenRouterFetcher{}
+	obs, err := fetcher.Fetch(context.Background(), Source{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// openRouterModelsFixture 里 4 条：claude(有效)、free-model(有效)、
+	// no-cache-support(有效)、malformed(会被 normalizeOpenRouterResponse
+	// 跳过，不计入返回值)。
+	if len(obs) != 3 {
+		t.Errorf("observations = %+v, want 3", obs)
+	}
+}
+
+func TestOpenRouterFetcher_Fetch_PropagatesNon200Status(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	fetcher := OpenRouterFetcher{}
+	if _, err := fetcher.Fetch(context.Background(), Source{URL: srv.URL}); err == nil {
+		t.Error("expected an error for a non-200 upstream response")
 	}
 }

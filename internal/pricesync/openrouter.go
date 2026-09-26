@@ -3,7 +3,11 @@ package pricesync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -23,14 +27,50 @@ var orMeters = map[string]pricing.Meter{
 	"internal_reasoning": pricing.MeterOutputReasoning,
 }
 
-// OpenRouterFetcher.Name 标识这个来源插件；Fetch 尚未实现真正的 HTTP 抓取
-// （见包级注释的范围限制），只暴露 normalizeOpenRouter 这个纯函数供以后接线。
-type OpenRouterFetcher struct{}
+// OpenRouterFetcher 抓取 OpenRouter 的公开模型列表接口（GET /api/v1/models，
+// 不需要 API Key）——和 LiteLLMFetcher 同类，是 §7.16.2 表格里的 L4 社区/
+// 聚合来源，只做交叉校验，不单独生效（DecidePolicy 对 L4 永不自动通过）。
+// OpenRouter 是这几个来源里比较特殊的一个：它把每个模型的实时计费直接放在
+// 模型列表接口里（技术方案原文举例的 §7.16.5 就是这个接口），不像大多数
+// 上游把价格只发布在给人看的文档页——这也是选它接第二个真实数据源的原因。
+type OpenRouterFetcher struct {
+	HTTPClient *http.Client
+}
 
 func (OpenRouterFetcher) Name() string { return "openrouter_models" }
 
-func (OpenRouterFetcher) Fetch(ctx context.Context, src Source) ([]Observation, error) {
-	return nil, fmt.Errorf("adapter/openrouter: live fetch not implemented, see internal/pricesync package doc")
+func (f OpenRouterFetcher) httpClient() *http.Client {
+	if f.HTTPClient != nil {
+		return f.HTTPClient
+	}
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// Fetch 需要 src.URL 显式配置接口地址（不内置一个默认地址，同 LiteLLMFetcher
+// 的取舍——具体调哪个地址属于运维配置，不属于代码；调用方一般会填
+// "https://openrouter.ai/api/v1/models"）。
+func (f OpenRouterFetcher) Fetch(ctx context.Context, src Source) ([]Observation, error) {
+	if src.URL == "" {
+		return nil, errors.New("pricesync: openrouter_models source requires a URL")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.URL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pricesync/openrouter: build request: %w", err)
+	}
+	resp, err := f.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("pricesync/openrouter: fetch %s: %w", src.URL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("pricesync/openrouter: fetch %s: status %d", src.URL, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("pricesync/openrouter: read response body: %w", err)
+	}
+	observations, _, err := normalizeOpenRouterResponse(body)
+	return observations, err
 }
 
 // openRouterModel 是 GET /api/v1/models 响应里我们关心的字段子集。

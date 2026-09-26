@@ -45,6 +45,8 @@
 
 <section>
   <h2>1. 接入供应商</h2>
+  <label>常见供应商（都是 OpenAI 兼容协议，选一个自动填 Name/Base URL，Code 每次都会重新生成）</label>
+  <select id="providerPreset" onchange="applyProviderPreset()"></select>
   <div class="row">
     <div><label>Provider Code</label><input id="pCode"></div>
     <div><label>Provider Name</label><input id="pName" value="SiliconFlow"></div>
@@ -54,7 +56,8 @@
   <label>API Key（明文，只在这一次请求里出现，落库前立即加密）</label>
   <input id="pSecret" type="password" placeholder="sk-...">
   <button onclick="setupProvider()">创建供应商 + 保存 Key</button>
-  <p class="hint">Provider Code 有唯一约束；重复点击会报错，这是预期行为——换个 Code 或者复用已有的
+  <p class="hint">Base URL 是从公开文档抄的，各家随时可能调整域名/路径，连不上先去官方文档确认一下。
+    Provider Code 有唯一约束；重复点击会报错，这是预期行为——换个 Code 或者复用已有的
     <code>provider_account_id</code>（见下）。</p>
   <div id="providerResult"></div>
 </section>
@@ -77,10 +80,12 @@
   <select id="impTier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select>
 
   <button onclick="buildPriceTable()">① 生成价格表（按上面勾选的模型）</button>
-  <p class="hint">先勾选第 2 步里的模型，再点这个——会自动去 LiteLLM 社区价格数据集
-    （<code>BerriAI/litellm</code> 维护的 <code>model_prices_and_context_window.json</code>）查一遍这些模型有没有现成的成本价（美元/百万 token）。
-    查得到就把成本价填好；查不到的行成本价留 0，需要自己填。
-    售价（人民币/百万 token）不会自动生成——LiteLLM 给的是"上游成本"，不是"我们该收用户多少钱"，售价永远是自己的定价决策，这里只给了一个默认倍数按钮方便手动套。</p>
+  <p class="hint">先勾选第 2 步里的模型，再点这个——会自动查两个真实来源有没有现成的成本价
+    （美元/百万 token）：<b>OpenRouter</b>（<code>GET /api/v1/models</code>，价格直接放在模型列表接口里，优先取它的结果）
+    和 <b>LiteLLM</b> 社区数据集（<code>BerriAI/litellm</code> 维护的 <code>model_prices_and_context_window.json</code>）。
+    两个都是精确按模型 ID 匹配，不做模糊猜测——查得到就把成本价填好并在"来源"那列标出是哪个来源；查不到的行成本价留 0，需要自己填
+    （SiliconFlow 这类只在自己官网发布价格、不进任何聚合数据集的供应商大概率查不到，见前面的排查结论）。
+    售价（人民币/百万 token）不会自动生成——这两个来源给的都是"上游成本"，不是"我们该收用户多少钱"，售价永远是自己的定价决策。</p>
   <div id="priceTableBox"></div>
   <button id="importBtn" onclick="importSelected()" style="display:none">② 导入（按上表价格）</button>
 </section>
@@ -99,13 +104,43 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
+// 常见的 OpenAI 兼容协议供应商预设——Base URL 都是从各家公开文档抄的
+// （2026-09 前后核对过一次），各家随时可能调整域名/路径，连不上先去官方
+// 文档确认。codePrefix 用来生成 providers.code（唯一约束），不需要跟真实
+// 供应商名字对应。
+const PROVIDER_PRESETS = [
+  { label: 'SiliconFlow', codePrefix: 'siliconflow', name: 'SiliconFlow', baseURL: 'https://api.siliconflow.cn/v1' },
+  { label: 'DeepSeek 官方', codePrefix: 'deepseek', name: 'DeepSeek', baseURL: 'https://api.deepseek.com' },
+  { label: '阿里云百炼 (DashScope)', codePrefix: 'dashscope', name: 'DashScope', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { label: 'Moonshot / Kimi', codePrefix: 'moonshot', name: 'Moonshot', baseURL: 'https://api.moonshot.cn/v1' },
+  { label: '智谱 GLM', codePrefix: 'zhipu', name: 'Zhipu', baseURL: 'https://open.bigmodel.cn/api/paas/v4' },
+  { label: '火山方舟 (豆包)', codePrefix: 'volcark', name: 'VolcArk', baseURL: 'https://ark.cn-beijing.volces.com/api/v3' },
+  { label: 'OpenRouter', codePrefix: 'openrouter', name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1' },
+  { label: '（自定义，不自动填）', codePrefix: 'custom', name: '', baseURL: '' },
+];
+
+function populateProviderPresets() {
+  const sel = $('providerPreset');
+  sel.innerHTML = PROVIDER_PRESETS.map((p, i) => `<option value="${i}">${p.label}</option>`).join('');
+}
+
+// applyProviderPreset 把选中预设的 Name/Base URL 填进去，Code 每次都重新
+// 生成一个带时间戳的值——providers.code 有唯一约束，重新点一次"创建供应商"
+// （比如上一次卡在保存 Key 那一步）不应该因为 Code 撞库而从头报错，这是个
+// 一次性联调工具，不需要跨次运行复用同一个 Code。选"自定义"时不覆盖
+// Name/Base URL，只重新生成 Code，方便手填之后重试。
+function applyProviderPreset() {
+  const preset = PROVIDER_PRESETS[parseInt($('providerPreset').value, 10)];
+  $('pCode').value = preset.codePrefix + '-' + Date.now();
+  if (preset.name) $('pName').value = preset.name;
+  if (preset.baseURL) $('pBaseURL').value = preset.baseURL;
+}
+
 function loadPersisted() {
   $('adminToken').value = localStorage.getItem('uft_admin_token') || '';
   $('pAccountID').value = localStorage.getItem('uft_provider_account_id') || '';
-  // Provider Code 带一个时间戳后缀：providers.code 有唯一约束，重新点一次
-  // "创建供应商"（比如上一次卡在保存 Key 那一步）不应该因为 Code 撞库而
-  // 从头报错——这是个一次性联调工具，不需要跨次运行复用同一个 Code。
-  $('pCode').value = 'siliconflow-' + Date.now();
+  populateProviderPresets();
+  applyProviderPreset(); // 默认选中第一个(SiliconFlow)，和之前的默认行为一致
 }
 loadPersisted();
 $('adminToken').addEventListener('input', () => localStorage.setItem('uft_admin_token', $('adminToken').value));
@@ -202,10 +237,11 @@ function priceComponents(inPrice, outPrice) {
 
 let priceTableModels = [];
 
-// buildPriceTable 对当前勾选的模型查一遍 LiteLLM 参考成本价，渲染成一张可编辑
-// 的表格——查得到的行成本价自动填好，查不到的留 0 需要自己判断；售价
-// （人民币）不从 LiteLLM 推导（那是上游成本，不是我们的定价决策），给一个
-// 固定默认值，每行都能单独改。
+// buildPriceTable 对当前勾选的模型查一遍参考成本价（同时查 OpenRouter 和
+// LiteLLM 两个真实来源，OpenRouter 优先，见 internal/app/pricelookup.go），
+// 渲染成一张可编辑的表格——查得到的行成本价自动填好，查不到的留 0 需要
+// 自己判断；售价（人民币）不从这两个来源推导（那是上游成本，不是我们的
+// 定价决策），给一个固定默认值，每行都能单独改。
 async function buildPriceTable() {
   const boxes = document.querySelectorAll('#modelListBox input[type=checkbox]:checked');
   if (boxes.length === 0) { log('先勾选至少一个模型', 'err'); return; }
@@ -213,12 +249,14 @@ async function buildPriceTable() {
 
   let lookup = {};
   try {
-    const res = await call('POST', '/pricesync/litellm-lookup', {
+    const res = await call('POST', '/pricesync/reference-price-lookup', {
       upstream_models: priceTableModels.map((m) => m.ID),
     });
     lookup = res.data || {};
+    if (res.openrouter_error) log(`OpenRouter 查询失败（不影响 LiteLLM 那部分结果）: ${res.openrouter_error}`, 'err');
+    if (res.litellm_error) log(`LiteLLM 查询失败（不影响 OpenRouter 那部分结果）: ${res.litellm_error}`, 'err');
   } catch (e) {
-    log('LiteLLM 查询失败，成本价先都填 0，可以手动改', 'err');
+    log('参考价格查询失败，成本价先都填 0，可以手动改', 'err');
   }
 
   const box = $('priceTableBox');
@@ -226,7 +264,9 @@ async function buildPriceTable() {
     const match = lookup[m.ID];
     const costIn = match && match.matched ? match.input : '0';
     const costOut = match && match.matched ? match.output : '0';
-    const matchedLabel = match && match.matched ? '<span class="ok">已匹配</span>' : '<span class="hint">未匹配</span>';
+    const matchedLabel = match && match.matched
+      ? `<span class="ok">${match.source}</span>`
+      : '<span class="hint">未匹配</span>';
     return `<tr>
       <td class="modelName">${m.ID}</td>
       <td>${matchedLabel}</td>
@@ -238,7 +278,7 @@ async function buildPriceTable() {
   }).join('');
   box.innerHTML = `<table class="priceTable">
     <thead><tr>
-      <th>模型</th><th>LiteLLM</th>
+      <th>模型</th><th>来源</th>
       <th>成本-输入 (USD/M)</th><th>成本-输出 (USD/M)</th>
       <th>售价-输入 (CNY/M)</th><th>售价-输出 (CNY/M)</th>
     </tr></thead>
