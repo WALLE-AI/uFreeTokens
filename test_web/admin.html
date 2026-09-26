@@ -80,7 +80,7 @@
   <select id="impTier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select>
   <div class="row">
     <div><label>汇率 (USD→CNY)</label><input id="fxRate" value="7.2" oninput="recomputeAllSell()"></div>
-    <div><label>加价倍数</label><input id="markup" value="2" oninput="recomputeAllSell()"></div>
+    <div><label>利润率 (%)</label><input id="markup" value="3" oninput="recomputeAllSell()"></div>
   </div>
 
   <button onclick="buildPriceTable()">① 生成价格表（按上面勾选的模型）</button>
@@ -89,8 +89,10 @@
     和 <b>LiteLLM</b> 社区数据集（<code>BerriAI/litellm</code> 维护的 <code>model_prices_and_context_window.json</code>）。
     两个都是精确按模型 ID 匹配，不做模糊猜测——查得到就把成本价填好并在"来源"那列标出是哪个来源；查不到的行成本价留 0，需要自己填
     （SiliconFlow 这类只在自己官网发布价格、不进任何聚合数据集的供应商大概率查不到，见前面的排查结论）。
-    售价 = 成本(USD) × 汇率 × 加价倍数，改成本、改汇率、改倍数都会实时重算——但算出来的售价框仍然是普通输入框，
-    算完之后你还能手动改，改完只要不再碰成本/汇率/倍数就不会被覆盖回去。汇率和倍数都是占位默认值，不是实时汇率/真实定价策略，改成你自己的数字。</p>
+    售价 = 成本(USD) × 汇率 × (1 + 利润率)——利润率默认 3%，对齐技术方案 §6.4/§7.9.3 的示例
+    （采购价 4.5 元、利润 3% → 售价 4.635 元，4.5×1.03=4.635）。改成本、改汇率、改利润率都会实时重算——
+    但算出来的售价框仍然是普通输入框，算完之后你还能手动改，改完只要不再碰成本/汇率/利润率就不会被覆盖回去。
+    汇率和利润率都是占位默认值，不是实时汇率/真实定价策略，改成你自己的数字。</p>
   <div id="priceTableBox"></div>
   <button id="importBtn" onclick="importSelected()" style="display:none">② 导入（按上表价格）</button>
 </section>
@@ -242,19 +244,20 @@ function priceComponents(inPrice, outPrice) {
 
 let priceTableModels = [];
 
-// computeSellPrice：售价(CNY) = 成本(USD) × 汇率 × 加价倍数。汇率/倍数都是
-// 页面上的占位默认值，不是实时汇率或真实定价策略，管理员应该自己填对的数字——
-// 这里只负责算乘法，不负责判断这两个输入是否合理。
+// computeSellPrice：售价(CNY) = 成本(USD) × 汇率 × (1 + 利润率)。利润率默认
+// 3%，对齐技术方案 §6.4/§7.9.3 的示例（采购价 4.5 元、利润 3% → 售价 4.635
+// 元）。汇率/利润率都是页面上的占位默认值，不是实时汇率或真实定价策略，
+// 管理员应该自己填对的数字——这里只负责算乘法，不负责判断这两个输入是否合理。
 function computeSellPrice(costUSD) {
   const fx = parseFloat($('fxRate').value) || 0;
-  const markup = parseFloat($('markup').value) || 0;
+  const profitRate = (parseFloat($('markup').value) || 0) / 100;
   const cost = parseFloat(costUSD) || 0;
-  return (cost * fx * markup).toFixed(4);
+  return (cost * fx * (1 + profitRate)).toFixed(4);
 }
 
 // recomputeRowSell 用第 i 行当前的成本价重算那一行的售价——改成本、改
-// 汇率/倍数都会触发。算完之后售价框仍然是普通输入框，之后手动改了不会被
-// 这次调用覆盖，只有再次触发重算（改成本/汇率/倍数）才会覆盖回去。
+// 汇率/利润率都会触发。算完之后售价框仍然是普通输入框，之后手动改了不会被
+// 这次调用覆盖，只有再次触发重算（改成本/汇率/利润率）才会覆盖回去。
 function recomputeRowSell(i) {
   const costIn = priceTableRowValue(i, 'costIn');
   const costOut = priceTableRowValue(i, 'costOut');
