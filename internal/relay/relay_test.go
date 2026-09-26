@@ -184,13 +184,20 @@ func seedKey(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, accountID int
 // seedVirtualModel 建一个虚拟模型 + 对应的售价（1 元/百万 token，方便手算预期扣费）。
 func seedVirtualModel(t *testing.T, pool *pgxpool.Pool) (vmID int64, vmName string) {
 	t.Helper()
+	return seedVirtualModelWithType(t, pool, "chat")
+}
+
+// seedVirtualModelWithType 和 seedVirtualModel 一样，但允许指定 virtual_models.type
+// （比如 "embedding"，测 /v1/embeddings 用）。
+func seedVirtualModelWithType(t *testing.T, pool *pgxpool.Pool, vmType string) (vmID int64, vmName string) {
+	t.Helper()
 	ctx := context.Background()
 	vmName = fmt.Sprintf("e2e-model-%d", time.Now().UnixNano())
 
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO virtual_models (name, family, type, context_window, max_output, capabilities, visible_tiers, status)
-		 VALUES ($1, 'test', 'chat', 128000, 8192, '{stream}', '{free}', 'active') RETURNING id`,
-		vmName,
+		 VALUES ($1, 'test', $2, 128000, 8192, '{stream}', '{free}', 'active') RETURNING id`,
+		vmName, vmType,
 	).Scan(&vmID); err != nil {
 		t.Fatalf("insert virtual_model: %v", err)
 	}
@@ -300,10 +307,17 @@ func seedFreeQuotaPromotion(t *testing.T, pool *pgxpool.Pool, vmName string, dai
 // Key 的明文固定为 "sk-mock-upstream-secret"。
 func seedSimple(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL string, cashMicro int64) (fx fixture, vmName string) {
 	t.Helper()
+	return seedSimpleWithType(t, pool, box, upstreamURL, cashMicro, "chat")
+}
+
+// seedSimpleWithType 和 seedSimple 一样，但允许指定 virtual_models.type
+// （比如 "embedding"，测 /v1/embeddings 用）。
+func seedSimpleWithType(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, upstreamURL string, cashMicro int64, vmType string) (fx fixture, vmName string) {
+	t.Helper()
 	fx = seedAccount(t, pool, cashMicro)
 	accID := seedProviderAccount(t, pool, upstreamURL)
 	seedKey(t, pool, box, accID, "sk-mock-upstream-secret")
-	vmID, name := seedVirtualModel(t, pool)
+	vmID, name := seedVirtualModelWithType(t, pool, vmType)
 	seedChannel(t, pool, vmID, accID, 0)
 	return fx, name
 }
@@ -359,8 +373,18 @@ func getWalletBalance(t *testing.T, pool *pgxpool.Pool, accountID int64) (cash, 
 
 func doChatCompletion(t *testing.T, gwURL, apiKey string, body map[string]any) *http.Response {
 	t.Helper()
+	return doPost(t, gwURL+"/v1/chat/completions", apiKey, body)
+}
+
+func doEmbeddings(t *testing.T, gwURL, apiKey string, body map[string]any) *http.Response {
+	t.Helper()
+	return doPost(t, gwURL+"/v1/embeddings", apiKey, body)
+}
+
+func doPost(t *testing.T, url, apiKey string, body map[string]any) *http.Response {
+	t.Helper()
 	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, gwURL+"/v1/chat/completions", strings.NewReader(string(raw)))
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(string(raw)))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -441,6 +465,87 @@ func TestChatCompletions_NonStream_ChargesActualUsage(t *testing.T) {
 	}
 	if frozen != 0 {
 		t.Errorf("frozen = %d, want 0 (reservation must be fully settled)", frozen)
+	}
+}
+
+// TestEmbeddings_ChargesActualUsage 验证 /v1/embeddings（技术方案 Phase 2）走完
+// 完整的鉴权/预扣/转发/结算管线：只有 input 用量，没有 output，售价只按 input
+// 计量项算。
+func TestEmbeddings_ChargesActualUsage(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("upstream got unexpected path %q, want /embeddings", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object": "list",
+			"data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+			"model": "mock-upstream-model",
+			"usage": {"prompt_tokens": 500, "total_tokens": 500}
+		}`))
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimpleWithType(t, pool, box, upstream.URL, 1_000_000, "embedding")
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doEmbeddings(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "input": "hello world"})
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, respBody)
+	}
+	if m["model"] != vmName {
+		t.Errorf("model = %v, want %v (must not leak upstream model name)", m["model"], vmName)
+	}
+	data, _ := m["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("data = %v, want exactly 1 embedding", data)
+	}
+
+	// 500 input token，单价 1 元/百万 -> 500 微元。没有 output，不应该被多算。
+	wantCharge := int64(500)
+	cash, frozen := awaitSettled(t, pool, fx.accountID, 1_000_000)
+	if cash != 1_000_000-wantCharge {
+		t.Errorf("cash_balance = %d, want %d", cash, 1_000_000-wantCharge)
+	}
+	if frozen != 0 {
+		t.Errorf("frozen = %d, want 0 (reservation must be fully settled)", frozen)
+	}
+}
+
+// TestEmbeddings_RejectsChatOnlyModel 验证 /v1/embeddings 不会把请求路由到一个
+// virtual_models.type != 'embedding' 的模型（哪怕这个模型名本身存在、对这个
+// tier 可见）。
+func TestEmbeddings_RejectsChatOnlyModel(t *testing.T) {
+	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream should not be called for a model_not_found rejection")
+	}))
+	defer upstream.Close()
+
+	fx, vmName := seedSimple(t, pool, box, upstream.URL, 1_000_000) // type='chat'
+	handler, reqLogW := newTestGateway(t, pool, box, rdb)
+	defer reqLogW.Close()
+	gw := httptest.NewServer(handler)
+	defer gw.Close()
+
+	resp := doEmbeddings(t, gw.URL, fx.apiKey, map[string]any{"model": vmName, "input": "hello"})
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", resp.StatusCode, body)
 	}
 }
 

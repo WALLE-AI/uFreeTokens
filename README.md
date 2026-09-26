@@ -13,7 +13,15 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 - `cmd/gateway`：数据面入口。`/v1/chat/completions` 已接入完整链路——鉴权 → 预扣费用
   → 路由选渠道/Key → 转发上游（OpenAI 兼容协议，支持流式/非流式）→ 失败时按错误类别
   换 Key/换渠道重试（§7.6-7.7，见下）→ 按实际用量结算。
-  `/v1/completions`、`/v1/embeddings` 尚未实现，返回 `503 not_implemented`。
+  `/v1/embeddings`（Phase 2）已经接入，和 `/v1/chat/completions` 共用同一套
+  鉴权/限流/预扣/重试/结算管线（`callUpstreamWithRetry`/`handleNonStream`
+  两边共用），差异只在没有流式、没有工具调用、用量只有 input（没有
+  completion）；只有 `virtual_models.type = 'embedding'` 的模型能被
+  `/v1/embeddings` 路由到。`/v1/completions`（旧式补全接口）、
+  `/v1/images/generations`、`/v1/audio/transcriptions`、`/v1/audio/speech`
+  尚未实现，返回 `503 not_implemented`——图片/音频的请求体（multipart 上传、
+  二进制/base64 响应）和聊天/嵌入的 JSON 形态差异太大，复用不了现有管线，
+  需要单独设计，比嵌入端点的工作量大得多。
 - `cmd/admin`：账户/API Key/Provider/渠道/虚拟模型/售价管理的 HTTP 接口
   （`internal/admin`）——创建账户会原子初始化一个空钱包；上游 Key 落库前用
   `internal/secretbox` 加密；改价格是发布新版本，不覆盖历史。鉴权已经接入

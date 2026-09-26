@@ -47,6 +47,9 @@ import (
 const (
 	chatEndpoint    = "/chat/completions" // 拼在 provider_accounts.base_url 后面的上游路径
 	logEndpointChat = "chat.completions"  // request_logs.endpoint 里记录的名字
+
+	embeddingsEndpoint    = "/embeddings"
+	logEndpointEmbeddings = "embeddings"
 )
 
 // Config 是 relay.Service 的可调参数，默认值见技术方案附录 B。
@@ -110,6 +113,10 @@ type requestMeta struct {
 	clientIP    string
 	userAgent   string
 	start       time.Time
+	// logEndpoint 是 request_logs.endpoint 里记录的名字（logEndpointChat /
+	// logEndpointEmbeddings），不是字面的上游 URL 路径。handleNonStream 在
+	// ChatCompletions 和 Embeddings 之间共用，靠这个字段区分是谁调用的。
+	logEndpoint string
 }
 
 // ChatCompletions 是 POST /v1/chat/completions 的 http.HandlerFunc。
@@ -215,13 +222,14 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
 		accountTier: principal.AccountTier,
 		vmName:      vm.Name, isStream: stream, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
+		logEndpoint: logEndpointChat,
 	}
 
 	// 只有真正进入重试循环、会对上游发起至少一次尝试的请求才计入"正常请求"基数
 	// （技术方案 §7.7 的重试预算比较的是"重试数 vs 正常请求数"，鉴权失败/限流拒绝/
 	// 余额不足这些根本没打到上游的请求不应该稀释这个比例）。
 	s.RetryBudget.RecordRequest()
-	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, reqMap)
+	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, chatEndpoint, reqMap)
 	if err != nil {
 		s.releaseQuietly(log, requestID)
 		status, code := classifyRelayError(err)
@@ -288,7 +296,7 @@ func classifyRelayError(err error) (status int, code string) {
 // 调用方从这里开始才真正向客户端转发内容——转发开始之后就不再有重试的机会了。
 // trace 记录了每一次真正发起的尝试（无论成败），供 request_logs 落盘审计。
 func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, snap *catalog.Snapshot, vm *catalog.VirtualModel,
-	features router.Features, tier string, accountID int64, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
+	features router.Features, tier string, accountID int64, endpoint string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
 
 	maxAttempts := s.Cfg.Retry.MaxAttempts
 	if maxAttempts <= 0 {
@@ -358,7 +366,7 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 		}
 
 		target := adapter.Target{Channel: picked.Channel, Account: picked.Account, Key: picked.Key}
-		upstreamReq, berr := adp.BuildRequest(ctx, target, chatEndpoint, reqMap)
+		upstreamReq, berr := adp.BuildRequest(ctx, target, endpoint, reqMap)
 		if berr != nil {
 			if done != nil {
 				done(false)
@@ -562,7 +570,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
-		VirtualModel: meta.vmName, Endpoint: logEndpointChat, IsStream: meta.isStream,
+		VirtualModel: meta.vmName, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
 		Status: "success", HTTPStatus: httpStatus, Attempts: len(trace), AttemptTrace: trace,
 		TTFTMillis: &ttftMs, LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage: usage, ClientIP: meta.clientIP, UserAgent: meta.userAgent,
@@ -589,7 +597,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 func (s *Service) logFailure(meta requestMeta, trace []reqlog.AttemptTraceEntry, httpStatus int, errorCode string, attempts int) {
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
-		VirtualModel: meta.vmName, Endpoint: logEndpointChat, IsStream: meta.isStream,
+		VirtualModel: meta.vmName, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
 		Status: "upstream_error", HTTPStatus: httpStatus, ErrorCode: errorCode, Attempts: attempts, AttemptTrace: trace,
 		LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage:         schema.Usage{Source: schema.UsageSourceEstimated}, // 未产生任何计费用量
