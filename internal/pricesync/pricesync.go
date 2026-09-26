@@ -22,8 +22,12 @@
 //   - impact_7d（按近 7 天实际用量估算变更影响）没有实现，price_change_requests
 //     .impact_7d 恒为 NULL；这需要解析 request_logs 里的历史用量并按计量项
 //     加权，属于独立工作量，留作后续。
-//   - 毛利守护（Margin Guard，§7.16.7）没有实现：这里不产生"某渠道毛利转负，
-//     自动把路由权重降到 0.1"这类联动动作。
+//   - 毛利守护的路由降权部分不在这个包里：挂牌价结构性负毛利的判定
+//     （catalog.Channel.NegativeMargin）和降权（router.channelWeight 打 10%
+//     折扣）在 internal/catalog + internal/router 里实现，随每次快照刷新
+//     自动重算，不依赖这个包缺失的调度器。本包（Engine.Ingest 触发的价格变更）
+//     和那条判定是各自独立生效的——一次价格同步会改变 price_books，下一次
+//     快照刷新自然会重新评估毛利，两者通过数据库自然衔接，不需要显式调用。
 //   - 汇率来源同步见 internal/catalog（FXRates）+ internal/admin（SetFXRate）；
 //     本包只是发布价格时把 PriceSpec.Currency 原样写进 price_books.currency，
 //     不做汇率相关的处理。

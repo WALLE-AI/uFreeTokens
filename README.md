@@ -77,7 +77,13 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   没有毛利守护（Margin Guard）联动路由权重。
 - `internal/router`：硬过滤（含熔断/冷却状态）→ 优先级分层 → 层内加权随机的渠道/Key
   选择算法（§7.5），支持按请求排除已失败的渠道/Key，用统计检验测试证明不会出现
-  "全部流量挤到一个渠道"的羊群效应。
+  "全部流量挤到一个渠道"的羊群效应。毛利守护的路由降权（§7.16.7）已经接入：
+  `internal/catalog` 每次刷新快照时用 SellPriceBooks/CostPriceBooks/FXRates
+  纯内存算出每个渠道是否有任一计量项挂牌价结构性亏钱（`Channel.NegativeMargin`，
+  缺成本价/缺汇率不算亏钱，只是判断不了），router 对这类渠道的层内有效权重打
+  10% 折扣（不是硬性排除，只是同层有健康渠道时流量会被自动挤过去）。这是"挂牌价"
+  毛利，不是按近 7 天实际用量加权的"典型毛利"，也没有"无替代渠道时自动降级
+  cost_plus/拒绝新请求"那部分（见 `internal/pricesync` 包注释的范围限制）。
 - `internal/health`：渠道熔断器（`sony/gobreaker`，进程内）+ 上游 Key 冷却
   （Redis 共享，429/配额耗尽/Key 失效时跨实例生效，§7.6）。
 - `internal/reqlog`：把每次请求的用量/计费快照/重试轨迹异步批量写入 `request_logs`

@@ -392,3 +392,99 @@ func TestStore_LoadFXRates_IgnoresFutureEffectiveDate(t *testing.T) {
 		t.Errorf("rate = %s, want 7 (a rate scheduled 30 days in the future must not be picked up yet)", rate)
 	}
 }
+
+// TestStore_ComputesNegativeMarginEndToEnd 验证毛利守护（§7.16.7）真的接到了
+// 真实的 Store.Get 加载流程上，不只是纯函数单测——渠道成本价 10 元/百万 token，
+// 虚拟模型售价只有 5 元/百万 token，应该被标记 NegativeMargin。
+func TestStore_ComputesNegativeMarginEndToEnd(t *testing.T) {
+	pool := testPool(t)
+	box := testBox(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	var providerID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO providers (code, name, protocol, status) VALUES ($1, 'Margin Test', 'openai', 'active') RETURNING id`,
+		"margin-provider-"+suffix,
+	).Scan(&providerID); err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+	var accountID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (provider_id, name, base_url, status) VALUES ($1, 'margin-account', 'https://api.example.com/v1', 'active') RETURNING id`,
+		providerID,
+	).Scan(&accountID); err != nil {
+		t.Fatalf("insert provider_account: %v", err)
+	}
+	vmName := "margin-test-vm-" + suffix
+	var vmID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO virtual_models (name, family, type, context_window, max_output, status)
+		 VALUES ($1, 'test', 'chat', 128000, 8192, 'active') RETURNING id`,
+		vmName,
+	).Scan(&vmID); err != nil {
+		t.Fatalf("insert virtual_model: %v", err)
+	}
+	var channelID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, status)
+		 VALUES ($1, $2, 'upstream-model', 0, 100, 'active') RETURNING id`,
+		vmID, accountID,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	var costBookID, sellBookID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO price_books (kind, channel_id, currency, effective_from) VALUES ('cost', $1, 'CNY', now() - interval '1 hour') RETURNING id`,
+		channelID,
+	).Scan(&costBookID); err != nil {
+		t.Fatalf("insert cost price_book: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO price_components (price_book_id, meter, unit, service_tier, tier_min_input, unit_price) VALUES ($1,'input','per_1m_tokens','default',0,10)`,
+		costBookID,
+	); err != nil {
+		t.Fatalf("insert cost price_components: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO price_books (kind, virtual_model_id, currency, effective_from) VALUES ('sell', $1, 'CNY', now() - interval '1 hour') RETURNING id`,
+		vmID,
+	).Scan(&sellBookID); err != nil {
+		t.Fatalf("insert sell price_book: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO price_components (price_book_id, meter, unit, service_tier, tier_min_input, unit_price) VALUES ($1,'input','per_1m_tokens','default',0,5)`,
+		sellBookID,
+	); err != nil {
+		t.Fatalf("insert sell price_components: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM price_components WHERE price_book_id IN ($1, $2)`, costBookID, sellBookID)
+		_, _ = pool.Exec(ctx, `DELETE FROM price_books WHERE id IN ($1, $2)`, costBookID, sellBookID)
+		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE id = $1`, channelID)
+		_, _ = pool.Exec(ctx, `DELETE FROM virtual_models WHERE id = $1`, vmID)
+		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE id = $1`, accountID)
+		_, _ = pool.Exec(ctx, `DELETE FROM providers WHERE id = $1`, providerID)
+	})
+
+	store := NewStore(pool, box, time.Hour)
+	snap, err := store.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	var channel *Channel
+	for _, c := range snap.ChannelsByVM[vmID] {
+		if c.ID == channelID {
+			channel = c
+		}
+	}
+	if channel == nil {
+		t.Fatal("expected the seeded channel to be present in the snapshot")
+	}
+	if !channel.NegativeMargin {
+		t.Error("channel.NegativeMargin = false, want true (sell 5/1M < cost 10/1M)")
+	}
+}

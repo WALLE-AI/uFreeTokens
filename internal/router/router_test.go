@@ -300,6 +300,56 @@ func TestPick_WeightedDistributionWithinLayer(t *testing.T) {
 	}
 }
 
+// TestPick_NegativeMarginChannelIsDownweightedWithinLayer 验证毛利守护
+// （技术方案 §7.16.7）真的会把流量从结构性亏钱的渠道挤走：两个渠道 weight
+// 相同，其中一个标了 NegativeMargin，期望流量比例接近 10:1（降到 1/10）。
+func TestPick_NegativeMarginChannelIsDownweightedWithinLayer(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addAccount(s, 2, "active")
+	addKey(s, 1, 1, 100, "active")
+	addKey(s, 2, 2, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0, Weight: 100})
+	addChannel(s, &catalog.Channel{ID: 2, VirtualModelID: 1, ProviderAccountID: 2, Status: "active", Priority: 0, Weight: 100, NegativeMargin: true})
+
+	const n = 4000
+	counts := map[int64]int{}
+	for i := 0; i < n; i++ {
+		picked, err := pick(t, s, Features{}, "free", SelectOptions{})
+		if err != nil {
+			t.Fatalf("Pick: %v", err)
+		}
+		counts[picked.Channel.ID]++
+	}
+
+	if counts[2] == 0 {
+		t.Fatal("the negative-margin channel should still be selectable sometimes, not fully excluded")
+	}
+	ratio := float64(counts[1]) / float64(counts[2])
+	// 期望比例 10:1，给统计误差留宽松空间。
+	if ratio < 6 || ratio > 15 {
+		t.Errorf("healthy:negative-margin ratio = %.2f (counts=%v), want close to 10.0", ratio, counts)
+	}
+}
+
+// TestPick_NegativeMarginChannelStillSelectableWhenOnlyOption 验证降权不是硬性
+// 排除：即便是这一层唯一的候选，毛利为负的渠道依然会被选中（有效权重下限是
+// 1，不会因为除法向下取整变成 0 从而被 rand.IntN 排除出可选范围）。
+func TestPick_NegativeMarginChannelStillSelectableWhenOnlyOption(t *testing.T) {
+	s := baseSnapshot()
+	addAccount(s, 1, "active")
+	addKey(s, 1, 1, 100, "active")
+	addChannel(s, &catalog.Channel{ID: 1, VirtualModelID: 1, ProviderAccountID: 1, Status: "active", Priority: 0, Weight: 5, NegativeMargin: true})
+
+	picked, err := pick(t, s, Features{}, "free", SelectOptions{})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if picked.Channel.ID != 1 {
+		t.Errorf("Channel.ID = %d, want 1", picked.Channel.ID)
+	}
+}
+
 func TestPick_WeightedKeySelectionWithinChannel(t *testing.T) {
 	s := baseSnapshot()
 	addAccount(s, 1, "active")

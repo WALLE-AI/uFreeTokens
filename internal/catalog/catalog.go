@@ -71,6 +71,14 @@ type Channel struct {
 	ParamOverrides    map[string]any
 	AllowedTiers      []string // nil = 不限制
 	Status            string
+	// NegativeMargin 标记这个渠道当前是否至少有一个计量项在挂牌价下毛利为负
+	// （sell_unit_price < cost_unit_price × fx_rate × cost_multiplier，技术方案
+	// §7.16.7 毛利守护）。每次快照重建时用 SellPriceBooks/CostPriceBooks/FXRates
+	// 重算，不需要单独的调度器。router 用它给同优先级内的渠道降权（不是硬性
+	// 排除——没有替代渠道时仍然可用，只是被挤到更少的流量），不判断"没配成本价"
+	// 或"成本价币种没有汇率"为负毛利：数据不全不等于亏钱，见 loadCostPrices 的
+	// 同款原则。
+	NegativeMargin bool
 }
 
 // EffectiveCapabilities 返回该渠道实际生效的能力集合（渠道未声明则继承虚拟模型）。
@@ -203,7 +211,65 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 	if err := s.loadFXRates(ctx, snap); err != nil {
 		return nil, err
 	}
+	computeNegativeMargins(snap)
 	return snap, nil
+}
+
+// computeNegativeMargins 给每个渠道打上 NegativeMargin 标记（技术方案 §7.16.7
+// 毛利守护）：纯内存计算，复用已经加载好的 SellPriceBooks/CostPriceBooks/
+// FXRates，不需要额外查库、也不需要单独的调度器——每次快照刷新（默认 TTL
+// 10 秒）自动重新评估。这是"挂牌价结构性毛利"，不是按近 7 天实际用量加权的
+// "典型毛利"（那个需要解析 request_logs 历史用量，属于更大的工作量，留作后续）。
+func computeNegativeMargins(snap *Snapshot) {
+	for _, channels := range snap.ChannelsByVM {
+		for _, ch := range channels {
+			sellBook, ok := snap.SellPriceBooks[ch.VirtualModelID]
+			if !ok {
+				continue
+			}
+			costBook, ok := snap.CostPriceBooks[ch.ID]
+			if !ok {
+				continue
+			}
+			account, ok := snap.ProviderAccounts[ch.ProviderAccountID]
+			if !ok {
+				continue
+			}
+			fxRate := decimal.NewFromInt(1)
+			if costBook.Currency != "" && costBook.Currency != "CNY" {
+				rate, ok := snap.FXRates[costBook.Currency]
+				if !ok {
+					continue // 换算不了，不评判（缺数据不等于亏钱）
+				}
+				fxRate = rate
+			}
+			ch.NegativeMargin = hasNegativeMargin(sellBook, costBook, fxRate, account.CostMultiplier)
+		}
+	}
+}
+
+func marginMeterKey(meter pricing.Meter, tier string) string {
+	if tier == "" {
+		tier = "default"
+	}
+	return string(meter) + "|" + tier
+}
+
+// hasNegativeMargin 判断是否存在至少一个计量项：售价 < 成本价 × 汇率 × 合同折扣。
+// 只比较售价和成本价都配置了的计量项——一侧没配的计量项没有可比较的对象，
+// 不参与判断。
+func hasNegativeMargin(sell, cost pricing.Book, fxRate, costMultiplier decimal.Decimal) bool {
+	costByMeter := make(map[string]decimal.Decimal, len(cost.Components))
+	for _, c := range cost.Components {
+		costByMeter[marginMeterKey(c.Meter, c.ServiceTier)] = c.UnitPrice.Mul(fxRate).Mul(costMultiplier)
+	}
+	for _, s := range sell.Components {
+		costPrice, ok := costByMeter[marginMeterKey(s.Meter, s.ServiceTier)]
+		if ok && s.UnitPrice.LessThan(costPrice) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadFXRates 加载每个 base 币种当前生效（effective_date <= 今天）的最新汇率，

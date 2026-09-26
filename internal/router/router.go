@@ -7,6 +7,12 @@
 //
 // 硬过滤额外接入了熔断器状态（ChannelHealth）与 Key 冷却状态（KeyHealth，见
 // internal/health），配合 relay 层的重试循环实现"换渠道/换 Key 重试"（§7.6-7.7）。
+//
+// 层内加权随机还接入了 catalog.Channel.NegativeMargin（技术方案 §7.16.7 毛利
+// 守护）：挂牌价结构性亏钱的渠道，有效权重打 10% 折扣（不是硬性排除——它仍然
+// 可能是这一层唯一的候选，届时依然会被选中，只是同层有健康渠道时流量会被
+// 自动挤过去）。
+//
 // 仍未实现的：基于实时延迟/成功率的动态权重因子、P2C、提示缓存亲和性（§7.5.2 的
 // 加权公式），留作后续——静态 weight 已经能避免羊群效应，动态因子是锦上添花。
 package router
@@ -175,20 +181,34 @@ func topPriorityLayer(candidates []*catalog.Channel) []*catalog.Channel {
 func weightedRandomChannel(layer []*catalog.Channel) *catalog.Channel {
 	total := 0
 	for _, c := range layer {
-		total += weightOrDefault(c.Weight)
+		total += channelWeight(c)
 	}
 	if total <= 0 {
 		return layer[rand.IntN(len(layer))]
 	}
 	r := rand.IntN(total)
 	for _, c := range layer {
-		w := weightOrDefault(c.Weight)
+		w := channelWeight(c)
 		if r < w {
 			return c
 		}
 		r -= w
 	}
 	return layer[len(layer)-1] // 理论不可达，防御性兜底
+}
+
+// channelWeight 是渠道的有效路由权重：配置的 weight，毛利为负时打 10% 折扣
+// （技术方案 §7.16.7），下限 1——不能让一个仍在服务的渠道有效权重归零，那样
+// 它会被 rand.IntN(total) 排除出可选范围，等价于硬性下线，超出了"降权"的本意。
+func channelWeight(c *catalog.Channel) int {
+	w := weightOrDefault(c.Weight)
+	if c.NegativeMargin {
+		w /= 10
+		if w < 1 {
+			w = 1
+		}
+	}
+	return w
 }
 
 func weightedRandomKey(keys []*catalog.ProviderKey) *catalog.ProviderKey {
