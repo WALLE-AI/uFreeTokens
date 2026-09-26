@@ -31,12 +31,13 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   bonus_balance 是否分别等于账本流水、held 预扣、未过期赠款之和；某个时间窗口内账本
   消费总额与 request_logs 计费总额是否一致。只发现问题、上报，不自动修复。
   第三类对账（成本 vs 上游账单）还没做——不是缺数据了（渠道成本已经能算出来，
-  见下），是缺"上游账单从哪来"这一环（§7.16 的价格/账单同步，整个都还没做）。
+  见下），是缺"上游账单从哪来"这一环（§7.16.8 的 L1 实际成本回传/漂移检测，
+  见 `internal/pricesync` 一节的范围限制）。
 - `internal/secretbox`：上游 Key 的信封加密（AES-256-GCM，§7.15）。
-- `internal/catalog`：虚拟模型/渠道/售价/成本价的内存快照（带 TTL 缓存的简化版，
-  完整的 LISTEN/NOTIFY 热加载见 §7.3，留作后续）。成本价挂渠道（§6.4），只有
-  currency='CNY' 的版本会被使用——汇率同步（§7.16.9）没做，外币成本价加载了但
-  算不出来。
+- `internal/catalog`：虚拟模型/渠道/售价/成本价/汇率的内存快照（带 TTL 缓存的
+  简化版，完整的 LISTEN/NOTIFY 热加载见 §7.3，留作后续）。成本价挂渠道（§6.4），
+  currency='CNY' 直接用，非 CNY 会按 FXRates（§7.16.9，来自 `fx_rates` 表）折算，
+  没有对应汇率的币种才会跳过成本记录。
 - `internal/adapter`：协议适配器（请求改写、非流式/流式响应解析、用量提取、
   错误分类，§7.4）。openai 协议是直通（覆盖绝大多数 OpenAI 兼容上游）；
   anthropic 和 gemini 协议是真正的双向翻译：
@@ -54,6 +55,26 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   role=tool 直接报错，不做可能错误的静默转换），多模态内容只做直通不做字段
   翻译；gemini 额外不上报 cache 写入量（Gemini 的显式上下文缓存创建走单独
   API，不在每次请求的 usageMetadata 里报告）。
+- `internal/pricesync`：上游价格同步流水线（§7.16）里"来了一条价格观测之后"
+  的确定性部分——归一化（PriceSpec/Component，含一个 OpenRouter 归一化函数 +
+  golden fixture 测试）、校验（数量级异常拦截、零价无到期时间强制审批、缓存价/
+  分档单调性告警、L3 来源要求连续两次观测一致、跨来源价格冲突强制审批）、
+  比较（Diff：up/down/mixed/new/removed + 最大变化比例）、生效策略
+  （§7.16.7 的成本价策略表：L2/L5 降价自动生效，L2 涨价 ≤20% 自动生效，
+  其余一律 pending）、发布（自动通过或人工批准后调用 `internal/admin` 发布
+  新的成本价版本，支持预约生效）。`cmd/admin` 暴露了完整的 HTTP 接口：
+  `POST /price-sources`、`POST /channels/{id}/price-observations`（提交一条
+  观测，跑完整条流水线）、`GET /price-change-requests`、
+  `POST /price-change-requests/{id}/approve|reject`。
+
+  已知范围限制（§7.16 本身是个很大的独立子系统，这里先把确定性流水线做对、
+  做全，见 `internal/pricesync` 包级注释）：没有真正对接外部数据源的
+  Fetcher（不发 HTTP 请求抓 OpenRouter/官网/账单 API，也没有 HTML 抓取/LLM
+  辅助抽取）；没有调度器（cron + PG advisory lock 选主未实现，谁在什么时候
+  调 `Engine.Ingest` 由调用方决定，目前就是上面那个 HTTP 接口）；不做"模型
+  消失"检测（需要定期扫描，依赖尚未实现的调度器）；跨来源冲突检测是简化版
+  （不区分具体是 L2 与 L4，笼统按"任意其它来源"比较）；不估算 impact_7d；
+  没有毛利守护（Margin Guard）联动路由权重。
 - `internal/router`：硬过滤（含熔断/冷却状态）→ 优先级分层 → 层内加权随机的渠道/Key
   选择算法（§7.5），支持按请求排除已失败的渠道/Key，用统计检验测试证明不会出现
   "全部流量挤到一个渠道"的羊群效应。

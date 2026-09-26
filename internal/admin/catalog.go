@@ -256,23 +256,26 @@ var validUnits = map[string]bool{
 
 type SetSellPriceInput struct {
 	VirtualModelID int64
-	Tier           string // 空 = 默认价格档（不区分用户分组）
+	Tier           string     // 空 = 默认价格档（不区分用户分组）
+	EffectiveFrom  *time.Time // nil = now()；非 nil 时是"预约生效"（技术方案 §7.16.7）
 	Components     []PriceComponentInput
 }
 
 // SetSellPrice 给虚拟模型发布一个新的售价版本（技术方案 §6.4：价格是版本化的，
-// "修改价格" = 插入一条新记录，effective_from=now()；旧版本永久保留、不删除、
-// 不能被覆盖——这是故意的，账单纠纷时需要能查到"当时到底生效的是哪个价格"）。
-// internal/catalog 的快照加载器按 effective_from 取最新一条，所以这里发布之后，
-// 网关会在下一次快照刷新时（默认 TTL 10 秒）自动用上新价格，不需要重启。
+// "修改价格" = 插入一条新记录；旧版本永久保留、不删除、不能被覆盖——这是故意的，
+// 账单纠纷时需要能查到"当时到底生效的是哪个价格"）。EffectiveFrom 为 nil 时立即
+// 生效；给未来时间则是预约生效，internal/catalog 的快照加载器只挑
+// effective_from <= now() 的最新版本，到点之前请求仍然按旧版本计价，到点后
+// 下一次快照刷新（默认 TTL 10 秒）自动切换，不需要重启、也不需要精确对时。
 func (s *Service) SetSellPrice(ctx context.Context, in SetSellPriceInput) (int64, error) {
-	return s.setPrice(ctx, priceTarget{kind: "sell", virtualModelID: &in.VirtualModelID, tier: in.Tier, currency: "CNY"}, in.Components)
+	return s.setPrice(ctx, priceTarget{kind: "sell", virtualModelID: &in.VirtualModelID, tier: in.Tier, currency: "CNY", effectiveFrom: in.EffectiveFrom}, in.Components)
 }
 
 type SetCostPriceInput struct {
-	ChannelID  int64
-	Currency   string // 空则默认 "CNY"；非 CNY 的成本价目前不参与计算（见 catalog 包注释）
-	Components []PriceComponentInput
+	ChannelID     int64
+	Currency      string     // 空则默认 "CNY"；非 CNY 的成本价需要 internal/catalog.Snapshot.FXRates 里有对应汇率才会参与计算
+	EffectiveFrom *time.Time // nil = now()；语义同 SetSellPriceInput.EffectiveFrom
+	Components    []PriceComponentInput
 }
 
 // SetCostPrice 给渠道发布一个新的成本价版本，用于计算 request_logs.cost_amount
@@ -282,7 +285,7 @@ func (s *Service) SetCostPrice(ctx context.Context, in SetCostPriceInput) (int64
 	if currency == "" {
 		currency = "CNY"
 	}
-	return s.setPrice(ctx, priceTarget{kind: "cost", channelID: &in.ChannelID, currency: currency}, in.Components)
+	return s.setPrice(ctx, priceTarget{kind: "cost", channelID: &in.ChannelID, currency: currency, effectiveFrom: in.EffectiveFrom}, in.Components)
 }
 
 // priceTarget 描述一次价格发布的落点：sell 挂虚拟模型（可选 tier），cost 挂渠道
@@ -293,6 +296,7 @@ type priceTarget struct {
 	channelID      *int64
 	tier           string
 	currency       string
+	effectiveFrom  *time.Time
 }
 
 func (s *Service) setPrice(ctx context.Context, target priceTarget, components []PriceComponentInput) (int64, error) {
@@ -320,8 +324,8 @@ func (s *Service) setPrice(ctx context.Context, target priceTarget, components [
 	var bookID int64
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO price_books (kind, virtual_model_id, channel_id, tier, currency, effective_from)
-		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, now()) RETURNING id`,
-		target.kind, target.virtualModelID, target.channelID, target.tier, target.currency,
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, COALESCE($6, now())) RETURNING id`,
+		target.kind, target.virtualModelID, target.channelID, target.tier, target.currency, target.effectiveFrom,
 	).Scan(&bookID); err != nil {
 		return 0, fmt.Errorf("admin: insert price_book: %w", err)
 	}

@@ -513,6 +513,46 @@ func TestSetFXRate_ValidatesInput(t *testing.T) {
 	}
 }
 
+func TestSetCostPrice_SupportsScheduledEffectiveFrom(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+	ctx := context.Background()
+
+	provider, err := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	acc, err := s.CreateProviderAccount(ctx, CreateProviderAccountInput{ProviderID: provider.ID, Name: "acc", BaseURL: "https://x"})
+	if err != nil {
+		t.Fatalf("CreateProviderAccount: %v", err)
+	}
+	vm, err := s.CreateVirtualModel(ctx, CreateVirtualModelInput{Name: uniqueCode(t), Type: "chat", ContextWindow: 1000, MaxOutput: 100})
+	if err != nil {
+		t.Fatalf("CreateVirtualModel: %v", err)
+	}
+	ch, err := s.CreateChannel(ctx, CreateChannelInput{VirtualModelID: vm.ID, ProviderAccountID: acc.ID, UpstreamModel: "up"})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	future := time.Now().Add(48 * time.Hour)
+	bookID, err := s.SetCostPrice(ctx, SetCostPriceInput{
+		ChannelID: ch.ID, EffectiveFrom: &future,
+		Components: []PriceComponentInput{{Meter: "input", Unit: "per_1m_tokens", UnitPrice: decimal.NewFromInt(1)}},
+	})
+	if err != nil {
+		t.Fatalf("SetCostPrice: %v", err)
+	}
+
+	var effectiveFrom time.Time
+	if err := pool.QueryRow(ctx, `SELECT effective_from FROM price_books WHERE id = $1`, bookID).Scan(&effectiveFrom); err != nil {
+		t.Fatalf("query price_book: %v", err)
+	}
+	if effectiveFrom.Before(time.Now().Add(47 * time.Hour)) {
+		t.Errorf("effective_from = %v, want ~48h in the future (scheduled), not now()", effectiveFrom)
+	}
+}
+
 func TestSetCostPrice_CreatesVersionAndDefaultsToCNY(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)

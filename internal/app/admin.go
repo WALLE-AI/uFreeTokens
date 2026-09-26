@@ -13,12 +13,14 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
+	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 )
 
 // AdminDeps 是构造控制面路由所需的全部依赖。
 type AdminDeps struct {
-	Logger *slog.Logger
-	Admin  *admin.Service
+	Logger    *slog.Logger
+	Admin     *admin.Service
+	PriceSync *pricesync.Engine // nil 时价格同步相关接口返回 503 not_implemented（见技术方案 §7.16）
 }
 
 // NewAdminRouter 组装控制面路由：账户/API Key/Provider/渠道/虚拟模型/价格管理
@@ -36,7 +38,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 
 	r.Get("/healthz", healthzHandler)
 
-	h := &adminHandlers{svc: d.Admin, log: d.Logger}
+	h := &adminHandlers{svc: d.Admin, log: d.Logger, pricesync: d.PriceSync}
 
 	r.Route("/accounts", func(r chi.Router) {
 		r.Post("/", h.createAccount)
@@ -56,14 +58,31 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
 	r.Post("/channels", h.createChannel)
 	r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
+	r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
 	r.Post("/fx-rates", h.setFXRate)
+
+	r.Post("/price-sources", h.createPriceSource)
+	r.Get("/price-change-requests", h.listPendingChangeRequests)
+	r.Post("/price-change-requests/{changeRequestID}/approve", h.approveChangeRequest)
+	r.Post("/price-change-requests/{changeRequestID}/reject", h.rejectChangeRequest)
 
 	return r
 }
 
 type adminHandlers struct {
-	svc *admin.Service
-	log *slog.Logger
+	svc       *admin.Service
+	log       *slog.Logger
+	pricesync *pricesync.Engine
+}
+
+// requirePriceSync 是价格同步相关接口共用的前置检查：PriceSync 未装配时统一
+// 返回 503，而不是让每个 handler 各自判断、各自措辞。
+func (h *adminHandlers) requirePriceSync(w http.ResponseWriter, r *http.Request) bool {
+	if h.pricesync == nil {
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "not_implemented", "Price sync is not configured on this server.")
+		return false
+	}
+	return true
 }
 
 // --- 请求体解析与错误映射的小工具 ---
@@ -80,8 +99,10 @@ func decodeJSON(r *http.Request, v any) error {
 // 精细区分错误码，能定位问题就够了。
 func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	switch {
-	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound):
+	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound), errors.Is(err, pricesync.ErrChangeRequestNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, pricesync.ErrChangeRequestNotPending):
+		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
 	default:
 		log.Warn("admin request failed", "error", err)
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error())

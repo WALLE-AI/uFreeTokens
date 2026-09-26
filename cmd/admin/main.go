@@ -20,6 +20,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 	"github.com/WALLE-AI/uFreeTokens/internal/store"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
@@ -73,8 +74,9 @@ func run() error {
 
 	walletSvc := wallet.New(pg)
 	adminSvc := admin.New(pg, walletSvc, box, pepper)
+	priceSyncEngine := pricesync.NewEngine(pg, adminSvc)
 
-	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc})
+	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine})
 
 	addr := ":8081"
 	srv := &http.Server{
