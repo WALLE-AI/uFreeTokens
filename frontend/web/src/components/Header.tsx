@@ -14,8 +14,12 @@ import {
   LogOut,
   Sun,
   Moon,
-  Monitor
+  Monitor,
+  KeyRound,
+  ShieldCheck
 } from 'lucide-react';
+import { useApiKey } from '../api/auth';
+import { ConnectKeyModal } from './ConnectKeyModal';
 
 interface HeaderProps {
   searchQuery: string;
@@ -41,7 +45,9 @@ export const Header: React.FC<HeaderProps> = ({
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showConnectKeyModal, setShowConnectKeyModal] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const apiKey = useApiKey();
 
   // Close menu on click outside
   useEffect(() => {
@@ -188,6 +194,21 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   onClick={() => {
                     setShowUserMenu(false);
+                    setShowConnectKeyModal(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] text-gray-700 hover:text-gray-950 hover:bg-gray-50/80 transition-colors text-left cursor-pointer group"
+                >
+                  {apiKey ? (
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 stroke-[1.75]" />
+                  ) : (
+                    <KeyRound className="w-4 h-4 text-gray-500 group-hover:text-gray-800 shrink-0 stroke-[1.75]" />
+                  )}
+                  <span className="font-normal">{apiKey ? '已连接 API Key' : '连接 API Key'}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false);
                     onOpenPersonalDashboard && onOpenPersonalDashboard('overview');
                     triggerToast('工作区已同步');
                   }}
@@ -237,7 +258,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onClick={() => {
                     setShowUserMenu(false);
                     onOpenPersonalDashboard && onOpenPersonalDashboard('credits');
-                    triggerToast('可用额度: $24.50 USD · 已享受动态折扣');
+                    triggerToast('已加载账户余额与账单信息');
                   }}
                   className="w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] text-gray-700 hover:text-gray-950 hover:bg-gray-50/80 transition-colors text-left cursor-pointer group"
                 >
@@ -337,6 +358,10 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
       </div>
+
+      {showConnectKeyModal && (
+        <ConnectKeyModal onClose={() => setShowConnectKeyModal(false)} />
+      )}
     </header>
   );
 };

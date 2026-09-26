@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Send,
@@ -12,6 +12,10 @@ import {
   Zap
 } from 'lucide-react';
 import { Model } from '../types';
+import { useApiKey } from '../api/auth';
+import { streamChat, ChatUsage } from '../api/chat';
+import { ApiError } from '../api/errors';
+import { ConnectKeyModal } from './ConnectKeyModal';
 
 interface PlaygroundModalProps {
   model: Model;
@@ -21,9 +25,12 @@ interface PlaygroundModalProps {
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  usage?: ChatUsage;
+  isError?: boolean;
 }
 
 export const PlaygroundModal: React.FC<PlaygroundModalProps> = ({ model, onClose }) => {
+  const apiKey = useApiKey();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
@@ -36,6 +43,18 @@ export const PlaygroundModal: React.FC<PlaygroundModalProps> = ({ model, onClose
   const [maxTokens, setMaxTokens] = useState(2048);
   const [systemPrompt, setSystemPrompt] = useState('你是一个专业、严谨且乐于助人的 AI 智能助手。');
   const [showSettings, setShowSettings] = useState(false);
+  const [showConnectKeyModal, setShowConnectKeyModal] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // 弹窗关闭（卸载）时如果还有一个请求在飞，abort 掉——技术方案要求"关闭
+  // 弹窗或清空对话时 abort"，App.tsx 是条件渲染这个组件的（activeModelForPlayground
+  // 为 null 时直接卸载），所以卸载清理就覆盖了"关闭弹窗"这一种情况；
+  // "清空对话"另见 handleClear。
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const samplePrompts = [
     '用 React 编写一个带虚拟滚动的列表组件',
@@ -43,59 +62,75 @@ export const PlaygroundModal: React.FC<PlaygroundModalProps> = ({ model, onClose
     '给这段 Python 代码做性能分析与优化建议',
   ];
 
-  const handleSend = () => {
+  const appendDelta = (delta: string) => {
+    setMessages((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      next[next.length - 1] = { ...last, content: last.content + delta };
+      return next;
+    });
+  };
+
+  const appendUsage = (usage: ChatUsage) => {
+    setMessages((prev) => {
+      const next = [...prev];
+      next[next.length - 1] = { ...next[next.length - 1], usage };
+      return next;
+    });
+  };
+
+  const handleSend = async () => {
     if (!input.trim() || isGenerating) return;
+    if (!apiKey) {
+      setShowConnectKeyModal(true);
+      return;
+    }
 
     const userText = input.trim();
     setInput('');
 
     const newMessages: ChatMessage[] = [...messages, { role: 'user', content: userText }];
-    setMessages(newMessages);
+    setMessages([...newMessages, { role: 'assistant', content: '' }]);
     setIsGenerating(true);
 
-    // Simulate intelligent response streaming from the selected model
-    setTimeout(() => {
-      let reply = '';
-      if (userText.includes('React') || userText.includes('组件')) {
-        reply = `这是基于 **${model.name}** 为你生成的方案：\n\n\`\`\`tsx
-import React, { useRef, useState, useEffect } from 'react';
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-export function VirtualList({ items, itemHeight = 48, windowHeight = 400 }) {
-  const [scrollTop, setScrollTop] = useState(0);
-  const totalHeight = items.length * itemHeight;
-  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - 2);
-  const visibleCount = Math.ceil(windowHeight / itemHeight) + 4;
-  const endIndex = Math.min(items.length, startIndex + visibleCount);
-
-  return (
-    <div
-      style={{ height: windowHeight, overflowY: 'auto' }}
-      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-      className="border rounded-md relative"
-    >
-      <div style={{ height: totalHeight, position: 'relative' }}>
-        <div style={{ transform: \`translateY(\${startIndex * itemHeight}px)\` }}>
-          {items.slice(startIndex, endIndex).map((item, i) => (
-            <div key={startIndex + i} style={{ height: itemHeight }} className="px-3 flex items-center border-b">
-              {item}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-\`\`\`\n\n该方案内存占用极低，同时通过 2 个元素的视口预渲染缓冲区（Buffer）防止极速滑动时产生空白闪烁。`;
-      } else {
-        reply = `根据 **${model.name}**（厂商：${model.providerDisplay}，当前单价：${model.inputPriceDisplay}）的深度推理分析：\n\n针对你的问题：“${userText}”\n\n1. **核心要点**：通过分布式上下文路由与低延迟解码管道，本模型可在保持准确性的同时提供前沿生成吞吐。\n2. **专业评估**：在基准测试中，当前模型的综合智能指数为 **${model.scores.intelligenceIndex}**，编程指数为 **${model.scores.codingIndex}**。\n3. **落地建议**：如果要在生产环境部署该请求，推荐配置 \`temperature=${temperature}\` 并设置安全重试策略。`;
+    try {
+      await streamChat(
+        {
+          model: model.id,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...newMessages.map((m) => ({ role: m.role, content: m.content })),
+          ],
+          temperature,
+          maxTokens,
+          signal: controller.signal,
+        },
+        appendDelta,
+        appendUsage
+      );
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        const message = err instanceof ApiError ? err.message : '生成失败，请稍后重试。';
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = { ...next[next.length - 1], content: message, isError: true };
+          return next;
+        });
       }
-
-      setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
       setIsGenerating(false);
-    }, 900);
+    }
   };
 
   const handleClear = () => {
+    abortRef.current?.abort();
+    setIsGenerating(false);
     setMessages([
       {
         role: 'assistant',
@@ -179,12 +214,19 @@ export function VirtualList({ items, itemHeight = 48, windowHeight = 400 }) {
                   className={`max-w-2xl px-3.5 py-2.5 rounded-xl ${
                     m.role === 'user'
                       ? 'bg-purple-600 text-white rounded-br-xs'
-                      : 'bg-gray-100 text-gray-800 rounded-bl-xs'
+                      : m.isError
+                        ? 'bg-rose-50 text-rose-700 border border-rose-200 rounded-bl-xs'
+                        : 'bg-gray-100 text-gray-800 rounded-bl-xs'
                   }`}
                 >
                   <div className="whitespace-pre-wrap leading-relaxed font-sans text-xs">
                     {m.content}
                   </div>
+                  {m.usage && (
+                    <div className="mt-1.5 pt-1.5 border-t border-black/5 text-[10px] font-mono text-gray-400">
+                      输入 {m.usage.promptTokens} · 输出 {m.usage.completionTokens} tokens
+                    </div>
+                  )}
                 </div>
 
                 {m.role === 'user' && (
@@ -195,7 +237,7 @@ export function VirtualList({ items, itemHeight = 48, windowHeight = 400 }) {
               </div>
             ))}
 
-            {isGenerating && (
+            {isGenerating && messages[messages.length - 1]?.content === '' && (
               <div className="flex items-center space-x-2 text-gray-400 text-xs italic pl-9">
                 <Sparkles className="w-3.5 h-3.5 text-purple-500 animate-spin" />
                 <span>{model.name} 正在思考与流式生成中...</span>
@@ -272,6 +314,19 @@ export function VirtualList({ items, itemHeight = 48, windowHeight = 400 }) {
           ))}
         </div>
 
+        {/* Not connected banner */}
+        {!apiKey && (
+          <div className="mx-3 mb-2 flex items-center justify-between gap-2 bg-amber-50 border border-amber-200 text-amber-800 text-[11px] rounded-lg px-3 py-2">
+            <span>尚未连接 API Key，无法调用真实模型进行测试。</span>
+            <button
+              onClick={() => setShowConnectKeyModal(true)}
+              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-medium shrink-0 cursor-pointer"
+            >
+              连接 API Key
+            </button>
+          </div>
+        )}
+
         {/* Input Bar */}
         <div className="p-3 border-t border-gray-200 bg-white flex items-center space-x-2">
           <input
@@ -298,6 +353,10 @@ export function VirtualList({ items, itemHeight = 48, windowHeight = 400 }) {
           </button>
         </div>
       </div>
+
+      {showConnectKeyModal && (
+        <ConnectKeyModal onClose={() => setShowConnectKeyModal(false)} />
+      )}
     </div>
   );
 };

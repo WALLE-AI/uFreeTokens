@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   LayoutGrid,
   Key,
@@ -32,6 +32,10 @@ import {
   ExternalLink,
   X
 } from 'lucide-react';
+import { useApiKey } from '../api/auth';
+import { getUsage, microToDisplay, UsageSnapshot } from '../api/usage';
+import { ApiError } from '../api/errors';
+import { ConnectKeyModal } from './ConnectKeyModal';
 
 export interface ApiKeyItem {
   id: string;
@@ -61,6 +65,40 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
   onBackToModels
 }) => {
   const [activeTab, setActiveTab] = useState<string>(initialTab);
+
+  // credits tab 的真实数据（迭代2：/v1/usage 自助查询，需要已连接的 API Key）。
+  const apiKey = useApiKey();
+  const [usageSnapshot, setUsageSnapshot] = useState<UsageSnapshot | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [showConnectKeyModal, setShowConnectKeyModal] = useState(false);
+
+  useEffect(() => {
+    if (!apiKey) {
+      setUsageSnapshot(null);
+      setUsageError(null);
+      return;
+    }
+    let cancelled = false;
+    setUsageLoading(true);
+    getUsage(apiKey)
+      .then((snap) => {
+        if (cancelled) return;
+        setUsageSnapshot(snap);
+        setUsageError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setUsageError(err instanceof ApiError ? err.message : '加载用量失败，请稍后重试');
+      })
+      .finally(() => {
+        if (!cancelled) setUsageLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey]);
+
   const [currentWorkspace, setCurrentWorkspace] = useState<string>('默认工作区');
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState<boolean>(false);
   const [searchKeyQuery, setSearchKeyQuery] = useState<string>('');
@@ -642,25 +680,61 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
             </h1>
             <p className="text-xs text-gray-500 mb-6">管理您的账户余额、支付方式与额度预警。</p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <div className="bg-purple-50/60 border border-purple-100 p-4 rounded-xl">
-                <div className="text-xs text-purple-700 font-medium">可用总额度</div>
-                <div className="text-2xl font-bold text-purple-900 mt-1">$24.50 USD</div>
-                <div className="text-[11px] text-purple-600/80 mt-1">自动抵扣 API 调度开销</div>
+            {!apiKey ? (
+              <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center">
+                <div className="text-xs text-gray-500 mb-3">
+                  连接 API Key 后即可查看真实的账户余额与累计用量。
+                </div>
+                <button
+                  onClick={() => setShowConnectKeyModal(true)}
+                  className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                >
+                  连接 API Key
+                </button>
               </div>
+            ) : usageLoading && !usageSnapshot ? (
+              <div className="text-xs text-gray-400 py-6 text-center">正在加载余额与用量...</div>
+            ) : usageError ? (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-4">
+                {usageError}
+              </div>
+            ) : usageSnapshot ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className="bg-purple-50/60 border border-purple-100 p-4 rounded-xl">
+                  <div className="text-xs text-purple-700 font-medium">可用总额度</div>
+                  <div className="text-2xl font-bold text-purple-900 mt-1">
+                    {microToDisplay(
+                      usageSnapshot.wallet.cashBalanceMicro + usageSnapshot.wallet.bonusBalanceMicro
+                    )}
+                  </div>
+                  <div className="text-[11px] text-purple-600/80 mt-1">
+                    现金 {microToDisplay(usageSnapshot.wallet.cashBalanceMicro)} · 赠送{' '}
+                    {microToDisplay(usageSnapshot.wallet.bonusBalanceMicro)}
+                  </div>
+                </div>
 
-              <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
-                <div className="text-xs text-gray-500 font-medium">本月已消费</div>
-                <div className="text-2xl font-bold text-gray-800 mt-1">$0.033 USD</div>
-                <div className="text-[11px] text-gray-400 mt-1">包含 18 次并发调用</div>
-              </div>
+                <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
+                  <div className="text-xs text-gray-500 font-medium">累计已消费</div>
+                  <div className="text-2xl font-bold text-gray-800 mt-1">
+                    {microToDisplay(usageSnapshot.usage.totalChargedAmountMicro)}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    包含 {usageSnapshot.usage.totalRequests} 次成功调用
+                  </div>
+                </div>
 
-              <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
-                <div className="text-xs text-gray-500 font-medium">开发者折扣</div>
-                <div className="text-2xl font-bold text-emerald-600 mt-1">100% OFF</div>
-                <div className="text-[11px] text-gray-400 mt-1">uFreeTokens 免费计划生效中</div>
+                <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
+                  <div className="text-xs text-gray-500 font-medium">冻结中金额</div>
+                  <div className="text-2xl font-bold text-amber-600 mt-1">
+                    {microToDisplay(usageSnapshot.wallet.frozenMicro)}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    输入 {usageSnapshot.usage.totalInputTokens.toLocaleString()} · 输出{' '}
+                    {usageSnapshot.usage.totalOutputTokens.toLocaleString()} tokens
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
         ) : activeTab === 'profile' ? (
           <div>
@@ -874,6 +948,10 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
             )}
           </div>
         </div>
+      )}
+
+      {showConnectKeyModal && (
+        <ConnectKeyModal onClose={() => setShowConnectKeyModal(false)} />
       )}
     </div>
   );

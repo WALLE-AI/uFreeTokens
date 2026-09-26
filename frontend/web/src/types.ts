@@ -52,6 +52,10 @@ export interface Model {
   modelAgeMonths: number;
   isDeprecated?: boolean;
   scores: ModelScores;
+  // isCallable 标记这个模型是否在已连接账户的 GET /v1/models 结果里真实存在——
+  // 也就是这把 API Key 实际能调用它，而不是纯 mock 展示数据。未连接 Key 时
+  // 始终是 undefined（见 App.tsx 的模型列表合并逻辑）。
+  isCallable?: boolean;
 }
 
 export interface FilterState {

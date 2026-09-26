@@ -8,7 +8,8 @@ import {
   Scale,
   Play,
   Terminal,
-  FileCode
+  FileCode,
+  Zap
 } from 'lucide-react';
 import { Model } from '../types';
 
@@ -70,6 +71,16 @@ export const ModelCard: React.FC<ModelCardProps> = ({
                 }`}
               >
                 {model.badge}
+              </span>
+            )}
+
+            {model.isCallable && (
+              <span
+                title="已连接的 API Key 可以直接调用该模型"
+                className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded border font-medium leading-none bg-emerald-50 text-emerald-700 border-emerald-200"
+              >
+                <Zap className="w-2.5 h-2.5" />
+                <span>可调用</span>
               </span>
             )}
 

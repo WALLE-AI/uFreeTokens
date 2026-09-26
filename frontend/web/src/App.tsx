@@ -19,8 +19,10 @@ import {
   SlidersHorizontal,
   X
 } from 'lucide-react';
-import { INITIAL_MODELS, PRIMARY_TAGS } from './data/models';
+import { INITIAL_MODELS, PRIMARY_TAGS, synthesizeCallableModel } from './data/models';
 import { Model, FilterState, SortOption, ViewMode, ModalityType } from './types';
+import { useApiKey } from './api/auth';
+import { listModels } from './api/models';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ModelCard } from './components/ModelCard';
@@ -86,6 +88,43 @@ export default function App() {
   const [activeNav, setActiveNav] = useState('模型');
   const [personalDashboardTab, setPersonalDashboardTab] = useState<string>('api-keys');
 
+  // 已连接 Key 时拉一次真实模型目录，和 mock 数据合并（技术方案迭代2：
+  // GET /v1/catalog 免鉴权公开目录要到迭代5才有，这里先用需要鉴权的
+  // GET /v1/models 表明"这把 Key 具体能调用哪些模型"）。
+  const apiKey = useApiKey();
+  const [remoteModelIds, setRemoteModelIds] = useState<Set<string> | null>(null);
+
+  useEffect(() => {
+    if (!apiKey) {
+      setRemoteModelIds(null);
+      return;
+    }
+    let cancelled = false;
+    listModels(apiKey)
+      .then((models) => {
+        if (!cancelled) setRemoteModelIds(new Set(models.map((m) => m.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteModelIds(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey]);
+
+  const baseModels = useMemo<Model[]>(() => {
+    if (!remoteModelIds) return INITIAL_MODELS;
+
+    const mockIds = new Set(INITIAL_MODELS.map((m) => m.id));
+    const merged = INITIAL_MODELS.map((m) =>
+      remoteModelIds.has(m.id) ? { ...m, isCallable: true } : m
+    );
+    remoteModelIds.forEach((id) => {
+      if (!mockIds.has(id)) merged.push(synthesizeCallableModel(id));
+    });
+    return merged;
+  }, [remoteModelIds]);
+
   // Keyboard shortcut ⌘K / Ctrl+K listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,7 +178,7 @@ export default function App() {
 
   // Filter and Sort Pipeline
   const filteredModels = useMemo(() => {
-    return INITIAL_MODELS.filter((model) => {
+    return baseModels.filter((model) => {
       // Search query
       if (filters.searchQuery.trim()) {
         const q = filters.searchQuery.toLowerCase();
@@ -309,7 +348,7 @@ export default function App() {
       }
       return 0;
     });
-  }, [filters, sortOption, showPinnedOnly, filterPreset]);
+  }, [baseModels, filters, sortOption, showPinnedOnly, filterPreset]);
 
   return (
     <div className="min-h-screen flex flex-col bg-white text-gray-800 antialiased font-sans">
@@ -397,7 +436,7 @@ export default function App() {
       ) : activeModelForDetail ? (
         <ModelDetailPage
           model={activeModelForDetail}
-          allModels={INITIAL_MODELS}
+          allModels={baseModels}
           onBack={() => setActiveModelForDetail(null)}
           onOpenPlayground={(m) => setActiveModelForPlayground(m)}
           onToggleCompare={handleToggleCompare}
@@ -919,7 +958,7 @@ export default function App() {
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        models={INITIAL_MODELS}
+        models={baseModels}
         onSelectModel={(m) => setActiveModelForDetail(m)}
         onNavigate={(nav) => {
           setActiveNav(nav);

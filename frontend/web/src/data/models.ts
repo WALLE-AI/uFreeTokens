@@ -620,6 +620,50 @@ export const INITIAL_MODELS: Model[] = [
   }
 ];
 
+// synthesizeCallableModel 给一个真实存在于 GET /v1/models 目录、但 mock 数据
+// 里没有对应条目的模型 id 生成一张最小可用的卡片——价格、评分这些字段后端
+// 目前还没有公开目录可查（要到迭代5的 GET /v1/catalog 才有），所以全部留空/
+// 0 并打上"演示数据"角标，明确告诉用户这些数字不是真的，但这张卡片本身
+// 代表一个已连接账户真实能调用的模型（isCallable=true）。
+export function synthesizeCallableModel(id: string): Model {
+  const slashIndex = id.indexOf('/');
+  const provider = slashIndex > 0 ? id.slice(0, slashIndex) : id;
+  const name = slashIndex > 0 ? id.slice(slashIndex + 1) : id;
+  return {
+    id,
+    name,
+    provider,
+    providerDisplay: provider,
+    author: provider,
+    series: 'Other',
+    description: '该模型来自网关的真实模型目录，尚无运营录入的详细介绍与评分。',
+    iconBg: 'bg-gray-700 text-white',
+    badge: '演示数据',
+    badgeColor: 'bg-gray-100 text-gray-600 border-gray-200',
+    date: '—',
+    releaseDate: '1970-01-01',
+    contextTokens: 0,
+    contextDisplay: null,
+    maxOutputTokens: 0,
+    inputPricePerM: 0,
+    outputPricePerM: 0,
+    inputPriceDisplay: '价格待运营录入',
+    outputPriceDisplay: null,
+    modalities: ['text'],
+    category: 'Other',
+    tags: [],
+    variants: ['standard'],
+    distillable: false,
+    zeroDataRetention: false,
+    inRegionRouting: [],
+    supportedParameters: [],
+    toolCallingCapability: 0,
+    modelAgeMonths: 0,
+    scores: { intelligenceIndex: 0, codingIndex: 0, agenticIndex: 0 },
+    isCallable: true,
+  };
+}
+
 export const PRIMARY_TAGS = [
   { id: 'all', title: '全部', count: 444 },
   { id: 'text', title: 'T 文本', count: 444 },
