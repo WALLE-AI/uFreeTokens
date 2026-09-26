@@ -71,6 +71,26 @@ func TestDecidePolicy_L3Increase_AlwaysPending(t *testing.T) {
 	}
 }
 
+// TestDecidePolicy_L4NeverAutoApproves 验证技术方案 §7.16.2 对 L4（社区数据集）
+// 来源的定位——"只做交叉校验，永不单独生效"：不管涨价、降价、金额大小，L4 都
+// 不应该落进 DecisionAutoApproved。
+func TestDecidePolicy_L4NeverAutoApproves(t *testing.T) {
+	cases := []struct {
+		name string
+		diff ChangeDiff
+	}{
+		{"tiny decrease", ChangeDiff{Direction: DirectionDown, MaxChangeRatio: decimal.NewFromFloat(0.01)}},
+		{"tiny increase", ChangeDiff{Direction: DirectionUp, MaxChangeRatio: decimal.NewFromFloat(0.01)}},
+		{"new model", ChangeDiff{Direction: DirectionNew}},
+	}
+	for _, c := range cases {
+		got := DecidePolicy(LevelL4, c.diff, nil)
+		if got == DecisionAutoApproved {
+			t.Errorf("%s: Decision = %q, want anything but auto_approved (L4 must never single-handedly apply a change)", c.name, got)
+		}
+	}
+}
+
 func TestDecidePolicy_MixedNewRemoved_AlwaysPending(t *testing.T) {
 	for _, dir := range []Direction{DirectionMixed, DirectionNew, DirectionRemoved} {
 		got := DecidePolicy(LevelL2, ChangeDiff{Direction: dir}, nil)

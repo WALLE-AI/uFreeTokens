@@ -103,19 +103,23 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   HTML 定价页抓取框架也接入了（`html.go` 的 `HTMLFetcher` + `ParseHTMLPriceTable`，
   L3 来源）：CSS 选择器 + 单位换算配置驱动，不用改代码就能接一个新的表格布局
   定价页；`min_models` 支持"解析出的模型数骤降视为页面改版，整批丢弃"
-  （§7.16.6）。自动化测试只喂手工构造的 HTML fixture，不会真的请求任何外部
-  网站——抓取网页本身要谨慎（服务条款/robots/频率），不适合在 CI 里对着真实
-  网站跑，见 `internal/pricesync` 包注释。
+  （§7.16.6）。`litellm.go` 的 `LiteLLMFetcher` 是 L4 交叉校验来源（社区维护的
+  `model_prices_and_context_window.json` 数据集），全程用 `decimal` 解析价格
+  数字而不经过 float64，避免精度损失；L4 具体校验逻辑不需要额外代码——
+  `DecidePolicy` 对 L4 来源在任何方向下都只会给出 pending，天然满足"只做
+  交叉校验，永不单独生效"。这两个 Fetcher 的自动化测试都只喂手工构造的
+  fixture，不会真的请求任何外部网站/数据集——抓取网页本身要谨慎（服务条款/
+  robots/频率），不适合在 CI 里对着真实地址跑，见 `internal/pricesync` 包注释。
 
   已知范围限制（§7.16 本身是个很大的独立子系统，这里先把确定性流水线做对、
   做全，见 `internal/pricesync` 包级注释）：OpenRouter 来源只有归一化函数，
   没有真正发 HTTP 请求抓它的公开接口；没有 chromedp（需要 JS 渲染的定价页）、
   没有 LLM 辅助抽取、没有账单 API 对接（L1）；没有调度器（cron + PG
   advisory lock 选主未实现，谁在什么时候调 `Engine.Ingest`/`IngestUnmapped`
-  由调用方决定，目前就是上面那些 HTTP 接口，`HTMLFetcher` 写好了但没有任何
-  后台循环会定期调用它）；不做"模型消失"检测（需要定期扫描，依赖尚未实现的
-  调度器）；跨来源冲突检测是简化版（不区分具体是 L2 与 L4，笼统按"任意其它
-  来源"比较）；不估算 impact_7d。
+  由调用方决定，目前就是上面那些 HTTP 接口，`HTMLFetcher`/`LiteLLMFetcher`
+  写好了但没有任何后台循环会定期调用它们）；不做"模型消失"检测（需要定期
+  扫描，依赖尚未实现的调度器）；跨来源冲突检测是简化版（不区分具体是 L2 与
+  L4，笼统按"任意其它来源"比较）；不估算 impact_7d。
 - `internal/router`：硬过滤（含熔断/冷却状态）→ 优先级分层 → 层内加权随机的渠道/Key
   选择算法（§7.5），支持按请求排除已失败的渠道/Key，用统计检验测试证明不会出现
   "全部流量挤到一个渠道"的羊群效应。毛利守护的路由降权（§7.16.7）已经接入：
