@@ -16,8 +16,13 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
   `/v1/completions`、`/v1/embeddings` 尚未实现，返回 `503 not_implemented`。
 - `cmd/admin`：账户/API Key/Provider/渠道/虚拟模型/售价管理的 HTTP 接口
   （`internal/admin`）——创建账户会原子初始化一个空钱包；上游 Key 落库前用
-  `internal/secretbox` 加密；改价格是发布新版本，不覆盖历史。**目前完全没有
-  鉴权/权限控制**，只应该部署在内网，这是部署前必须解决的安全缺口。
+  `internal/secretbox` 加密；改价格是发布新版本，不覆盖历史。鉴权已经接入
+  一个共享密钥方案：所有业务路由（`/healthz` 除外）都要求
+  `Authorization: Bearer <UFT_ADMIN_TOKEN>`（`httpx.RequireBearerToken`，
+  常数时间比较），`cmd/admin` 启动时这个环境变量缺失/为空会直接拒绝启动，
+  不会静默退化成不鉴权。这不是完整的多用户登录 + RBAC——知道这一个密钥的人
+  能做任何操作，没有"谁在操作"的概念，仍然只应该部署在内网/加一层反向代理，
+  见 `internal/admin` 包文档。
 - `cmd/worker`：定时任务循环（§7.11、§7.13）——回收过期未结算的预扣（网关崩溃留下的
   孤儿 reservation）、保持 request_logs 未来分区就绪、内部一致性对账（钱包余额 vs
   账本、账本 vs 请求日志），发现问题只记日志上报，不自动"纠正"数据。
@@ -173,8 +178,8 @@ Phase1 的核心链路已经打通并有端到端测试覆盖（见技术方案�
 添加、成本价/售价/汇率发布这几个高价值操作成功后各记一条（`before`/`after`
 JSON 快照 + 调用方 IP），`GET /audit-logs?target_type=&target_id=` 查询/导出。
 不是每个写操作都审计；`actor_id` 只能靠调用方在 `X-Actor-ID` 请求头里自己声明——
-`cmd/admin` 还没有管理员登录/鉴权，没有真正的"当前操作者"概念（见上面
-`cmd/admin` 一节的安全缺口）。
+`cmd/admin` 的共享密钥鉴权只知道"这个请求带了对的密钥"，不知道"是哪个人"，
+没有真正的"当前操作者"概念（见上面 `cmd/admin` 一节）。
 
 ## 快速开始（无 Docker）
 

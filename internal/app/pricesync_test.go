@@ -7,9 +7,7 @@ package app_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,24 +23,6 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
-func adminGet(t *testing.T, baseURL, path string, out any) {
-	t.Helper()
-	resp, err := http.Get(baseURL + path)
-	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		t.Fatalf("GET %s: status = %d, body = %s", path, resp.StatusCode, body)
-	}
-	if out != nil {
-		if err := json.Unmarshal(body, out); err != nil {
-			t.Fatalf("GET %s: unmarshal response %s: %v", path, body, err)
-		}
-	}
-}
-
 func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
@@ -50,7 +30,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
 	engine := pricesync.NewEngine(pool, adminSvc)
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine}))
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
@@ -109,7 +89,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	var list struct {
 		ChangeRequests []pricesync.ChangeRequestSummary `json:"change_requests"`
 	}
-	adminGet(t, adminSrv.URL, "/price-change-requests", &list)
+	ac.get("/price-change-requests", &list)
 	var found bool
 	for _, cr := range list.ChangeRequests {
 		if cr.ID == *pendingResult.ChangeRequestID {
@@ -156,8 +136,14 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 
 	// 拒绝之后重复操作应该报错（409），验证 writeAdminError 把
 	// pricesync.ErrChangeRequestNotPending 映射对了状态码。
-	resp, err := http.Post(fmt.Sprintf("%s/price-change-requests/%d/reject", adminSrv.URL, *pending2.ChangeRequestID),
-		"application/json", bytes.NewReader([]byte(`{}`)))
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/price-change-requests/%d/reject", adminSrv.URL, *pending2.ChangeRequestID),
+		bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("build second reject request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("second reject: %v", err)
 	}
@@ -174,7 +160,7 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
 	engine := pricesync.NewEngine(pool, adminSvc)
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine}))
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
@@ -204,7 +190,7 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 	var list struct {
 		PendingListings []pricesync.PendingListingSummary `json:"pending_listings"`
 	}
-	adminGet(t, adminSrv.URL, "/pending-model-listings", &list)
+	ac.get("/pending-model-listings", &list)
 	var found bool
 	for _, l := range list.PendingListings {
 		if l.ID == *ingestResult.ListingID {
@@ -243,11 +229,18 @@ func TestPriceSyncHTTP_NotConfiguredReturns503(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
-	// PriceSync 故意留空——验证接口在没装配的情况下不会 panic，而是干净地返回 503。
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc}))
+	// PriceSync 故意留空——验证接口在没装配的情况下不会 panic，而是干净地返回 503
+	// （鉴权本身是通过的，这条测的是鉴权通过之后 handler 自己的兜底检查）。
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 
-	resp, err := http.Post(adminSrv.URL+"/price-sources", "application/json", bytes.NewReader([]byte(`{"level":"L5","kind":"manual","fetcher":"x"}`)))
+	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/price-sources", bytes.NewReader([]byte(`{"level":"L5","kind":"manual","fetcher":"x"}`)))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}

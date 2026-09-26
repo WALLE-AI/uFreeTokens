@@ -50,6 +50,16 @@ func run() error {
 		return fmt.Errorf("env %s is required (API key HMAC pepper)", cfg.Secrets.APIKeyPepperEnv)
 	}
 
+	// 管理接口的鉴权密钥是必需的，不像 KEK 那样缺失时降级——这组接口能创建账户、
+	// 调余额、加上游 Key、改价格，缺鉴权直接暴露等于把金库门打开，不应该允许
+	// 静默跳过（httpx.RequireBearerToken 对空字符串也会拒绝所有请求，这里提前
+	// 报错只是为了给一个更清楚的启动期错误信息，而不是让运维靠"发现全都 401"
+	// 才意识到没配置）。
+	adminToken := os.Getenv(cfg.Secrets.AdminTokenEnv)
+	if adminToken == "" {
+		return fmt.Errorf("env %s is required (admin API bearer token)", cfg.Secrets.AdminTokenEnv)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -76,7 +86,7 @@ func run() error {
 	adminSvc := admin.New(pg, walletSvc, box, pepper)
 	priceSyncEngine := pricesync.NewEngine(pg, adminSvc)
 
-	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine})
+	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, AdminToken: adminToken})
 
 	addr := ":8081"
 	srv := &http.Server{

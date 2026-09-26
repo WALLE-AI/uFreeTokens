@@ -23,7 +23,7 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc}))
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
@@ -37,6 +37,7 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
 	req.Header.Set("X-Actor-ID", "77")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -50,7 +51,7 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 	var list struct {
 		AuditLogs []admin.AuditLogEntry `json:"audit_logs"`
 	}
-	adminGet(t, adminSrv.URL, fmt.Sprintf("/audit-logs?target_type=account&target_id=%d", account.ID), &list)
+	ac.get(fmt.Sprintf("/audit-logs?target_type=account&target_id=%d", account.ID), &list)
 	if len(list.AuditLogs) != 1 {
 		t.Fatalf("audit_logs = %+v, want exactly 1", list.AuditLogs)
 	}

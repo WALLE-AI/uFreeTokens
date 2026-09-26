@@ -19,18 +19,22 @@ import (
 
 // AdminDeps 是构造控制面路由所需的全部依赖。
 type AdminDeps struct {
-	Logger    *slog.Logger
-	Admin     *admin.Service
-	PriceSync *pricesync.Engine // nil 时价格同步相关接口返回 503 not_implemented（见技术方案 §7.16）
+	Logger     *slog.Logger
+	Admin      *admin.Service
+	PriceSync  *pricesync.Engine // nil 时价格同步相关接口返回 503 not_implemented（见技术方案 §7.16）
+	AdminToken string            // 见 NewAdminRouter 的鉴权说明；空字符串会拒绝所有受保护的请求，不会退化成不鉴权
 }
 
 // NewAdminRouter 组装控制面路由：账户/API Key/Provider/渠道/虚拟模型/价格管理
 // （技术方案 §7 相关章节）。
 //
-// 重要：这里完全没有鉴权/权限控制（见 internal/admin 包文档的范围限制说明）。
-// 这组接口只应该部署在内网、或者放在一个自己做了鉴权的反向代理后面，
-// 绝不能直接暴露到公网——任何能连上它的人都可以创建账户、调整余额、
-// 添加/篡改上游 Key、改价格。这是部署前必须解决的安全缺口，不是可以忽略的细节。
+// 鉴权：所有业务路由都要求 Authorization: Bearer <AdminToken>
+// （httpx.RequireBearerToken，只有 /healthz 不需要）。这不是完整的管理员登录/
+// RBAC——没有"是谁在操作"的概念，知道这一个共享密钥的人能做任何事：创建账户、
+// 调整余额、添加/篡改上游 Key、改价格。真正的多用户登录 + 按角色收权限，
+// 需要先把 users/account_members 那套用户体系接起来（见 internal/admin 包文档），
+// 这里只是把"完全没有鉴权"升级成"至少不是任何人都能连上"，作为部署前的最低
+// 要求，不是最终形态。
 func NewAdminRouter(d AdminDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID)
@@ -41,38 +45,42 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 
 	h := &adminHandlers{svc: d.Admin, log: d.Logger, pricesync: d.PriceSync}
 
-	r.Route("/accounts", func(r chi.Router) {
-		r.Post("/", h.createAccount)
-		r.Get("/{accountID}", h.getAccount)
-		r.Post("/{accountID}/api-keys", h.createAPIKey)
-		r.Get("/{accountID}/api-keys", h.listAPIKeys)
-		r.Post("/{accountID}/wallet/adjust", h.adjustWallet)
-		r.Post("/{accountID}/credit-grants", h.grantCredit)
+	r.Group(func(r chi.Router) {
+		r.Use(httpx.RequireBearerToken(d.AdminToken))
+
+		r.Route("/accounts", func(r chi.Router) {
+			r.Post("/", h.createAccount)
+			r.Get("/{accountID}", h.getAccount)
+			r.Post("/{accountID}/api-keys", h.createAPIKey)
+			r.Get("/{accountID}/api-keys", h.listAPIKeys)
+			r.Post("/{accountID}/wallet/adjust", h.adjustWallet)
+			r.Post("/{accountID}/credit-grants", h.grantCredit)
+		})
+		r.Post("/api-keys/{apiKeyID}/revoke", h.revokeAPIKey)
+
+		r.Post("/providers", h.createProvider)
+		r.Post("/provider-accounts", h.createProviderAccount)
+		r.Post("/provider-accounts/{providerAccountID}/keys", h.addProviderKey)
+
+		r.Post("/virtual-models", h.createVirtualModel)
+		r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
+		r.Post("/channels", h.createChannel)
+		r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
+		r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
+		r.Post("/fx-rates", h.setFXRate)
+
+		r.Post("/price-sources", h.createPriceSource)
+		r.Post("/providers/{providerID}/price-observations", h.ingestUnmappedPriceObservation)
+		r.Get("/price-change-requests", h.listPendingChangeRequests)
+		r.Post("/price-change-requests/{changeRequestID}/approve", h.approveChangeRequest)
+		r.Post("/price-change-requests/{changeRequestID}/reject", h.rejectChangeRequest)
+
+		r.Get("/pending-model-listings", h.listPendingModelListings)
+		r.Post("/pending-model-listings/{listingID}/publish", h.publishPendingModelListing)
+		r.Post("/pending-model-listings/{listingID}/dismiss", h.dismissPendingModelListing)
+
+		r.Get("/audit-logs", h.listAuditLogs)
 	})
-	r.Post("/api-keys/{apiKeyID}/revoke", h.revokeAPIKey)
-
-	r.Post("/providers", h.createProvider)
-	r.Post("/provider-accounts", h.createProviderAccount)
-	r.Post("/provider-accounts/{providerAccountID}/keys", h.addProviderKey)
-
-	r.Post("/virtual-models", h.createVirtualModel)
-	r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
-	r.Post("/channels", h.createChannel)
-	r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
-	r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
-	r.Post("/fx-rates", h.setFXRate)
-
-	r.Post("/price-sources", h.createPriceSource)
-	r.Post("/providers/{providerID}/price-observations", h.ingestUnmappedPriceObservation)
-	r.Get("/price-change-requests", h.listPendingChangeRequests)
-	r.Post("/price-change-requests/{changeRequestID}/approve", h.approveChangeRequest)
-	r.Post("/price-change-requests/{changeRequestID}/reject", h.rejectChangeRequest)
-
-	r.Get("/pending-model-listings", h.listPendingModelListings)
-	r.Post("/pending-model-listings/{listingID}/publish", h.publishPendingModelListing)
-	r.Post("/pending-model-listings/{listingID}/dismiss", h.dismissPendingModelListing)
-
-	r.Get("/audit-logs", h.listAuditLogs)
 
 	return r
 }

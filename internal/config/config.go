@@ -67,6 +67,7 @@ type SecretsConfig struct {
 	KEKSource       string `koanf:"kek_source"` // env / aliyun-kms / aws-kms
 	KEKEnv          string `koanf:"kek_env"`
 	APIKeyPepperEnv string `koanf:"api_key_pepper_env"`
+	AdminTokenEnv   string `koanf:"admin_token_env"` // cmd/admin 的共享密钥鉴权（httpx.RequireBearerToken），见 internal/app.NewAdminRouter
 }
 
 type LogConfig struct {
@@ -98,6 +99,7 @@ func defaults() *koanf.Koanf {
 		"secrets.kek_source":          "env",
 		"secrets.kek_env":             "UFT_KEK",
 		"secrets.api_key_pepper_env":  "UFT_KEY_PEPPER",
+		"secrets.admin_token_env":     "UFT_ADMIN_TOKEN",
 		"log.level":                   "info",
 		"log.format":                  "json",
 	}, "."), nil)

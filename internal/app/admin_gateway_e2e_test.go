@@ -40,6 +40,7 @@ import (
 const defaultTestDSN = "postgres://uft:uft@localhost:5432/uft?sslmode=disable"
 const defaultTestRedisAddr = "localhost:6379"
 const testPepper = "app-e2e-test-pepper"
+const testAdminToken = "app-e2e-test-admin-token"
 
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -90,10 +91,21 @@ func testBox(t *testing.T) *secretbox.Box {
 }
 
 // adminClient 是个薄薄的 HTTP 封装，专门为了让这个测试读起来像"调用管理接口"
-// 而不是被 JSON 编解码的样板代码淹没。
+// 而不是被 JSON 编解码的样板代码淹没。token 默认用 testAdminToken——所有测试
+// 构造 app.AdminDeps 时都必须传 AdminToken: testAdminToken，否则每个请求都会
+// 被 httpx.RequireBearerToken 拒成 401（这不是测试基础设施的意外行为，是
+// cmd/admin 鉴权中间件按设计工作，见 internal/app.NewAdminRouter 的注释）。
 type adminClient struct {
 	t       *testing.T
 	baseURL string
+	token   string
+}
+
+func (c *adminClient) authToken() string {
+	if c.token == "" {
+		return testAdminToken
+	}
+	return c.token
 }
 
 func (c *adminClient) post(path string, body any, out any) {
@@ -102,7 +114,13 @@ func (c *adminClient) post(path string, body any, out any) {
 	if err != nil {
 		c.t.Fatalf("marshal request body for %s: %v", path, err)
 	}
-	resp, err := http.Post(c.baseURL+path, "application/json", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
+	if err != nil {
+		c.t.Fatalf("build request for %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.authToken())
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		c.t.Fatalf("POST %s: %v", path, err)
 	}
@@ -118,13 +136,36 @@ func (c *adminClient) post(path string, body any, out any) {
 	}
 }
 
+func (c *adminClient) get(path string, out any) {
+	c.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		c.t.Fatalf("build request for %s: %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.authToken())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		c.t.Fatalf("GET %s: status = %d, body = %s", path, resp.StatusCode, respBody)
+	}
+	if out != nil {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			c.t.Fatalf("GET %s: unmarshal response %s: %v", path, respBody, err)
+		}
+	}
+}
+
 func TestAdminCreatedConfig_WorksThroughGateway(t *testing.T) {
 	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc}))
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 

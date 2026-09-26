@@ -3,8 +3,10 @@ package httpx
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -53,6 +55,43 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireBearerToken 是一个共享密钥鉴权中间件：要求 Authorization: Bearer <token>
+// 与 token 完全匹配（crypto/subtle 常数时间比较，避免计时攻击猜出密钥）。
+//
+// 这不是完整的管理员登录/RBAC——没有"是谁在操作"的概念，知道这一个密钥的人
+// 能做任何事，见 internal/admin 包文档的已知范围限制。用在 cmd/admin 这类内部
+// 管理接口上，是"完全没有鉴权"和"完整的多用户 RBAC"之间一个真实、可用的中间态：
+// 至少不再是任何能连上这个端口的人都能改价格、调余额、加上游 Key。
+//
+// token 为空字符串时，任何请求都会被拒绝（不会退化成"不鉴权"）——調用方应该在
+// 没配置密钥时直接拒绝启动，而不是依赖这个中间件的兜底行为，但即使真的传了个
+// 空字符串进来，这里也不会意外放行。
+func RequireBearerToken(token string) func(http.Handler) http.Handler {
+	tokenBytes := []byte(token)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, ok := extractBearerToken(r.Header.Get("Authorization"))
+			if !ok || subtle.ConstantTimeCompare([]byte(raw), tokenBytes) != 1 {
+				WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Missing or invalid admin token.")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func extractBearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 
 // statusRecorder 包装 ResponseWriter 以捕获实际写出的状态码，供访问日志使用。
