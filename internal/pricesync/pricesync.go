@@ -10,13 +10,22 @@
 // 已知范围限制（明确未实现，不是遗漏——§7.16 本身是一个足够大的独立子系统，
 // 这里先把"来了一条观测该怎么处理"这条确定性流水线做对、做全，调度和外部集成
 // 留给后续按需接入）：
-//   - 没有真正对接外部的 Fetcher：openrouter.go 只实现了归一化函数
-//     （normalizeOpenRouter），用录制的固定 JSON 作为 golden fixture 测试，
-//     没有真正发 HTTP 请求去抓 OpenRouter 的公开接口。HTML 抓取
-//     （goquery/chromedp）、LLM 辅助抽取、账单 API 对接（L1）都没有实现。
+//   - OpenRouter 这个来源只实现了归一化函数（openrouter.go 的
+//     normalizeOpenRouter），用录制的固定 JSON 作为 golden fixture 测试，没有
+//     真正发 HTTP 请求去抓它的公开接口。
+//   - HTML 抓取（html.go 的 HTMLFetcher + ParseHTMLPriceTable）实现了一个
+//     配置驱动的表格解析框架——CSS 选择器 + 单位换算存在 price_sources.config
+//     里，出问题改配置不用发版；但这不是"配一次适配所有网站"的万能方案，各
+//     厂商定价页排版差异很大，接一个新来源大概率还是要调选择器。自动化测试
+//     只喂手工构造的 HTML fixture，不会真的请求任何外部网站（抓取本身对
+//     目标站点的服务条款/robots/频率都要谨慎，不适合在 CI 里跑）；只做了通用
+//     表格布局，chromedp（需要 JS 渲染的页面）、LLM 辅助抽取、账单 API 对接
+//     （L1）都没有实现。
 //   - 没有调度器：技术方案 §7.16.3/§7.16.5 设计的 cron + PG advisory lock 选主
-//     没有实现——Engine.Ingest 是同步调用，由谁在什么时候调用它（真正的定时
-//     抓取任务，或者运营手工通过 admin 接口提交一条观测）留给调用方决定。
+//     没有实现——Engine.Ingest/IngestUnmapped 都是同步调用，由谁在什么时候
+//     调用它们（真正的定时抓取任务，或者运营手工通过 admin 接口提交一条观测）
+//     留给调用方决定；HTMLFetcher/OpenRouter 的归一化函数写好了，但没有任何
+//     后台循环会定期调用它们。
 //   - "模型消失"检测（§7.16.6）没有实现：这条规则本质上需要一个定期扫描
 //     "哪些 (source, model) 组合最近没有新观测"的后台任务，不是单次 Ingest
 //     调用能判断的，需要配合上面缺失的调度器一起做。
