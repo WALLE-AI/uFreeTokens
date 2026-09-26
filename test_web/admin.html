@@ -42,7 +42,7 @@
 <section>
   <h2>1. 接入供应商</h2>
   <div class="row">
-    <div><label>Provider Code</label><input id="pCode" value="siliconflow"></div>
+    <div><label>Provider Code</label><input id="pCode"></div>
     <div><label>Provider Name</label><input id="pName" value="SiliconFlow"></div>
   </div>
   <label>Base URL</label>
@@ -101,6 +101,10 @@ const $ = (id) => document.getElementById(id);
 function loadPersisted() {
   $('adminToken').value = localStorage.getItem('uft_admin_token') || '';
   $('pAccountID').value = localStorage.getItem('uft_provider_account_id') || '';
+  // Provider Code 带一个时间戳后缀：providers.code 有唯一约束，重新点一次
+  // "创建供应商"（比如上一次卡在保存 Key 那一步）不应该因为 Code 撞库而
+  // 从头报错——这是个一次性联调工具，不需要跨次运行复用同一个 Code。
+  $('pCode').value = 'siliconflow-' + Date.now();
 }
 loadPersisted();
 $('adminToken').addEventListener('input', () => localStorage.setItem('uft_admin_token', $('adminToken').value));
@@ -160,6 +164,10 @@ async function fetchModels() {
   try {
     const accountID = $('pAccountID').value.trim();
     if (!accountID) { log('请先填 Provider Account ID', 'err'); return; }
+    if (!/^\d+$/.test(accountID)) {
+      log(`Provider Account ID 必须是数字，当前是 "${accountID}"——这一栏应该由第 1 步成功后自动填入，不是上游模型名`, 'err');
+      return;
+    }
     const res = await call('GET', `/provider-accounts/${accountID}/upstream-models`, null);
     lastModels = res.data || [];
     const box = $('modelListBox');
