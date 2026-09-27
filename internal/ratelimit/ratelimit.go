@@ -59,6 +59,26 @@ func (l *Limiter) AllowRPM(ctx context.Context, subject string, limit int) Resul
 	return deny(res.RetryAfter)
 }
 
+// AllowRPMStrict 和 AllowRPM 一样，但 Redis 出错时 fail-closed（拒绝）而不是
+// fail-open。专门给登录/注册这类防暴力破解场景用：限流组件本身故障时，
+// "错误地放行一次暴力破解尝试"比"错误地拒绝一次合法登录/注册"危害大得多，
+// 和 AllowRPM 服务于普通 API 限流的取舍正好相反——那里组件故障不该拖垮全站
+// 正常流量，这里组件故障不能变成认证防线上的一个漏洞。
+func (l *Limiter) AllowRPMStrict(ctx context.Context, subject string, limit int) Result {
+	if limit <= 0 {
+		return allow()
+	}
+	res, err := l.gcra.Allow(ctx, "uft:rpm:"+subject, rrate.PerMinute(limit))
+	if err != nil {
+		l.logger.Warn("ratelimit: redis error, failing closed", "op", "rpm_strict", "subject", subject, "error", err)
+		return deny(time.Minute)
+	}
+	if res.Allowed > 0 {
+		return allow()
+	}
+	return deny(res.RetryAfter)
+}
+
 // tpmScript 用固定窗口（每分钟）做 token 配额扣减：
 // 当前窗口累计用量 + amount 超过 limit 就拒绝且不扣减；否则原子地累加。
 // 用固定窗口而不是 GCRA/滑动窗口，是因为 token 数量是变长的"扣费"而不是

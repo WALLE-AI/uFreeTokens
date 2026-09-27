@@ -24,6 +24,7 @@ type Config struct {
 	Redis    RedisConfig    `koanf:"redis"`
 	Secrets  SecretsConfig  `koanf:"secrets"`
 	Log      LogConfig      `koanf:"log"`
+	Console  ConsoleConfig  `koanf:"console"`
 }
 
 type GatewayConfig struct {
@@ -81,6 +82,13 @@ type LogConfig struct {
 	Format string `koanf:"format"` // console / json
 }
 
+// ConsoleConfig 控制 internal/console（/console/* 自助控制台接口）的行为。
+type ConsoleConfig struct {
+	// CookieSecure 见 console.Config.CookieSecure 的注释：本地 http 开发环境
+	// 必须留空/false，生产 HTTPS 环境应该设为 true。
+	CookieSecure bool `koanf:"cookie_secure"`
+}
+
 func defaults() *koanf.Koanf {
 	k := koanf.New(".")
 	_ = k.Load(confmap.Provider(map[string]any{
@@ -108,6 +116,7 @@ func defaults() *koanf.Koanf {
 		"secrets.admin_token_env":     "UFT_ADMIN_TOKEN",
 		"log.level":                   "info",
 		"log.format":                  "json",
+		"console.cookie_secure":       false,
 	}, "."), nil)
 	return k
 }

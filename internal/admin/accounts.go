@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
@@ -38,6 +40,29 @@ type CreateAccountInput struct {
 // 账户和钱包在这里必须一起创建，不允许出现"有账户没钱包"的中间状态——否则
 // 这个账户的第一次计费请求会因为 wallet.Reserve 找不到钱包行而莫名其妙地失败。
 func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*Account, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("admin: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	acct, err := CreateAccountTx(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("admin: commit: %w", err)
+	}
+	return acct, nil
+}
+
+// CreateAccountTx 是 CreateAccount 的事务内核，导出给 internal/console 的
+// 用户注册流程复用：注册需要在同一个数据库事务里完成"建账户 + 建钱包 + 建
+// user + 建 owner 身份的 account_member"，缺一步都不该提交——console 包
+// 自己 Begin() 一个 tx，调这个函数完成前两步，再在同一个 tx 里插入
+// users/account_members，最后自己 Commit。
+func CreateAccountTx(ctx context.Context, tx pgx.Tx, in CreateAccountInput) (*Account, error) {
 	if !validAccountTypes[in.Type] {
 		return nil, fmt.Errorf("admin: invalid account type %q, want personal or organization", in.Type)
 	}
@@ -50,12 +75,6 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*Ac
 	if in.CreditLimit < 0 {
 		return nil, errors.New("admin: credit_limit must not be negative")
 	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("admin: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
 
 	acct := &Account{Type: in.Type, Name: in.Name, Status: "active", Tier: in.Tier, CreditLimit: in.CreditLimit}
 	if err := tx.QueryRow(ctx,
@@ -73,9 +92,6 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*Ac
 		return nil, fmt.Errorf("admin: create wallet: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("admin: commit: %w", err)
-	}
 	return acct, nil
 }
 

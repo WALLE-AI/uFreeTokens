@@ -19,10 +19,12 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/adapter"
+	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/console"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/promotion"
@@ -94,6 +96,20 @@ func run() error {
 	// 和 cmd/admin 同款：留空（默认）不开启。
 	testWebDir := os.Getenv("UFT_TEST_WEB_DIR")
 
+	// console.Service 只依赖 Postgres/Redis，不依赖 KEK/上游渠道，所以独立于
+	// relaySvc 是否构建成功都能起来——账户注册、登录、自助建 Key 不应该因为
+	// 运维还没配好任何一个上游渠道就整体不可用。box 传 nil：console 只会调用
+	// admin.Service 里不触碰上游 Key 密文的那几个方法（CreateAPIKey/
+	// RevokeAPIKeyForAccount/GetAccount/RecordAudit），admin.Service 的其它
+	// 方法才需要真正的 secretbox。
+	consoleWallet := wallet.New(pg)
+	consoleAdmin := admin.New(pg, consoleWallet, nil, pepper)
+	consoleSessions := console.NewSessionStore(rdb)
+	consoleRateLimit := ratelimit.New(rdb, logger)
+	consoleSvc := console.New(pg, consoleAdmin, consoleSessions, consoleRateLimit, logger, console.Config{
+		CookieSecure: cfg.Console.CookieSecure,
+	})
+
 	router := app.NewGatewayRouter(app.GatewayDeps{
 		Cfg:        cfg,
 		Logger:     logger,
@@ -103,6 +119,7 @@ func run() error {
 		AuthStore:  authStore,
 		Pepper:     pepper,
 		Relay:      relaySvc,
+		Console:    consoleSvc,
 		TestWebDir: testWebDir,
 	})
 

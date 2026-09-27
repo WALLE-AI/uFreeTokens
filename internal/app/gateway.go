@@ -15,6 +15,7 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/console"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
@@ -29,8 +30,9 @@ type GatewayDeps struct {
 	Redis      *redis.Client
 	AuthStore  auth.Store
 	Pepper     []byte
-	Relay      *relay.Service // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
-	TestWebDir string         // 非空时在根路径同源提供 test_web/user.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
+	Relay      *relay.Service   // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
+	Console    *console.Service // nil 时不挂载 /console/*（技术方案迭代3：Console 接口挂在 gateway 进程）
+	TestWebDir string           // 非空时在根路径同源提供 test_web/user.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
 }
 
 // NewGatewayRouter 组装数据面路由。/v1/chat/completions、/v1/embeddings 已接入
@@ -78,6 +80,30 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 		v1.Post("/audio/transcriptions", notImplementedHandler("audio.transcriptions"))
 		v1.Post("/audio/speech", notImplementedHandler("audio.speech"))
 	})
+
+	// /console/* 完全不挂 CORS（httpOnly Cookie 会话只信任同源请求，见
+	// internal/console 包文档），也不挂 auth.APIKey——鉴权走 Cookie Session
+	// （console.RequireSession），和 /v1 的 API Key 鉴权是两套完全独立的机制。
+	if d.Console != nil {
+		r.Route("/console", func(c chi.Router) {
+			c.Post("/register", d.Console.HandleRegister)
+			c.Post("/login", d.Console.HandleLogin)
+			c.Post("/logout", d.Console.HandleLogout)
+
+			c.Group(func(authed chi.Router) {
+				authed.Use(console.RequireSession(d.Console.Sessions()))
+				authed.Get("/me", d.Console.HandleMe)
+				authed.Get("/api-keys", d.Console.HandleListKeys)
+				authed.Get("/wallet", d.Console.HandleWallet)
+
+				authed.Group(func(mutating chi.Router) {
+					mutating.Use(console.CSRFGuard)
+					mutating.Post("/api-keys", d.Console.HandleCreateKey)
+					mutating.Post("/api-keys/{id}/revoke", d.Console.HandleRevokeKey)
+				})
+			})
+		})
+	}
 
 	return r
 }

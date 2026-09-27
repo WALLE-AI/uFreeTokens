@@ -31,6 +31,7 @@ type CreatedAPIKey struct {
 
 type CreateAPIKeyInput struct {
 	AccountID        int64
+	CreatedBy        *int64 // 发起创建的用户（console 自助建 Key 时非空）；nil = 内网管理员操作，无用户身份
 	Name             string
 	AllowedModels    []string // nil = 不限制
 	RPMLimit         *int
@@ -62,10 +63,10 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (*Crea
 	}
 
 	err = s.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (account_id, name, display_prefix, key_hmac, status, allowed_models, rpm_limit, tpm_limit, concurrency_limit)
-		 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
+		`INSERT INTO api_keys (account_id, created_by, name, display_prefix, key_hmac, status, allowed_models, rpm_limit, tpm_limit, concurrency_limit)
+		 VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9)
 		 RETURNING id, created_at`,
-		in.AccountID, in.Name, key.DisplayPrefix, key.HMAC, in.AllowedModels, in.RPMLimit, in.TPMLimit, in.ConcurrencyLimit,
+		in.AccountID, in.CreatedBy, in.Name, key.DisplayPrefix, key.HMAC, in.AllowedModels, in.RPMLimit, in.TPMLimit, in.ConcurrencyLimit,
 	).Scan(&out.ID, &out.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("admin: insert api_key: %w", err)
@@ -114,6 +115,38 @@ func (s *Service) RevokeAPIKey(ctx context.Context, apiKeyID int64) error {
 			return fmt.Errorf("admin: check api_key existence: %w", err)
 		}
 		if !exists {
+			return ErrAPIKeyNotFound
+		}
+		// 已经是 revoked：幂等，视为成功。
+	}
+	return nil
+}
+
+// RevokeAPIKeyForAccount 和 RevokeAPIKey 一样，但按 account_id 限定范围——
+// console 的自助吊销接口必须防止 A 账户吊销 B 账户的 Key；RevokeAPIKey 本身
+// 不做这个限定（是给内网管理员用的，见包文档的已知范围限制），这里单独提供
+// 一个按账户限定范围的版本，而不是给 RevokeAPIKey 加一个可选参数——调用方
+// 传错/漏传空账户 ID 的后果差异太大（全局吊销 vs 越权拒绝），值得用两个
+// 不同名字的方法在类型层面强制调用方想清楚自己要哪种语义。
+func (s *Service) RevokeAPIKeyForAccount(ctx context.Context, accountID, apiKeyID int64) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND account_id = $2 AND status != 'revoked'`,
+		apiKeyID, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("admin: revoke api_key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1 AND account_id = $2)`, apiKeyID, accountID,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("admin: check api_key existence: %w", err)
+		}
+		if !exists {
+			// 不区分"这把 Key 根本不存在"和"这把 Key 存在但属于别的账户"，
+			// 两种情况对调用方来说都应该是"你没有这把 Key"，不能通过错误类型
+			// 差异泄露"这个 Key ID 属于别人"这件事。
 			return ErrAPIKeyNotFound
 		}
 		// 已经是 revoked：幂等，视为成功。

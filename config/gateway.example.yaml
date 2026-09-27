@@ -40,3 +40,6 @@ secrets:
 log:
   level: debug
   format: console   # console(dev) / json(prod)
+
+console:
+  cookie_secure: false          # 本地 http 开发环境必须是 false；生产 HTTPS 环境应设为 true
