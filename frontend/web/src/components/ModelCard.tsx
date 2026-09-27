@@ -12,6 +12,7 @@ import {
   Zap
 } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface ModelCardProps {
   model: Model;
@@ -50,11 +51,12 @@ export const ModelCard: React.FC<ModelCardProps> = ({
         <div className="space-y-1.5 max-w-3xl flex-1">
           {/* Header row: Icon + Title + Badges */}
           <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-            <div
-              className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shadow-xs shrink-0 ${model.iconBg}`}
-            >
-              ▲
-            </div>
+            <ProviderIcon
+              provider={model.provider}
+              className="w-4 h-4 rounded"
+              fallbackBg={model.iconBg}
+              fallbackTextClassName="text-[9px]"
+            />
 
             <h3
               onClick={() => onSelectModel(model)}

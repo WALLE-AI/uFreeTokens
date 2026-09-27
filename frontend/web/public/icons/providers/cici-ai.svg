@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Cici AI icon">
+  <defs>
+    <linearGradient id="cici-a" x1="41" y1="41" x2="215" y2="215" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset=".48" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#cici-a)"/>
+  <path d="M78 95c13-23 39-37 68-33 23 3 42 17 52 35l-29 17c-5-10-15-18-29-20-19-3-36 7-44 23-8 17-4 38 11 50 17 14 42 13 58-2l23 24c-28 27-72 30-103 5-29-23-33-66-7-99Z" fill="#fff"/>
+  <circle cx="173" cy="84" r="15" fill="#fff"/>
+  <circle cx="184" cy="73" r="6" fill="#06B6D4"/>
+</svg>

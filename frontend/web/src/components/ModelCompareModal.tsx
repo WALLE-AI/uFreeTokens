@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, Check, Minus, Play, Trash2, Scale } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface ModelCompareModalProps {
   models: Model[];
@@ -73,9 +74,12 @@ export const ModelCompareModal: React.FC<ModelCompareModalProps> = ({
                         <div className="flex items-start justify-between">
                           <div className="space-y-1">
                             <div className="flex items-center space-x-1.5">
-                              <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[8px] ${m.iconBg}`}>
-                                ▲
-                              </span>
+                              <ProviderIcon
+                                provider={m.provider}
+                                className="w-3.5 h-3.5 rounded"
+                                fallbackBg={m.iconBg}
+                                fallbackTextClassName="text-[8px]"
+                              />
                               <span className="font-bold text-gray-900 text-xs">{m.name}</span>
                             </div>
                             <div className="text-[10px] text-gray-400 font-mono">{m.provider}</div>

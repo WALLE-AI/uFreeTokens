@@ -92,4 +92,4 @@ export type SortOption =
   | 'intelligence-desc'
   | 'popular';
 
-export type ViewMode = 'list' | 'table';
+export type ViewMode = 'grid' | 'list' | 'table';

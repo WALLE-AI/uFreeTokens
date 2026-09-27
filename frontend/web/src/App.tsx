@@ -13,6 +13,7 @@ import {
   Pin,
   Check,
   List,
+  LayoutGrid,
   Table as TableIcon,
   Sparkles,
   RotateCcw,
@@ -27,6 +28,7 @@ import { listCatalog, CatalogModel } from './api/catalog';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ModelCard } from './components/ModelCard';
+import { ModelGridCard } from './components/ModelGridCard';
 import { ModelTable } from './components/ModelTable';
 import { ModelDetailPage } from './components/ModelDetailPage';
 import { BenchmarksPage } from './components/BenchmarksPage';
@@ -67,7 +69,7 @@ const DEFAULT_FILTERS: FilterState = {
 export default function App() {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [sortOption, setSortOption] = useState<SortOption>('newest');
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [showPinnedOnly, setShowPinnedOnly] = useState<boolean>(false);
 
   // Dropdown states
@@ -518,7 +520,11 @@ export default function App() {
         )}
 
         {/* 3. 主内容区 - 模型列表与控制台 */}
-        <main className="flex-1 px-4 sm:px-6 py-4 max-w-5xl overflow-y-auto h-[calc(100vh-3rem)]">
+        <main
+          className={`flex-1 px-4 sm:px-6 py-4 overflow-y-auto h-[calc(100vh-3rem)] ${
+            viewMode === 'grid' ? '' : 'max-w-5xl'
+          }`}
+        >
           {/* 页面主标题 + 右上角操作 */}
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center space-x-2">
@@ -750,8 +756,17 @@ export default function App() {
                 )}
               </div>
 
-              {/* 视图切换 (列表 / 表格) */}
+              {/* 视图切换 (网格 / 列表 / 表格) */}
               <div className="flex items-center border border-gray-200 rounded bg-white overflow-hidden">
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`p-1.5 transition-colors border-r border-gray-200 ${
+                    viewMode === 'grid' ? 'bg-gray-100 text-black' : 'text-gray-400 hover:text-black'
+                  }`}
+                  title="网格视图"
+                >
+                  <LayoutGrid className="w-3 h-3" />
+                </button>
                 <button
                   onClick={() => setViewMode('list')}
                   className={`p-1.5 transition-colors ${
@@ -891,6 +906,24 @@ export default function App() {
               >
                 恢复默认筛选
               </button>
+            </div>
+          ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3.5">
+              {filteredModels.map((m) => (
+                <ModelGridCard
+                  key={m.id}
+                  model={m}
+                  isPinned={filters.pinnedModelIds.includes(m.id)}
+                  isInCompare={compareModels.some((item) => item.id === m.id)}
+                  onTogglePin={handleTogglePin}
+                  onToggleCompare={handleToggleCompare}
+                  onSelectModel={(model) => setActiveModelForDetail(model)}
+                  onOpenPlayground={(model) => setActiveModelForPlayground(model)}
+                  onSelectProvider={(prov) =>
+                    handleUpdateFilters({ selectedProviders: [prov] })
+                  }
+                />
+              ))}
             </div>
           ) : viewMode === 'list' ? (
             <div className="divide-y divide-gray-100">

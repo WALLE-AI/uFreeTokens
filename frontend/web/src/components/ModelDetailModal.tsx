@@ -15,6 +15,7 @@ import {
   Code2
 } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface ModelDetailModalProps {
   model: Model | null;
@@ -125,11 +126,12 @@ main();`;
         {/* Header */}
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between bg-gray-50/70">
           <div className="flex items-start space-x-3">
-            <div
-              className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold shadow-xs shrink-0 mt-0.5 ${model.iconBg}`}
-            >
-              ▲
-            </div>
+            <ProviderIcon
+              provider={model.provider}
+              className="w-6 h-6 rounded mt-0.5"
+              fallbackBg={model.iconBg}
+              fallbackTextClassName="text-xs"
+            />
             <div>
               <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                 <h2 className="text-base font-bold text-gray-900">{model.name}</h2>

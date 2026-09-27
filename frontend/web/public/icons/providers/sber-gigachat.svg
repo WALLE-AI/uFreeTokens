@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Sber GigaChat icon">
+  <rect width="256" height="256" rx="56" fill="#3B0764"/>
+  <path d="M128 38 204 82v88l-76 48-76-48V82l76-44Z" fill="none" stroke="#E879F9" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M128 66 178 95v58l-50 32-50-32V95l50-29Z" fill="#E879F9" opacity=".22"/>
+  <circle cx="128" cy="126" r="54" fill="none" stroke="#FDF4FF" stroke-width="10" opacity=".92"/>
+  <text x="128" y="134" text-anchor="middle" dominant-baseline="middle" fill="#FDF4FF" font-family="Inter, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="0">GIG</text>
+</svg>

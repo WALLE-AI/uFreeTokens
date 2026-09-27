@@ -12,6 +12,7 @@ import {
   Zap
 } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 import { useApiKey } from '../api/auth';
 import { streamChat, ChatUsage } from '../api/chat';
 import { ApiError } from '../api/errors';
@@ -148,9 +149,12 @@ export const PlaygroundModal: React.FC<PlaygroundModalProps> = ({ model, onClose
         {/* Top Header */}
         <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50/80">
           <div className="flex items-center space-x-2">
-            <div className={`w-4 h-4 rounded flex items-center justify-center text-[9px] ${model.iconBg}`}>
-              ▲
-            </div>
+            <ProviderIcon
+              provider={model.provider}
+              className="w-4 h-4 rounded"
+              fallbackBg={model.iconBg}
+              fallbackTextClassName="text-[9px]"
+            />
             <div>
               <div className="flex items-center space-x-2">
                 <span className="font-bold text-xs text-gray-900">{model.name}</span>

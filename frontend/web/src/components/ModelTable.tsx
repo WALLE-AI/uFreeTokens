@@ -1,6 +1,7 @@
 import React from 'react';
 import { ArrowUpRight, Pin, Scale, Play, Copy, Check } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface ModelTableProps {
   models: Model[];
@@ -50,11 +51,12 @@ export const ModelTable: React.FC<ModelTableProps> = ({
                 {/* Model name & icon */}
                 <td className="py-3 px-3">
                   <div className="flex items-center space-x-2">
-                    <div
-                      className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shadow-xs shrink-0 ${model.iconBg}`}
-                    >
-                      ▲
-                    </div>
+                    <ProviderIcon
+                      provider={model.provider}
+                      className="w-4 h-4 rounded"
+                      fallbackBg={model.iconBg}
+                      fallbackTextClassName="text-[9px]"
+                    />
                     <div>
                       <div className="font-semibold text-gray-900 group-hover:text-purple-600 flex items-center space-x-1">
                         <span>{model.name}</span>

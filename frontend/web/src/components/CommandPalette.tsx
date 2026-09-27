@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, X, ArrowRight, ArrowUpRight, Cpu } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -132,11 +133,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 className="p-2.5 hover:bg-purple-50/60 rounded-lg cursor-pointer flex items-center justify-between group transition-colors"
               >
                 <div className="flex items-center space-x-2.5">
-                  <div
-                    className={`w-4 h-4 rounded flex items-center justify-center text-[8px] font-bold ${model.iconBg}`}
-                  >
-                    ▲
-                  </div>
+                  <ProviderIcon
+                    provider={model.provider}
+                    className="w-4 h-4 rounded"
+                    fallbackBg={model.iconBg}
+                    fallbackTextClassName="text-[8px]"
+                  />
                   <div>
                     <div className="font-semibold text-gray-900 group-hover:text-purple-700 flex items-center space-x-1.5">
                       <span>{model.name}</span>

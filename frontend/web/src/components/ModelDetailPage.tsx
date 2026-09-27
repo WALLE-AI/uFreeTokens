@@ -22,6 +22,7 @@ import {
   ArrowUpRight
 } from 'lucide-react';
 import { Model } from '../types';
+import { ProviderIcon } from './ProviderIcon';
 
 interface ModelDetailPageProps {
   model: Model;
@@ -304,11 +305,12 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
         {/* Model Hero Header */}
         <div className="mb-6 space-y-3">
           <div className="flex items-center space-x-2.5">
-            <div
-              className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shadow-xs shrink-0 ${model.iconBg}`}
-            >
-              ▲
-            </div>
+            <ProviderIcon
+              provider={model.provider}
+              className="w-7 h-7 rounded-lg"
+              fallbackBg={model.iconBg}
+              fallbackTextClassName="text-xs"
+            />
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
               {model.name}
             </h1>
@@ -1237,9 +1239,12 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
                       className="p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-xs transition-all cursor-pointer bg-white group"
                     >
                       <div className="flex items-center space-x-1.5">
-                        <div className={`w-3.5 h-3.5 rounded text-[8px] flex items-center justify-center font-bold ${rel.iconBg}`}>
-                          ▲
-                        </div>
+                        <ProviderIcon
+                          provider={rel.provider}
+                          className="w-3.5 h-3.5 rounded"
+                          fallbackBg={rel.iconBg}
+                          fallbackTextClassName="text-[8px]"
+                        />
                         <h4 className="font-bold text-gray-900 text-xs group-hover:text-purple-600 truncate">
                           {rel.name}
                         </h4>
