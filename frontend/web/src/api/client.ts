@@ -16,6 +16,10 @@ export interface RequestOptions {
   method?: string;
   body?: unknown;
   apiKey?: string | null;
+  // headers 目前只给 console.ts 的写请求带 X-UFT-CSRF: 1 用（技术方案的
+  // CSRFGuard 要求）；不会覆盖 Content-Type/Authorization 这两个由 body/apiKey
+  // 派生的头。
+  headers?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -23,7 +27,7 @@ export interface RequestOptions {
 // request 是全项目发起普通（非流式）JSON 请求的唯一入口。流式聊天走
 // chat.ts，直接用 fetch + sse.ts 解析响应体，逻辑不一样，不复用这里。
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, apiKey, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = opts;
+  const { method = 'GET', body, apiKey, headers: extraHeaders, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = opts;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -32,7 +36,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     else signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...extraHeaders };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 

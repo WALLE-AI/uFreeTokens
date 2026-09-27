@@ -12,21 +12,25 @@ import {
   FlaskConical,
   Settings,
   LogOut,
+  LogIn,
+  UserPlus,
   Sun,
   Moon,
   Monitor,
   KeyRound,
   ShieldCheck
 } from 'lucide-react';
-import { useApiKey } from '../api/auth';
+import { useApiKey, useConsoleUser, consoleAuthStore } from '../api/auth';
+import { logout as consoleLogout } from '../api/console';
 import { ConnectKeyModal } from './ConnectKeyModal';
+import { LoginModal } from './LoginModal';
+import { RegisterModal } from './RegisterModal';
 
 interface HeaderProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onOpenCommandPalette: () => void;
   onToggleMobileSidebar: () => void;
-  userEmail?: string;
   activeNav?: string;
   onSelectNav?: (nav: string) => void;
   onOpenPersonalDashboard?: (tab?: string) => void;
@@ -37,7 +41,6 @@ export const Header: React.FC<HeaderProps> = ({
   onSearchChange,
   onOpenCommandPalette,
   onToggleMobileSidebar,
-  userEmail = 'gaojing850063636@gmail.com',
   activeNav = '模型',
   onSelectNav,
   onOpenPersonalDashboard,
@@ -46,8 +49,10 @@ export const Header: React.FC<HeaderProps> = ({
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showConnectKeyModal, setShowConnectKeyModal] = useState(false);
+  const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const apiKey = useApiKey();
+  const { me } = useConsoleUser();
 
   // Close menu on click outside
   useEffect(() => {
@@ -222,7 +227,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onClick={() => {
                     setShowUserMenu(false);
                     onOpenPersonalDashboard && onOpenPersonalDashboard('profile');
-                    triggerToast(`当前账号: ${userEmail}`);
+                    triggerToast(me ? `当前账号: ${me.email}` : '尚未登录控制台');
                   }}
                   className="w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] text-gray-700 hover:text-gray-950 hover:bg-gray-50/80 transition-colors text-left cursor-pointer group"
                 >
@@ -290,16 +295,47 @@ export const Header: React.FC<HeaderProps> = ({
                   <span className="font-normal">偏好设置</span>
                 </button>
 
-                <button
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    triggerToast('已安全退出登录');
-                  }}
-                  className="w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] text-rose-500 hover:text-rose-600 hover:bg-rose-50/70 transition-colors text-left cursor-pointer group"
-                >
-                  <LogOut className="w-4 h-4 text-rose-500 shrink-0 stroke-[1.75]" />
-                  <span className="font-normal text-rose-500">退出登录</span>
-                </button>
+                {me ? (
+                  <button
+                    onClick={async () => {
+                      setShowUserMenu(false);
+                      try {
+                        await consoleLogout();
+                      } catch {
+                        // Cookie 可能已经过期/失效，本地状态照样清掉，不阻塞用户退出。
+                      }
+                      consoleAuthStore.setMe(null);
+                      triggerToast('已安全退出登录');
+                    }}
+                    className="w-full flex items-center gap-3 px-2.5 py-1.5 rounded-lg text-[13px] text-rose-500 hover:text-rose-600 hover:bg-rose-50/70 transition-colors text-left cursor-pointer group"
+                  >
+                    <LogOut className="w-4 h-4 text-rose-500 shrink-0 stroke-[1.75]" />
+                    <span className="font-normal text-rose-500 truncate">退出登录（{me.email}）</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 px-1">
+                    <button
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        setAuthModal('login');
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] text-gray-700 border border-gray-200 hover:bg-gray-50 cursor-pointer"
+                    >
+                      <LogIn className="w-3.5 h-3.5" />
+                      <span>登录</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        setAuthModal('register');
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] text-white bg-purple-600 hover:bg-purple-700 cursor-pointer"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span>注册</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Bottom Theme Switcher Bar */}
@@ -361,6 +397,12 @@ export const Header: React.FC<HeaderProps> = ({
 
       {showConnectKeyModal && (
         <ConnectKeyModal onClose={() => setShowConnectKeyModal(false)} />
+      )}
+      {authModal === 'login' && (
+        <LoginModal onClose={() => setAuthModal(null)} onSwitchToRegister={() => setAuthModal('register')} />
+      )}
+      {authModal === 'register' && (
+        <RegisterModal onClose={() => setAuthModal(null)} onSwitchToLogin={() => setAuthModal('login')} />
       )}
     </header>
   );

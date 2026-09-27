@@ -32,10 +32,20 @@ import {
   ExternalLink,
   X
 } from 'lucide-react';
-import { useApiKey } from '../api/auth';
+import { useApiKey, useConsoleUser, authStore } from '../api/auth';
 import { getUsage, microToDisplay, UsageSnapshot } from '../api/usage';
+import {
+  listKeys,
+  createKey as consoleCreateKey,
+  revokeKey as consoleRevokeKey,
+  getWallet as getConsoleWallet,
+  ConsoleApiKey,
+  ConsoleWallet,
+} from '../api/console';
 import { ApiError } from '../api/errors';
 import { ConnectKeyModal } from './ConnectKeyModal';
+import { LoginModal } from './LoginModal';
+import { RegisterModal } from './RegisterModal';
 
 export interface ApiKeyItem {
   id: string;
@@ -53,14 +63,12 @@ export interface ApiKeyItem {
 
 interface PersonalDashboardPageProps {
   initialTab?: string;
-  userEmail?: string;
   onNavigateTab?: (tab: string) => void;
   onBackToModels?: () => void;
 }
 
 export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
   initialTab = 'api-keys',
-  userEmail = 'gaojing850063636@gmail.com',
   onNavigateTab,
   onBackToModels
 }) => {
@@ -104,31 +112,73 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
   const [searchKeyQuery, setSearchKeyQuery] = useState<string>('');
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
   const [actionMenuKeyId, setActionMenuKeyId] = useState<string | null>(null);
+  const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
+
+  // api-keys tab 的真实数据（迭代4：/console/api-keys，需要控制台登录态，
+  // 和 credits tab 的 API Key 鉴权是完全独立的两套机制）。
+  const { me } = useConsoleUser();
+  const [keys, setKeys] = useState<ConsoleApiKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const [keyActionError, setKeyActionError] = useState<string | null>(null);
+
+  // consoleWallet 是 !apiKey 但已登录控制台时 credits tab 的兜底数据源
+  // （GET /console/wallet 不需要 API Key）；连了 Key 时优先用上面已有的
+  // usageSnapshot（同时有余额和用量统计），见下面 credits tab 的渲染逻辑。
+  const [consoleWallet, setConsoleWallet] = useState<ConsoleWallet | null>(null);
+
+  useEffect(() => {
+    if (!me) {
+      setKeys([]);
+      setKeysError(null);
+      return;
+    }
+    let cancelled = false;
+    setKeysLoading(true);
+    listKeys()
+      .then((ks) => {
+        if (cancelled) return;
+        setKeys(ks);
+        setKeysError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setKeysError(err instanceof ApiError ? err.message : '加载密钥列表失败，请稍后重试');
+      })
+      .finally(() => {
+        if (!cancelled) setKeysLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [me]);
+
+  useEffect(() => {
+    if (apiKey || !me) {
+      setConsoleWallet(null);
+      return;
+    }
+    let cancelled = false;
+    getConsoleWallet()
+      .then((w) => {
+        if (!cancelled) setConsoleWallet(w);
+      })
+      .catch(() => {
+        // 静默失败：credits tab 在这种降级路径下本来就只是"能看到点什么就
+        // 看点什么"，不值得再单独维护一套错误展示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, me]);
 
   // New Key Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
   const [newKeyName, setNewKeyName] = useState<string>('');
-  const [newKeyLimit, setNewKeyLimit] = useState<string>('');
-  const [newKeyGuardrail, setNewKeyGuardrail] = useState<string>('无安全限制');
+  const [useKeyForPlayground, setUseKeyForPlayground] = useState<boolean>(true);
+  const [createKeyError, setCreateKeyError] = useState<string | null>(null);
   const [createdKeyObj, setCreatedKeyObj] = useState<ApiKeyItem | null>(null);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
-
-  // API Keys state (default matches the user screenshot: 'test', 'sk-or-v1-76b ... 010', 'No guardrails', 'Never', '7 days ago', '$0.033', 'unlimited TOTAL')
-  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([
-    {
-      id: 'key-1',
-      name: 'test',
-      maskedKey: 'sk-or-v1-76b ... 010',
-      fullKey: 'sk-or-v1-76b9e2f4a10c83d5a6b7e8f9c0d1e2f3a4b5c6d7e8f9a010',
-      guardrails: '无安全限制',
-      expires: '永不过期',
-      lastUsed: '7 天前',
-      usage: '$0.033',
-      limit: '不设上限',
-      limitType: '总限额',
-      createdAt: '2026-03-10'
-    }
-  ]);
 
   const workspaces = [
     '默认工作区',
@@ -136,7 +186,28 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
     '研发与测试工作区'
   ];
 
+  // toApiKeyItem 把后端返回的 ConsoleApiKey 映射成表格渲染用的 ApiKeyItem。
+  // guardrails/expires/lastUsed/usage 这几个字段后端目前没有对应数据（不是
+  // 遗漏——guardrails 纯属 mock 概念，expires/usage 需要的 per-key 用量聚合
+  // 是迭代5 GET /console/logs 的范畴），统一显示占位符"—"；limit 映射到
+  // rpm_limit（技术方案要求）。fullKey 只有刚创建的那一把才有值，此后永远是
+  // 空字符串——数据库只存 HMAC，明文真的拿不回来了。
+  const toApiKeyItem = (k: ConsoleApiKey, fullKey = ''): ApiKeyItem => ({
+    id: String(k.id),
+    name: k.name,
+    maskedKey: `${k.displayPrefix}…`,
+    fullKey,
+    guardrails: '—',
+    expires: '—',
+    lastUsed: '—',
+    usage: '—',
+    limit: k.rpmLimit ? `${k.rpmLimit} 次/分钟` : '不设上限',
+    limitType: k.rpmLimit ? 'RPM' : undefined,
+    createdAt: k.createdAt,
+  });
+
   const handleCopyKey = (key: ApiKeyItem) => {
+    if (!key.fullKey) return;
     navigator.clipboard.writeText(key.fullKey);
     setCopiedKeyId(key.id);
     setTimeout(() => {
@@ -144,38 +215,35 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
     }, 2000);
   };
 
-  const handleCreateNewKey = (e: React.FormEvent) => {
+  const handleCreateNewKey = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = newKeyName.trim() || '新建 API 密钥';
-    const randPart1 = Math.random().toString(36).substring(2, 6);
-    const randPart2 = Math.random().toString(36).substring(2, 6);
-    const fullKey = `sk-or-v1-${randPart1}${Math.random().toString(36).substring(2, 12)}${randPart2}`;
-    const maskedKey = `sk-or-v1-${randPart1} ... ${randPart2.slice(-3)}`;
-
-    const newKey: ApiKeyItem = {
-      id: `key-${Date.now()}`,
-      name,
-      maskedKey,
-      fullKey,
-      guardrails: newKeyGuardrail,
-      expires: '永不过期',
-      lastUsed: '刚刚',
-      usage: '$0.000',
-      limit: newKeyLimit ? `$${newKeyLimit}` : '不设上限',
-      limitType: '总限额',
-      createdAt: '刚刚'
-    };
-
-    setApiKeys((prev) => [newKey, ...prev]);
-    setCreatedKeyObj(newKey);
-    setNewKeyName('');
-    setNewKeyLimit('');
+    setCreateKeyError(null);
+    try {
+      const created = await consoleCreateKey(name);
+      setKeys((prev) => [created, ...prev]);
+      setCreatedKeyObj(toApiKeyItem(created, created.key));
+      setNewKeyName('');
+      if (useKeyForPlayground) {
+        // 让 /v1 调用（Playground）始终走 API Key 鉴权，和控制台的 Cookie
+        // 会话鉴权完全分离（技术方案的"已确认的决策"）。
+        authStore.setApiKey(created.key);
+      }
+    } catch (err) {
+      setCreateKeyError(err instanceof ApiError ? err.message : '创建密钥失败，请稍后重试');
+    }
   };
 
-  const handleDeleteKey = (id: string) => {
-    setApiKeys((prev) => prev.filter((k) => k.id !== id));
-    setSelectedKeyIds((prev) => prev.filter((item) => item !== id));
+  const handleRevokeKey = async (id: string) => {
     setActionMenuKeyId(null);
+    setKeyActionError(null);
+    try {
+      await consoleRevokeKey(Number(id));
+      setKeys((prev) => prev.filter((k) => String(k.id) !== id));
+      setSelectedKeyIds((prev) => prev.filter((item) => item !== id));
+    } catch (err) {
+      setKeyActionError(err instanceof ApiError ? err.message : '吊销密钥失败，请稍后重试');
+    }
   };
 
   const toggleSelectAll = () => {
@@ -192,11 +260,13 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
     );
   };
 
-  const filteredKeys = apiKeys.filter(
-    (k) =>
-      k.name.toLowerCase().includes(searchKeyQuery.toLowerCase()) ||
-      k.maskedKey.toLowerCase().includes(searchKeyQuery.toLowerCase())
-  );
+  const filteredKeys = keys
+    .map((k) => toApiKeyItem(k, createdKeyObj?.id === String(k.id) ? createdKeyObj.fullKey : ''))
+    .filter(
+      (k) =>
+        k.name.toLowerCase().includes(searchKeyQuery.toLowerCase()) ||
+        k.maskedKey.toLowerCase().includes(searchKeyQuery.toLowerCase())
+    );
 
   return (
     <div className="flex-1 flex bg-white text-gray-800 antialiased min-h-[calc(100vh-3rem)]">
@@ -514,32 +584,67 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                 </div>
               </div>
 
-              <button
-                onClick={() => {
-                  setCreatedKeyObj(null);
-                  setIsCreateModalOpen(true);
-                }}
-                className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white font-medium text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>新建密钥</span>
-              </button>
+              {me && (
+                <button
+                  onClick={() => {
+                    setCreatedKeyObj(null);
+                    setCreateKeyError(null);
+                    setIsCreateModalOpen(true);
+                  }}
+                  className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white font-medium text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>新建密钥</span>
+                </button>
+              )}
             </div>
 
-            {/* Search Bar */}
-            <div className="mb-4">
-              <div className="relative w-full max-w-sm">
-                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchKeyQuery}
-                  onChange={(e) => setSearchKeyQuery(e.target.value)}
-                  placeholder="按名称搜索或粘贴密钥片段..."
-                  className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-3 py-1.5 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors"
-                />
+            {!me ? (
+              <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center">
+                <div className="text-xs text-gray-500 mb-3">登录控制台后即可创建和管理自己的 API 密钥。</div>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setAuthModal('login')}
+                    className="px-3.5 py-1.5 border border-gray-200 text-gray-700 rounded-lg text-xs cursor-pointer"
+                  >
+                    登录
+                  </button>
+                  <button
+                    onClick={() => setAuthModal('register')}
+                    className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                  >
+                    注册
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                {keyActionError && (
+                  <div className="mb-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg px-3 py-2">
+                    {keyActionError}
+                  </div>
+                )}
 
+                {/* Search Bar */}
+                <div className="mb-4">
+                  <div className="relative w-full max-w-sm">
+                    <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={searchKeyQuery}
+                      onChange={(e) => setSearchKeyQuery(e.target.value)}
+                      placeholder="按名称搜索或粘贴密钥片段..."
+                      className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-3 py-1.5 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                {keysError ? (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-4">{keysError}</div>
+                ) : keysLoading && keys.length === 0 ? (
+                  <div className="text-xs text-gray-400 py-6 text-center">正在加载密钥列表...</div>
+                ) : (
+                <>
             {/* Keys Table */}
             <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-2xs">
               <div className="overflow-x-auto">
@@ -600,17 +705,19 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                               <div className="font-semibold text-gray-900 text-xs">{k.name}</div>
                               <div className="flex items-center gap-1.5 text-[11px] text-gray-400 font-mono mt-0.5">
                                 <span>{k.maskedKey}</span>
-                                <button
-                                  onClick={() => handleCopyKey(k)}
-                                  title="复制完整密钥"
-                                  className="text-gray-400 hover:text-purple-600 cursor-pointer transition-colors p-0.5 rounded"
-                                >
-                                  {copiedKeyId === k.id ? (
-                                    <Check className="w-3 h-3 text-emerald-600" />
-                                  ) : (
-                                    <Copy className="w-3 h-3" />
-                                  )}
-                                </button>
+                                {k.fullKey && (
+                                  <button
+                                    onClick={() => handleCopyKey(k)}
+                                    title="复制完整密钥"
+                                    className="text-gray-400 hover:text-purple-600 cursor-pointer transition-colors p-0.5 rounded"
+                                  >
+                                    {copiedKeyId === k.id ? (
+                                      <Check className="w-3 h-3 text-emerald-600" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                  </button>
+                                )}
                               </div>
                             </td>
                             <td className="py-3 px-3 text-gray-600">{k.guardrails}</td>
@@ -639,22 +746,24 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
 
                               {actionMenuKeyId === k.id && (
                                 <div className="absolute right-3 top-8 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20 w-32 text-xs">
+                                  {k.fullKey && (
+                                    <button
+                                      onClick={() => {
+                                        handleCopyKey(k);
+                                        setActionMenuKeyId(null);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-gray-50 text-gray-700 cursor-pointer"
+                                    >
+                                      <Copy className="w-3.5 h-3.5 text-gray-400" />
+                                      <span>复制密钥</span>
+                                    </button>
+                                  )}
                                   <button
-                                    onClick={() => {
-                                      handleCopyKey(k);
-                                      setActionMenuKeyId(null);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-gray-50 text-gray-700 cursor-pointer"
-                                  >
-                                    <Copy className="w-3.5 h-3.5 text-gray-400" />
-                                    <span>复制密钥</span>
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteKey(k.id)}
+                                    onClick={() => handleRevokeKey(k.id)}
                                     className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-rose-50 text-rose-600 cursor-pointer border-t border-gray-100"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
-                                    <span>删除密钥</span>
+                                    <span>吊销密钥</span>
                                   </button>
                                 </div>
                               )}
@@ -672,6 +781,10 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                 共 {filteredKeys.length} 个密钥
               </div>
             </div>
+                </>
+                )}
+              </>
+            )}
           </div>
         ) : activeTab === 'credits' ? (
           <div>
@@ -680,18 +793,54 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
             </h1>
             <p className="text-xs text-gray-500 mb-6">管理您的账户余额、支付方式与额度预警。</p>
 
-            {!apiKey ? (
+            {!apiKey && !me ? (
               <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center">
                 <div className="text-xs text-gray-500 mb-3">
-                  连接 API Key 后即可查看真实的账户余额与累计用量。
+                  登录控制台或连接 API Key 后即可查看真实的账户余额与累计用量。
                 </div>
-                <button
-                  onClick={() => setShowConnectKeyModal(true)}
-                  className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
-                >
-                  连接 API Key
-                </button>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setAuthModal('login')}
+                    className="px-3.5 py-1.5 border border-gray-200 text-gray-700 rounded-lg text-xs cursor-pointer"
+                  >
+                    登录
+                  </button>
+                  <button
+                    onClick={() => setShowConnectKeyModal(true)}
+                    className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                  >
+                    连接 API Key
+                  </button>
+                </div>
               </div>
+            ) : !apiKey && me ? (
+              consoleWallet ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-purple-50/60 border border-purple-100 p-4 rounded-xl">
+                    <div className="text-xs text-purple-700 font-medium">可用总额度</div>
+                    <div className="text-2xl font-bold text-purple-900 mt-1">
+                      {microToDisplay(consoleWallet.cashBalanceMicro + consoleWallet.bonusBalanceMicro)}
+                    </div>
+                    <div className="text-[11px] text-purple-600/80 mt-1">
+                      现金 {microToDisplay(consoleWallet.cashBalanceMicro)} · 赠送{' '}
+                      {microToDisplay(consoleWallet.bonusBalanceMicro)}
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2 bg-gray-50 border border-dashed border-gray-200 p-4 rounded-xl flex items-center justify-between gap-3">
+                    <div className="text-xs text-gray-500">
+                      连接 API Key 后可以查看调用次数、消费明细与冻结中金额。
+                    </div>
+                    <button
+                      onClick={() => setShowConnectKeyModal(true)}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer shrink-0"
+                    >
+                      连接 API Key
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-gray-400 py-6 text-center">正在加载余额...</div>
+              )
             ) : usageLoading && !usageSnapshot ? (
               <div className="text-xs text-gray-400 py-6 text-center">正在加载余额与用量...</div>
             ) : usageError ? (
@@ -743,28 +892,48 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
             </h1>
             <p className="text-xs text-gray-500 mb-6">个人账号信息与开发者凭据。</p>
 
+            {!me ? (
+              <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center max-w-xl">
+                <div className="text-xs text-gray-500 mb-3">登录控制台后即可查看个人资料。</div>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setAuthModal('login')}
+                    className="px-3.5 py-1.5 border border-gray-200 text-gray-700 rounded-lg text-xs cursor-pointer"
+                  >
+                    登录
+                  </button>
+                  <button
+                    onClick={() => setAuthModal('register')}
+                    className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                  >
+                    注册
+                  </button>
+                </div>
+              </div>
+            ) : (
             <div className="bg-white border border-gray-200 rounded-xl p-6 max-w-xl space-y-4">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-full bg-purple-700 text-white flex items-center justify-center text-lg font-bold">
-                  j
+                  {me.email.charAt(0).toUpperCase()}
                 </div>
                 <div>
                   <div className="font-semibold text-gray-900">Personal Developer</div>
-                  <div className="text-xs text-gray-500">{userEmail}</div>
+                  <div className="text-xs text-gray-500">{me.email}</div>
                 </div>
               </div>
 
               <div className="border-t border-gray-100 pt-4 space-y-3 text-xs">
                 <div>
-                  <span className="text-gray-400 block mb-1">账号角色</span>
-                  <span className="font-medium text-gray-800">工作区所有者 (Admin)</span>
+                  <span className="text-gray-400 block mb-1">账号层级</span>
+                  <span className="font-medium text-gray-800">{me.accountTier}</span>
                 </div>
                 <div>
-                  <span className="text-gray-400 block mb-1">默认路由</span>
-                  <span className="font-mono text-purple-700">ufreetokens/auto</span>
+                  <span className="text-gray-400 block mb-1">邮箱验证状态</span>
+                  <span className="font-medium text-gray-800">{me.emailVerified ? '已验证' : '未验证'}</span>
                 </div>
               </div>
             </div>
+            )}
           </div>
         ) : activeTab === 'activity' || activeTab === 'logs' ? (
           <div>
@@ -901,32 +1070,20 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-gray-700 font-medium mb-1">
-                      限额设置（美元 USD，选填）
-                    </label>
+                  <label className="flex items-start gap-2 cursor-pointer">
                     <input
-                      type="number"
-                      step="0.1"
-                      placeholder="留空表示不设上限"
-                      value={newKeyLimit}
-                      onChange={(e) => setNewKeyLimit(e.target.value)}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-purple-500"
+                      type="checkbox"
+                      checked={useKeyForPlayground}
+                      onChange={(e) => setUseKeyForPlayground(e.target.checked)}
+                      className="mt-0.5"
                     />
-                  </div>
+                    <span className="text-gray-600">
+                      在本浏览器用于 Playground —— 勾选后这把密钥会保存在本机浏览器
+                      （localStorage），供模型库的"测试"功能直接调用真实模型。
+                    </span>
+                  </label>
 
-                  <div>
-                    <label className="block text-gray-700 font-medium mb-1">安全护栏策略</label>
-                    <select
-                      value={newKeyGuardrail}
-                      onChange={(e) => setNewKeyGuardrail(e.target.value)}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-purple-500 bg-white"
-                    >
-                      <option value="无安全限制">无安全限制</option>
-                      <option value="标准 AI 安全防护">标准 AI 安全防护</option>
-                      <option value="企业级合规严格审查">企业级合规严格审查</option>
-                    </select>
-                  </div>
+                  {createKeyError && <p className="text-rose-500">{createKeyError}</p>}
                 </div>
 
                 <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
@@ -952,6 +1109,12 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
 
       {showConnectKeyModal && (
         <ConnectKeyModal onClose={() => setShowConnectKeyModal(false)} />
+      )}
+      {authModal === 'login' && (
+        <LoginModal onClose={() => setAuthModal(null)} onSwitchToRegister={() => setAuthModal('register')} />
+      )}
+      {authModal === 'register' && (
+        <RegisterModal onClose={() => setAuthModal(null)} onSwitchToLogin={() => setAuthModal('login')} />
       )}
     </div>
   );

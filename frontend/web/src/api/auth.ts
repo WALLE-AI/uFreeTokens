@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react';
+import { ConsoleUser, getMe } from './console';
 
 const STORAGE_KEY = 'uft.apiKey';
 
 type Listener = (apiKey: string | null) => void;
 
-// authStore 目前只管理 BYOK 模式下浏览器本地保存的 API Key（'mode' 字段为
-// 迭代4 的 console 会话模式预留：那时会有 'byok'|'session' 两种取值，/v1
-// 调用始终走 byok 的 Key，console 会话只用于控制台自身的登录态，见
-// docs/frontend-web 与 Go 后端集成迭代执行方案.md 的"已确认的决策"）。
-// 只存在 localStorage 里，从不发到除 gateway /v1 以外的任何地方。
+// 两套完全独立的鉴权状态（技术方案的"已确认的决策"：控制台鉴权与 API Key
+// 鉴权完全分离）：
+//   - authStore（下面）：BYOK 模式下浏览器本地保存的 API Key，/v1/* 调用用它。
+//   - consoleAuthStore（本文件下半部分）：控制台登录态，只活在 httpOnly
+//     Cookie 里，前端拿不到 token 本身，只缓存服务端返回的 profile（me）。
+// 两者互不依赖：可以只连 Key 不登录控制台（纯 BYOK 玩家），也可以登录了
+// 控制台但还没在这台设备连 Key（刚注册，只能在个人中心建 Key，建完后才能用
+// Playground）。
 class AuthStore {
   private listeners = new Set<Listener>();
 
@@ -60,4 +64,61 @@ export function useApiKey(): string | null {
   const [key, setKey] = useState<string | null>(() => authStore.getApiKey());
   useEffect(() => authStore.subscribe(setKey), []);
   return key;
+}
+
+type ConsoleListener = (me: ConsoleUser | null) => void;
+
+// ConsoleAuthStore 缓存 GET /console/me 的结果，纯内存（不落 localStorage：
+// 会话本身由 httpOnly Cookie 维持，前端缓存只是省得每次渲染都发一次
+// /console/me）。页面刷新后内存状态会丢失，但 Cookie 还在，
+// useConsoleUser 会在还没 initialize 过的时候自动重新拉一次 /console/me
+// 校验登录态是否仍然有效。
+class ConsoleAuthStore {
+  private me: ConsoleUser | null = null;
+  private initialized = false;
+  private listeners = new Set<ConsoleListener>();
+
+  getMe(): ConsoleUser | null {
+    return this.me;
+  }
+
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
+  setMe(me: ConsoleUser | null): void {
+    this.me = me;
+    this.initialized = true;
+    this.listeners.forEach((l) => l(me));
+  }
+
+  subscribe(listener: ConsoleListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+export const consoleAuthStore = new ConsoleAuthStore();
+
+// useConsoleUser 返回当前控制台登录态；首次挂载时如果还没 initialize 过，
+// 会自动打一次 GET /console/me 探测是否已经有一个有效的会话 Cookie
+// （典型场景：用户之前登录过，刷新了页面）。401 视为"未登录"，不当错误抛出。
+export function useConsoleUser(): { me: ConsoleUser | null; loading: boolean } {
+  const [me, setMeState] = useState<ConsoleUser | null>(() => consoleAuthStore.getMe());
+  const [loading, setLoading] = useState(!consoleAuthStore.isInitialized());
+
+  useEffect(() => {
+    const unsubscribe = consoleAuthStore.subscribe((next) => {
+      setMeState(next);
+      setLoading(false);
+    });
+    if (!consoleAuthStore.isInitialized()) {
+      getMe()
+        .then((profile) => consoleAuthStore.setMe(profile))
+        .catch(() => consoleAuthStore.setMe(null));
+    }
+    return unsubscribe;
+  }, []);
+
+  return { me, loading };
 }
