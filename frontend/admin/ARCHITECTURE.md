@@ -24,6 +24,8 @@
 | 构建 | Vite 8（`@vitejs/plugin-react`） | 同 `frontend/web/vite.config.ts` 的 dev/build 脚本模式 |
 | 样式 | Tailwind CSS 4（`@tailwindcss/vite`），无额外 UI 组件库 | `frontend/web` 没有引入 shadcn/MUI 之类的库，全部是 Tailwind 原子类手写组件，保持两个项目风格一致、体积小 |
 | 图标 | `lucide-react` | 与 `frontend/web` 同款图标集，避免两套后台视觉语言不一致 |
+| 路由 | `react-router` v7（data router） | **与 frontend/web 的有意差异**：web 用 `activeNav` 字符串状态切页面，admin 是多人协作场景，详情页/筛选条件/审批项必须能用 URL 深链分享，见 `UI_DESIGN.md` §8 |
+| 样式工具 | `tailwind-merge`（`lib/cn.ts`）、`tw-animate-css` | 前者让调用方传入的 `w-20`、`py-1` 能覆盖组件内置的 `w-full`、`py-2`；后者让 `animate-in` 等动画类名真正生效（web 目前缺这个插件，类名不生效）。见 `UI_DESIGN.md` §11.7 |
 | 状态管理 | React 内置 `useState`/`useMemo`/`useEffect`，不引入 Redux/Zustand | `frontend/web` 现状如此（App.tsx 的筛选状态就是纯 useState），后台页面复杂度类似，没必要加状态库 |
 | 动效 | `motion`（按需，仅用于 modal/toast 过渡） | `frontend/web` 依赖里已有 `motion`，保持一致 |
 | 包管理/脚本 | `npm`，`dev`/`build`/`preview`/`lint`（`tsc --noEmit`） | 完全照抄 `frontend/web/package.json` 的 scripts 命名 |
@@ -34,7 +36,7 @@
 
 ## 2. UI 设计系统（复用 frontend/web 的视觉语言）
 
-直接沿用 `frontend/web` 已经确立的规范，不要另起一套：
+直接沿用 `frontend/web` 已经确立的规范，不要另起一套。完整的色彩、字号、圆角/阴影、组件 class 配方、布局骨架和与 web 的允许差异见 [`UI_DESIGN.md` §11](./UI_DESIGN.md)，以下为摘要：
 
 - **配色**：主色 `purple-600`（`#7C3AED` 系，按钮/高亮/选中态），中性灰 `gray-50/100/200/700/900`，成功 `emerald-*`，警告/危险 `rose-*`/`amber-*`。
 - **字号密度**：全局以 `text-xs`（12px）/ `text-[11px]` 为主，标题用 `text-lg`~`text-2xl font-bold`，是一个信息密度很高的"控制台风格"，不是营销站风格。
@@ -77,29 +79,13 @@
 - Tailwind 配置（颜色变量、`text-xxs` 这类自定义 utility）应该抽成共享的 `tailwind.config` 预设，两个项目 `@import` 同一份，避免后台的紫色和前台的紫色哪天调色调岔了。
 - 图标使用规范、按钮/输入框的圆角和阴影这些"设计 token"级别的东西，写进一份共享的 `DESIGN_SYSTEM.md`（可以后续从本文档和 `frontend/web/ARCHITECTURE.md` 里提炼），两边 PR review 时对照。
 
-## 6. 页面结构规划
+## 6. 页面结构
 
-```
-frontend/admin/src/
-  App.tsx                 顶层路由（Header + Sidebar + 内容区，结构对齐 frontend/web/App.tsx）
-  components/
-    AdminHeader.tsx        对齐 frontend/web/Header.tsx
-    AdminSidebar.tsx        导航：账户 / 供应商 / 虚拟模型与渠道 / 价格同步 / 审计日志
-    DataTable.tsx           通用表格骨架（分页/排序/操作列），抽出来供各模块复用
-    ConfirmDialog.tsx        危险操作二次确认（吊销 Key、驳回价格变更）
-  pages/
-    AccountsPage.tsx
-    ApiKeysPage.tsx
-    ProvidersPage.tsx        含"接入向导"（复刻 test_web 三步流程，但做成正式表单+进度条）
-    VirtualModelsPage.tsx    虚拟模型 + 渠道 + 成本价/售价 一体化页面
-    PriceSyncPage.tsx        价格变更审批队列 + 待上架队列
-    AuditLogsPage.tsx
-  api/                      与 frontend/web 同构的服务层（见下）
-    client.ts
-    auth.ts                 §3 的 sessionStorage token 存取，Phase 中期换成 JWT
-    accounts.ts / providers.ts / catalog.ts / pricesync.ts / audit.ts
-  types.ts
-```
+实际目录见 [`README.md`](./README.md) 的"目录结构"。要点：
+
+- 页面按业务域分目录（`pages/pricing`、`supply`、`catalog`、`accounts`、`observe`、`audit`），每个路由一个 default export 的页面组件，由 `router.tsx` 懒加载。
+- 跨域复用的部件放 `components/`：通用 UI 在 `components/ui`，详情页的"操作记录"`components/audit/AuditTimeline`，价格编辑器 `components/pricing/PriceComponentEditor`，用量趋势 `components/stats/UsageTrend`。页面目录之间不互相 import。
+- `src/api/*` 与后端接口一一对应，类型集中在 `src/types.ts`，与 `internal/admin`、`internal/app` 的 Go 结构体同名同形（注释里标了出处）。
 
 `api/client.ts` 的封装方式与 `frontend/web/ARCHITECTURE.md` §7 描述的 `client.ts` 同构（统一错误解析 `{"error":{message,type,code,request_id}}`、统一注入 `Authorization` 头），区别只是 `baseURL` 指向 `:8081` 且 token 来源是 §3 的登录态，不是 API Key。
 

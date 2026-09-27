@@ -351,7 +351,7 @@ func TestRecordAudit_InsertsAndListsByTarget(t *testing.T) {
 		t.Fatal("expected a non-zero audit log ID")
 	}
 
-	entries, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: "account", TargetID: targetID})
+	entries, _, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: "account", TargetID: targetID})
 	if err != nil {
 		t.Fatalf("ListAuditLogs: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestListAuditLogs_FiltersByTargetTypeOnly(t *testing.T) {
 		t.Fatalf("RecordAudit: %v", err)
 	}
 
-	entries, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: targetType})
+	entries, _, err := s.ListAuditLogs(ctx, ListAuditLogsInput{TargetType: targetType})
 	if err != nil {
 		t.Fatalf("ListAuditLogs: %v", err)
 	}

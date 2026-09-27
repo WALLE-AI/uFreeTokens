@@ -37,36 +37,36 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var provider struct{ ID int64 }
-	ac.post("/providers", map[string]any{"Code": "ps-provider-" + suffix, "Name": "x", "Protocol": "openai"}, &provider)
+	ac.post("/providers", map[string]any{"code": "ps-provider-" + suffix, "name": "x", "protocol": "openai"}, &provider)
 
 	var providerAccount struct{ ID int64 }
 	ac.post("/provider-accounts", map[string]any{"provider_id": provider.ID, "name": "acc", "base_url": "https://x"}, &providerAccount)
 
 	var vm struct{ ID int64 }
 	ac.post("/virtual-models", map[string]any{
-		"Name": "ps-vm-" + suffix, "Type": "chat", "ContextWindow": 128000, "MaxOutput": 8192,
+		"name": "ps-vm-" + suffix, "type": "chat", "context_window": 128000, "max_output": 8192,
 	}, &vm)
 
 	var channel struct{ ID int64 }
 	ac.post("/channels", map[string]any{
-		"VirtualModelID": vm.ID, "ProviderAccountID": providerAccount.ID, "UpstreamModel": "up-" + suffix,
+		"virtual_model_id": vm.ID, "provider_account_id": providerAccount.ID, "upstream_model": "up-" + suffix,
 	}, &channel)
 
 	// 初始成本价：10 元/百万 input token。
 	ac.post(fmt.Sprintf("/channels/%d/cost-price", channel.ID), map[string]any{
-		"components": []map[string]any{{"Meter": "input", "Unit": "per_1m_tokens", "UnitPrice": "10"}},
+		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "10"}},
 	}, nil)
 
 	var source struct{ ID int64 }
 	ac.post("/price-sources", map[string]any{"provider_id": provider.ID, "level": "L2", "kind": "manual", "fetcher": "http-test"}, &source)
 
 	// 降价：L2 来源，应该自动通过并直接发布。
-	var autoResult pricesync.IngestResult
+	var autoResult ingestResultJSON
 	ac.post(fmt.Sprintf("/channels/%d/price-observations", channel.ID), map[string]any{
 		"source_id": source.ID, "level": "L2", "upstream_model": "up-" + suffix, "currency": "CNY",
 		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "8"}},
 	}, &autoResult)
-	if autoResult.Decision != pricesync.DecisionAutoApproved {
+	if autoResult.Decision != string(pricesync.DecisionAutoApproved) {
 		t.Fatalf("Decision = %q, want auto_approved", autoResult.Decision)
 	}
 	if autoResult.AppliedBookID == nil {
@@ -74,12 +74,12 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	}
 
 	// 涨价 50%：超过自动通过阈值，应该是 pending。
-	var pendingResult pricesync.IngestResult
+	var pendingResult ingestResultJSON
 	ac.post(fmt.Sprintf("/channels/%d/price-observations", channel.ID), map[string]any{
 		"source_id": source.ID, "level": "L2", "upstream_model": "up-" + suffix, "currency": "CNY",
 		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "12"}},
 	}, &pendingResult)
-	if pendingResult.Decision != pricesync.DecisionPending {
+	if pendingResult.Decision != string(pricesync.DecisionPending) {
 		t.Fatalf("Decision = %q, want pending", pendingResult.Decision)
 	}
 	if pendingResult.ChangeRequestID == nil {
@@ -87,7 +87,9 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	}
 
 	var list struct {
-		ChangeRequests []pricesync.ChangeRequestSummary `json:"change_requests"`
+		ChangeRequests []struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
 	}
 	ac.get("/price-change-requests", &list)
 	var found bool
@@ -117,7 +119,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	}
 
 	// 再来一次涨价制造第二条 pending，走 reject 分支。
-	var pending2 pricesync.IngestResult
+	var pending2 ingestResultJSON
 	ac.post(fmt.Sprintf("/channels/%d/price-observations", channel.ID), map[string]any{
 		"source_id": source.ID, "level": "L2", "upstream_model": "up-" + suffix, "currency": "CNY",
 		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "100"}},
@@ -167,7 +169,7 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var provider struct{ ID int64 }
-	ac.post("/providers", map[string]any{"Code": "discover-provider-" + suffix, "Name": "x", "Protocol": "openai"}, &provider)
+	ac.post("/providers", map[string]any{"code": "discover-provider-" + suffix, "name": "x", "protocol": "openai"}, &provider)
 
 	var providerAccount struct{ ID int64 }
 	ac.post("/provider-accounts", map[string]any{"provider_id": provider.ID, "name": "acc", "base_url": "https://x"}, &providerAccount)
@@ -178,7 +180,9 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 	// 提交一条观测，这个 provider 底下压根没有任何渠道叫这个 upstream_model
 	// 名字——应该落进"待上架"队列，而不是报错或者被静默丢弃。
 	model := "brand-new-model-" + suffix
-	var ingestResult pricesync.UnmappedIngestResult
+	var ingestResult struct {
+		ListingID *int64 `json:"listing_id"`
+	}
 	ac.post(fmt.Sprintf("/providers/%d/price-observations", provider.ID), map[string]any{
 		"source_id": source.ID, "level": "L2", "upstream_model": model, "currency": "CNY",
 		"components": []map[string]any{{"meter": "input", "unit": "per_1m_tokens", "unit_price": "8"}},
@@ -188,7 +192,10 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 	}
 
 	var list struct {
-		PendingListings []pricesync.PendingListingSummary `json:"pending_listings"`
+		PendingListings []struct {
+			ID            int64  `json:"id"`
+			UpstreamModel string `json:"upstream_model"`
+		} `json:"data"`
 	}
 	ac.get("/pending-model-listings", &list)
 	var found bool
@@ -204,7 +211,12 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 		t.Fatalf("expected listing %d in GET /pending-model-listings, got %+v", *ingestResult.ListingID, list.PendingListings)
 	}
 
-	var publishResult pricesync.PublishListingResult
+	var publishResult struct {
+		VirtualModelID int64 `json:"virtual_model_id"`
+		ChannelID      int64 `json:"channel_id"`
+		CostBookID     int64 `json:"cost_book_id"`
+		SellBookID     int64 `json:"sell_book_id"`
+	}
 	ac.post(fmt.Sprintf("/pending-model-listings/%d/publish", *ingestResult.ListingID), map[string]any{
 		"virtual_model": map[string]any{
 			"name": "discovered-vm-" + suffix, "type": "chat", "context_window": 128000, "max_output": 8192,
@@ -248,4 +260,13 @@ func TestPriceSyncHTTP_NotConfiguredReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
+}
+
+// ingestResultJSON 是 POST .../price-observations 响应的 snake_case 形状
+// （internal/app/admin_dto.go 的 ingestResultDTO）。
+type ingestResultJSON struct {
+	ObservationID   int64  `json:"observation_id"`
+	ChangeRequestID *int64 `json:"change_request_id"`
+	Decision        string `json:"decision"`
+	AppliedBookID   *int64 `json:"applied_book_id"`
 }

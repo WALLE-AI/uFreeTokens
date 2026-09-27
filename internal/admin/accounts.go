@@ -14,26 +14,26 @@ import (
 var validAccountTypes = map[string]bool{"personal": true, "organization": true}
 
 type Account struct {
-	ID          int64
-	Type        string
-	Name        string
-	Status      string
-	Tier        string
-	CreditLimit int64
-	CreatedAt   time.Time
+	ID          int64     `json:"id"`
+	Type        string    `json:"type"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Tier        string    `json:"tier"`
+	CreditLimit int64     `json:"credit_limit_micro"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type WalletSummary struct {
-	CashBalance  int64
-	BonusBalance int64
-	Frozen       int64
+	CashBalance  int64 `json:"cash_balance_micro"`
+	BonusBalance int64 `json:"bonus_balance_micro"`
+	Frozen       int64 `json:"frozen_micro"`
 }
 
 type CreateAccountInput struct {
-	Type        string // personal / organization
-	Name        string
-	Tier        string // 空则默认 "free"
-	CreditLimit int64  // 企业授信额度（微元），可为 0
+	Type        string `json:"type"` // personal / organization
+	Name        string `json:"name"`
+	Tier        string `json:"tier"`               // 空则默认 "free"
+	CreditLimit int64  `json:"credit_limit_micro"` // 企业授信额度（微元），可为 0
 }
 
 // CreateAccount 建一个账户并原子地给它初始化一个空钱包（技术方案 §6.1、§6.2）。
@@ -129,8 +129,8 @@ type GrantCreditInput struct {
 }
 
 type GrantedCredit struct {
-	GrantID    int64
-	BonusAfter int64
+	GrantID    int64 `json:"grant_id"`
+	BonusAfter int64 `json:"bonus_after_micro"`
 }
 
 // GrantCredit 给账户发一笔赠送余额——包装 wallet.Grant，是目前 credit_grant 类

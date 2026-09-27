@@ -18,8 +18,8 @@ import (
 // OpenAI 都遵循 {"data":[{"id":...}]} 这个外层形状，但 owned_by 之类的字段
 // 不是所有厂商都填），缺失就留空，不强求。
 type UpstreamModel struct {
-	ID      string
-	OwnedBy string
+	ID      string `json:"id"`
+	OwnedBy string `json:"owned_by"`
 }
 
 var (

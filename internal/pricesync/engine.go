@@ -185,12 +185,24 @@ type diffPayload struct {
 var (
 	ErrChangeRequestNotFound   = errors.New("pricesync: change request not found")
 	ErrChangeRequestNotPending = errors.New("pricesync: change request is not pending or blocked")
+	// ErrBlockedNeedsConfirm：批准 blocked 提案必须显式确认（DecisionMeta.ConfirmBlocked），
+	// 把前端"输入确认"的防误操作在服务端再兜一层（运营后台接口方案 §5.3）。
+	ErrBlockedNeedsConfirm = errors.New("pricesync: change request is blocked, approving it requires confirm_blocked=true")
 )
+
+// DecisionMeta 是人工审批时记录的"谁、为什么"。By 是管理员 ID（目前来自
+// X-Actor-ID，RBAC 之前可能为 0），ByName 来自 X-Actor-Name。
+type DecisionMeta struct {
+	By             int64
+	ByName         string
+	Reason         string
+	ConfirmBlocked bool // 只对 Approve 有意义
+}
 
 // Approve 人工批准一条 pending 或 blocked 状态的变更提案并立即发布
 // （技术方案 §7.16.10）。blocked 状态也允许批准——拦截是让人去看一眼、不是
 // 永久禁止，人工确认过"这真的是厂商在这么调价，不是解析错误"之后应该能放行。
-func (e *Engine) Approve(ctx context.Context, changeRequestID, decidedBy int64) (int64, error) {
+func (e *Engine) Approve(ctx context.Context, changeRequestID int64, meta DecisionMeta) (int64, error) {
 	var channelID int64
 	var specJSON []byte
 	var effectiveFrom time.Time
@@ -208,6 +220,9 @@ func (e *Engine) Approve(ctx context.Context, changeRequestID, decidedBy int64) 
 	if status != string(DecisionPending) && status != string(DecisionBlocked) {
 		return 0, ErrChangeRequestNotPending
 	}
+	if status == string(DecisionBlocked) && !meta.ConfirmBlocked {
+		return 0, ErrBlockedNeedsConfirm
+	}
 
 	var spec PriceSpec
 	if err := json.Unmarshal(specJSON, &spec); err != nil {
@@ -219,8 +234,8 @@ func (e *Engine) Approve(ctx context.Context, changeRequestID, decidedBy int64) 
 		return 0, err
 	}
 	if _, err := e.pool.Exec(ctx,
-		`UPDATE price_change_requests SET decided_by = $2, decided_at = now() WHERE id = $1`,
-		changeRequestID, decidedBy,
+		`UPDATE price_change_requests SET decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
+		changeRequestID, meta.By, meta.ByName, meta.Reason,
 	); err != nil {
 		return 0, fmt.Errorf("pricesync: record decision: %w", err)
 	}
@@ -228,7 +243,7 @@ func (e *Engine) Approve(ctx context.Context, changeRequestID, decidedBy int64) 
 }
 
 // Reject 驳回一条 pending 或 blocked 状态的变更提案，不发布任何新价格。
-func (e *Engine) Reject(ctx context.Context, changeRequestID, decidedBy int64) error {
+func (e *Engine) Reject(ctx context.Context, changeRequestID int64, meta DecisionMeta) error {
 	var status string
 	err := e.pool.QueryRow(ctx, `SELECT status FROM price_change_requests WHERE id = $1`, changeRequestID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -241,8 +256,8 @@ func (e *Engine) Reject(ctx context.Context, changeRequestID, decidedBy int64) e
 		return ErrChangeRequestNotPending
 	}
 	if _, err := e.pool.Exec(ctx,
-		`UPDATE price_change_requests SET status = 'rejected', decided_by = $2, decided_at = now() WHERE id = $1`,
-		changeRequestID, decidedBy,
+		`UPDATE price_change_requests SET status = 'rejected', decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
+		changeRequestID, meta.By, meta.ByName, meta.Reason,
 	); err != nil {
 		return fmt.Errorf("pricesync: reject change request: %w", err)
 	}

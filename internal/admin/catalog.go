@@ -16,16 +16,16 @@ import (
 var validProtocols = map[string]bool{"openai": true, "anthropic": true, "gemini": true}
 
 type Provider struct {
-	ID       int64
-	Code     string
-	Name     string
-	Protocol string
+	ID       int64  `json:"id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
 }
 
 type CreateProviderInput struct {
-	Code     string
-	Name     string
-	Protocol string // openai / anthropic / gemini（三者都已有适配器实现，见 internal/adapter）
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"` // openai / anthropic / gemini（三者都已有适配器实现，见 internal/adapter）
 }
 
 func (s *Service) CreateProvider(ctx context.Context, in CreateProviderInput) (*Provider, error) {
@@ -46,11 +46,11 @@ func (s *Service) CreateProvider(ctx context.Context, in CreateProviderInput) (*
 }
 
 type ProviderAccount struct {
-	ID             int64
-	ProviderID     int64
-	Name           string
-	BaseURL        string
-	CostMultiplier decimal.Decimal
+	ID             int64           `json:"id"`
+	ProviderID     int64           `json:"provider_id"`
+	Name           string          `json:"name"`
+	BaseURL        string          `json:"base_url"`
+	CostMultiplier decimal.Decimal `json:"cost_multiplier"`
 }
 
 type CreateProviderAccountInput struct {
@@ -86,10 +86,10 @@ func (s *Service) CreateProviderAccount(ctx context.Context, in CreateProviderAc
 // ProviderKeySummary 是 AddProviderKey 的返回值：绝不包含明文或密文，只有
 // 足以在控制台辨认这是哪把 Key 的末 4 位（技术方案 §7.15）。
 type ProviderKeySummary struct {
-	ID                int64
-	ProviderAccountID int64
-	Last4             string
-	Weight            int
+	ID                int64  `json:"id"`
+	ProviderAccountID int64  `json:"provider_account_id"`
+	Last4             string `json:"last4"`
+	Weight            int    `json:"weight"`
 }
 
 type AddProviderKeyInput struct {
@@ -134,24 +134,24 @@ func (s *Service) AddProviderKey(ctx context.Context, in AddProviderKeyInput) (*
 }
 
 type VirtualModel struct {
-	ID            int64
-	Name          string
-	Family        string
-	Type          string
-	ContextWindow int
-	MaxOutput     int
-	Capabilities  []string
-	VisibleTiers  []string
+	ID            int64    `json:"id"`
+	Name          string   `json:"name"`
+	Family        string   `json:"family"`
+	Type          string   `json:"type"`
+	ContextWindow int      `json:"context_window"`
+	MaxOutput     int      `json:"max_output"`
+	Capabilities  []string `json:"capabilities"`
+	VisibleTiers  []string `json:"visible_tiers"`
 }
 
 type CreateVirtualModelInput struct {
-	Name          string
-	Family        string
-	Type          string // chat / embedding / image / audio / rerank
-	ContextWindow int
-	MaxOutput     int
-	Capabilities  []string
-	VisibleTiers  []string // 空则默认对 free/pro/enterprise 都可见
+	Name          string   `json:"name"`
+	Family        string   `json:"family"`
+	Type          string   `json:"type"` // chat / embedding / image / audio / rerank
+	ContextWindow int      `json:"context_window"`
+	MaxOutput     int      `json:"max_output"`
+	Capabilities  []string `json:"capabilities"`
+	VisibleTiers  []string `json:"visible_tiers"` // 空则默认对 free/pro/enterprise 都可见
 }
 
 var validModelTypes = map[string]bool{"chat": true, "embedding": true, "image": true, "audio": true, "rerank": true}
@@ -217,12 +217,12 @@ func (s *Service) GetVirtualModelByName(ctx context.Context, name string) (*Virt
 // SetVirtualModelMetadataInput 对应一条 virtual_model_metadata（技术方案
 // 迭代5：GET /v1/catalog 公开目录的展示层信息，由运营录入，不是自动生成的）。
 type SetVirtualModelMetadataInput struct {
-	VirtualModelID  int64
-	DisplayName     string
-	Description     string
-	ProviderDisplay string
-	Tags            []string
-	Scores          map[string]any // nil = 不设置/清空评分
+	VirtualModelID  int64          `json:"virtual_model_id"`
+	DisplayName     string         `json:"display_name"`
+	Description     string         `json:"description"`
+	ProviderDisplay string         `json:"provider_display"`
+	Tags            []string       `json:"tags"`
+	Scores          map[string]any `json:"scores"` // nil = 不设置/清空评分
 }
 
 // SetVirtualModelMetadata upsert 一条虚拟模型的展示层元数据（技术方案 §6：
@@ -269,33 +269,33 @@ func (s *Service) SetVirtualModelMetadata(ctx context.Context, in SetVirtualMode
 }
 
 type Channel struct {
-	ID                int64
-	VirtualModelID    int64
-	ProviderAccountID int64
-	UpstreamModel     string
-	Priority          int
-	Weight            int
-	ExperimentKey     *string
-	VariantLabel      *string
-	AllowedAccountIDs []int64
+	ID                int64   `json:"id"`
+	VirtualModelID    int64   `json:"virtual_model_id"`
+	ProviderAccountID int64   `json:"provider_account_id"`
+	UpstreamModel     string  `json:"upstream_model"`
+	Priority          int     `json:"priority"`
+	Weight            int     `json:"weight"`
+	ExperimentKey     *string `json:"experiment_key"`
+	VariantLabel      *string `json:"variant_label"`
+	AllowedAccountIDs []int64 `json:"allowed_account_ids"`
 }
 
 type CreateChannelInput struct {
-	VirtualModelID    int64
-	ProviderAccountID int64
-	UpstreamModel     string
-	Priority          int // 数字越小越优先，默认 0（主）
-	Weight            int // <=0 时用默认值 100
-	AllowedTiers      []string
+	VirtualModelID    int64    `json:"virtual_model_id"`
+	ProviderAccountID int64    `json:"provider_account_id"`
+	UpstreamModel     string   `json:"upstream_model"`
+	Priority          int      `json:"priority"` // 数字越小越优先，默认 0（主）
+	Weight            int      `json:"weight"`   // <=0 时用默认值 100
+	AllowedTiers      []string `json:"allowed_tiers"`
 	// ExperimentKey/VariantLabel 给这个渠道打 A/B 实验分组标签（Phase 3）：
 	// 要么都留空，要么都填——分流仍然用 Priority/Weight（同一个 ExperimentKey
 	// 下的几个渠道通常配相同 Priority、按 Weight 分比例），这两个字段只是让
 	// request_logs 记得下来"这次请求走了哪个分组"，供事后按组聚合对比。
-	ExperimentKey string
-	VariantLabel  string
+	ExperimentKey string `json:"experiment_key"`
+	VariantLabel  string `json:"variant_label"`
 	// AllowedAccountIDs 给这个渠道配专属账户白名单（Phase 4）：空 = 公共渠道，
 	// 非空则只有列在里面的账户能路由到它，语义和 AllowedTiers 完全对称。
-	AllowedAccountIDs []int64
+	AllowedAccountIDs []int64 `json:"allowed_account_ids"`
 }
 
 // CreateChannel 把一个虚拟模型接到某个上游账号上（技术方案 §6.3，路由的最小单位）。
@@ -348,14 +348,14 @@ func (s *Service) FindChannel(ctx context.Context, virtualModelID, providerAccou
 
 // PriceComponentInput 对应一条 price_components（技术方案 §6.4）。
 type PriceComponentInput struct {
-	Meter          string // input / input_cache_read / input_cache_write / output / output_reasoning / request
-	Unit           string // per_1m_tokens / per_request / per_image / per_second
-	ServiceTier    string // 空则默认 "default"
-	TierMinInput   int
-	TierMaxInput   *int
-	WindowStartMin *int16
-	WindowEndMin   *int16
-	UnitPrice      decimal.Decimal
+	Meter          string          `json:"meter"`        // input / input_cache_read / input_cache_write / output / output_reasoning / request
+	Unit           string          `json:"unit"`         // per_1m_tokens / per_request / per_image / per_second
+	ServiceTier    string          `json:"service_tier"` // 空则默认 "default"
+	TierMinInput   int             `json:"tier_min_input"`
+	TierMaxInput   *int            `json:"tier_max_input"`
+	WindowStartMin *int16          `json:"window_start_min"`
+	WindowEndMin   *int16          `json:"window_end_min"`
+	UnitPrice      decimal.Decimal `json:"unit_price"`
 }
 
 var validMeters = map[string]bool{
@@ -465,11 +465,11 @@ func (s *Service) setPrice(ctx context.Context, target priceTarget, components [
 
 // SetFXRateInput 对应一条 fx_rates（技术方案 §7.16.9）。
 type SetFXRateInput struct {
-	Base          string          // 原币种，如 "USD"
-	Quote         string          // 空则默认 "CNY"（平台结算币种）
-	Rate          decimal.Decimal // 1 单位 Base = 多少 Quote
-	Source        string          // 空则默认 "manual"
-	EffectiveDate time.Time       // 零值则默认今天
+	Base          string          `json:"base"`           // 原币种，如 "USD"
+	Quote         string          `json:"quote"`          // 空则默认 "CNY"（平台结算币种）
+	Rate          decimal.Decimal `json:"rate"`           // 1 单位 Base = 多少 Quote
+	Source        string          `json:"source"`         // 空则默认 "manual"
+	EffectiveDate time.Time       `json:"effective_date"` // 零值则默认今天
 }
 
 // SetFXRate 写入/更新某一天生效的汇率。和价格表不同，这里用 upsert 而不是

@@ -184,7 +184,7 @@ func (e *Engine) DismissListing(ctx context.Context, listingID int64) error {
 type PublishListingInput struct {
 	VirtualModel      admin.CreateVirtualModelInput
 	ProviderAccountID int64
-	SellMarkup        decimal.Decimal // 售价 = 成本 × (1 + SellMarkup)；0.3 = 加价 30%
+	SellMarkup        decimal.Decimal // 售价(CNY) = 成本 × 汇率 × cost_multiplier × (1 + SellMarkup)；0.3 = 加价 30%
 }
 
 // PublishListingResult 是一键上架实际创建出来的东西。
@@ -227,6 +227,14 @@ func (e *Engine) PublishListing(ctx context.Context, listingID int64, in Publish
 		return nil, fmt.Errorf("pricesync: unmarshal observed_spec: %w", err)
 	}
 
+	// 售价以人民币发布，必须先把观测到的成本折成 CNY（汇率 × 上游账号的合同倍率）
+	// 再加价——否则一个 USD 报价的模型会按"美元数字当人民币"上架，直接亏本。
+	// 两项查询都放在创建任何对象之前：缺汇率时整体失败，不留下半上架的虚拟模型。
+	costToCNY, err := e.costToCNYFactor(ctx, spec.Currency, in.ProviderAccountID)
+	if err != nil {
+		return nil, err
+	}
+
 	vm, err := e.publisher.CreateVirtualModel(ctx, in.VirtualModel)
 	if err != nil {
 		return nil, fmt.Errorf("pricesync: create virtual model: %w", err)
@@ -250,7 +258,7 @@ func (e *Engine) PublishListing(ctx context.Context, listingID int64, in Publish
 	markupFactor := decimal.NewFromInt(1).Add(in.SellMarkup)
 	for i, c := range costComponents {
 		sellComponents[i] = c
-		sellComponents[i].UnitPrice = c.UnitPrice.Mul(markupFactor)
+		sellComponents[i].UnitPrice = c.UnitPrice.Mul(costToCNY).Mul(markupFactor).Round(6)
 	}
 	sellBookID, err := e.publisher.SetSellPrice(ctx, admin.SetSellPriceInput{
 		VirtualModelID: vm.ID, Components: sellComponents,
@@ -269,6 +277,37 @@ func (e *Engine) PublishListing(ctx context.Context, listingID int64, in Publish
 	}
 
 	return &PublishListingResult{VirtualModelID: vm.ID, ChannelID: ch.ID, CostBookID: costBookID, SellBookID: sellBookID}, nil
+}
+
+// ErrMissingFXRate 表示观测价格的币种没有可用的人民币汇率，无法折算售价。
+var ErrMissingFXRate = errors.New("pricesync: no CNY exchange rate for the listing currency; set one via POST /fx-rates first")
+
+// costToCNYFactor 返回"1 单位观测成本 = 多少人民币成本"：汇率（quote=CNY、
+// effective_date <= 今天的最新一条，与 internal/catalog 口径一致）× 上游账号的
+// cost_multiplier。
+func (e *Engine) costToCNYFactor(ctx context.Context, currency string, providerAccountID int64) (decimal.Decimal, error) {
+	var multiplier decimal.Decimal
+	err := e.pool.QueryRow(ctx, `SELECT cost_multiplier FROM provider_accounts WHERE id = $1`, providerAccountID).Scan(&multiplier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return decimal.Zero, admin.ErrProviderAccountNotFound
+	}
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("pricesync: load cost_multiplier: %w", err)
+	}
+	if currency == "" || currency == "CNY" {
+		return multiplier, nil
+	}
+	var rate decimal.Decimal
+	err = e.pool.QueryRow(ctx,
+		`SELECT rate FROM fx_rates WHERE base = $1 AND quote = 'CNY' AND effective_date <= CURRENT_DATE
+		 ORDER BY effective_date DESC LIMIT 1`, currency).Scan(&rate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return decimal.Zero, fmt.Errorf("%w (currency %s)", ErrMissingFXRate, currency)
+	}
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("pricesync: load fx rate: %w", err)
+	}
+	return rate.Mul(multiplier), nil
 }
 
 func toAdminComponents(components []Component) []admin.PriceComponentInput {

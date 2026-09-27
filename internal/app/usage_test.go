@@ -45,11 +45,13 @@ func TestUsageEndpoint_ReflectsWalletAndRequestLogTotals(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var account struct{ ID int64 }
-	ac.post("/accounts", map[string]any{"Type": "personal", "Name": "usage-" + suffix, "Tier": "free"}, &account)
+	ac.post("/accounts", map[string]any{"type": "personal", "name": "usage-" + suffix, "tier": "free"}, &account)
 	ac.post(fmt.Sprintf("/accounts/%d/wallet/adjust", account.ID),
-		map[string]any{"amount": 1_000_000, "ref_id": "usage-recharge-" + suffix}, nil)
+		map[string]any{"amount": 1_000_000, "ref_id": "usage-recharge-" + suffix, "reason": "usage test top-up"}, nil)
 
-	var apiKey struct{ RawKey string }
+	var apiKey struct {
+		RawKey string `json:"raw_key"`
+	}
 	ac.post(fmt.Sprintf("/accounts/%d/api-keys", account.ID), map[string]any{"name": "usage-key"}, &apiKey)
 	if apiKey.RawKey == "" {
 		t.Fatal("admin did not return a raw API key")
@@ -57,24 +59,24 @@ func TestUsageEndpoint_ReflectsWalletAndRequestLogTotals(t *testing.T) {
 
 	const upstreamSecret = "sk-usage-test-upstream-secret"
 	var provider struct{ ID int64 }
-	ac.post("/providers", map[string]any{"Code": "usage-provider-" + suffix, "Name": "UsageTest", "Protocol": "openai"}, &provider)
+	ac.post("/providers", map[string]any{"code": "usage-provider-" + suffix, "name": "UsageTest", "protocol": "openai"}, &provider)
 	var providerAccount struct{ ID int64 }
 	ac.post("/provider-accounts", map[string]any{"provider_id": provider.ID, "name": "usage-account", "base_url": upstream.URL}, &providerAccount)
 	ac.post(fmt.Sprintf("/provider-accounts/%d/keys", providerAccount.ID), map[string]any{"secret": upstreamSecret, "weight": 100}, nil)
 
 	var vm struct{ ID int64 }
 	ac.post("/virtual-models", map[string]any{
-		"Name": "usage-model-" + suffix, "Family": "test", "Type": "chat",
-		"ContextWindow": 128000, "MaxOutput": 8192, "Capabilities": []string{"stream"},
+		"name": "usage-model-" + suffix, "family": "test", "type": "chat",
+		"context_window": 128000, "max_output": 8192, "capabilities": []string{"stream"},
 	}, &vm)
 	ac.post("/channels", map[string]any{
-		"VirtualModelID": vm.ID, "ProviderAccountID": providerAccount.ID,
-		"UpstreamModel": "upstream-model-name", "Priority": 0, "Weight": 100,
+		"virtual_model_id": vm.ID, "provider_account_id": providerAccount.ID,
+		"upstream_model": "upstream-model-name", "priority": 0, "weight": 100,
 	}, nil)
 	ac.post(fmt.Sprintf("/virtual-models/%d/sell-price", vm.ID), map[string]any{
 		"components": []map[string]any{
-			{"Meter": "input", "Unit": "per_1m_tokens", "UnitPrice": "1"},
-			{"Meter": "output", "Unit": "per_1m_tokens", "UnitPrice": "1"},
+			{"meter": "input", "unit": "per_1m_tokens", "unit_price": "1"},
+			{"meter": "output", "unit": "per_1m_tokens", "unit_price": "1"},
 		},
 	}, nil)
 

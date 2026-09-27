@@ -198,13 +198,13 @@ async function setupProvider() {
     const secret = $('pSecret').value.trim();
     if (!code || !name || !baseURL || !secret) { log('请填完供应商的四个字段', 'err'); return; }
 
-    const provider = await call('POST', '/providers', { Code: code, Name: name, Protocol: 'openai' });
-    const providerAccount = await call('POST', '/provider-accounts', { provider_id: provider.ID, name: name + '-account', base_url: baseURL });
-    await call('POST', `/provider-accounts/${providerAccount.ID}/keys`, { secret, weight: 100 });
+    const provider = await call('POST', '/providers', { code, name, protocol: 'openai' });
+    const providerAccount = await call('POST', '/provider-accounts', { provider_id: provider.id, name: name + '-account', base_url: baseURL });
+    await call('POST', `/provider-accounts/${providerAccount.id}/keys`, { secret, weight: 100 });
 
-    $('pAccountID').value = providerAccount.ID;
-    localStorage.setItem('uft_provider_account_id', providerAccount.ID);
-    $('providerResult').textContent = `provider_account_id = ${providerAccount.ID}`;
+    $('pAccountID').value = providerAccount.id;
+    localStorage.setItem('uft_provider_account_id', providerAccount.id);
+    $('providerResult').textContent = `provider_account_id = ${providerAccount.id}`;
   } catch (e) { /* 已经记进日志了 */ }
 }
 
@@ -229,7 +229,7 @@ async function fetchModels() {
     }
     lastModels.forEach((m, i) => {
       const lab = document.createElement('label');
-      lab.innerHTML = `<input type="checkbox" value="${i}"> <span>${m.ID}</span> <span class="hint">${m.OwnedBy || ''}</span>`;
+      lab.innerHTML = `<input type="checkbox" value="${i}"> <span>${m.id}</span> <span class="hint">${m.owned_by || ''}</span>`;
       box.appendChild(lab);
     });
   } catch (e) { /* 已经记进日志了 */ }
@@ -237,8 +237,8 @@ async function fetchModels() {
 
 function priceComponents(inPrice, outPrice) {
   return [
-    { Meter: 'input', Unit: 'per_1m_tokens', UnitPrice: String(inPrice) },
-    { Meter: 'output', Unit: 'per_1m_tokens', UnitPrice: String(outPrice) },
+    { meter: 'input', unit: 'per_1m_tokens', unit_price: String(inPrice) },
+    { meter: 'output', unit: 'per_1m_tokens', unit_price: String(outPrice) },
   ];
 }
 
@@ -283,7 +283,7 @@ async function buildPriceTable() {
   let lookup = {};
   try {
     const res = await call('POST', '/pricesync/reference-price-lookup', {
-      upstream_models: priceTableModels.map((m) => m.ID),
+      upstream_models: priceTableModels.map((m) => m.id),
     });
     lookup = res.data || {};
     if (res.openrouter_error) log(`OpenRouter 查询失败（不影响 LiteLLM 那部分结果）: ${res.openrouter_error}`, 'err');
@@ -294,14 +294,14 @@ async function buildPriceTable() {
 
   const box = $('priceTableBox');
   const rows = priceTableModels.map((m, i) => {
-    const match = lookup[m.ID];
+    const match = lookup[m.id];
     const costIn = match && match.matched ? match.input : '0';
     const costOut = match && match.matched ? match.output : '0';
     const matchedLabel = match && match.matched
       ? `<span class="ok">${match.source}</span>`
       : '<span class="hint">未匹配</span>';
     return `<tr>
-      <td class="modelName">${m.ID}</td>
+      <td class="modelName">${m.id}</td>
       <td>${matchedLabel}</td>
       <td><input data-i="${i}" data-f="costIn" value="${costIn}" oninput="recomputeRowSell(${i})"></td>
       <td><input data-i="${i}" data-f="costOut" value="${costOut}" oninput="recomputeRowSell(${i})"></td>
@@ -344,36 +344,36 @@ async function importSelected() {
       // (virtual_model_id, provider_account_id, upstream_model) 都是唯一
       // 约束，重复点"导入"（比如上次卡在某一步、这次重新点）不应该每次都
       // 硬报错，应该直接复用已经建好的记录，继续往下走。
-      let vm = await call('GET', `/virtual-models?name=${encodeURIComponent(model.ID)}`, null, { allow404: true });
+      let vm = await call('GET', `/virtual-models?name=${encodeURIComponent(model.id)}`, null, { allow404: true });
       if (vm) {
-        log(`复用已存在的虚拟模型: ${model.ID} (ID=${vm.ID})`);
+        log(`复用已存在的虚拟模型: ${model.id} (ID=${vm.id})`);
       } else {
         vm = await call('POST', '/virtual-models', {
-          Name: model.ID, Family: model.OwnedBy || 'unknown', Type: 'chat',
-          ContextWindow: ctxWindow, MaxOutput: maxOut, Capabilities: ['stream'],
+          name: model.id, family: model.owned_by || 'unknown', type: 'chat',
+          context_window: ctxWindow, max_output: maxOut, capabilities: ['stream'],
         });
       }
 
       let channel = await call('GET',
-        `/channels?virtual_model_id=${vm.ID}&provider_account_id=${accountID}&upstream_model=${encodeURIComponent(model.ID)}`,
+        `/channels?virtual_model_id=${vm.id}&provider_account_id=${accountID}&upstream_model=${encodeURIComponent(model.id)}`,
         null, { allow404: true });
       if (channel) {
-        log(`复用已存在的渠道: ${model.ID} (channel_id=${channel.ID})`);
+        log(`复用已存在的渠道: ${model.id} (channel_id=${channel.id})`);
       } else {
         channel = await call('POST', '/channels', {
-          VirtualModelID: vm.ID, ProviderAccountID: parseInt(accountID, 10),
-          UpstreamModel: model.ID, Priority: 0, Weight: 100,
+          virtual_model_id: vm.id, provider_account_id: parseInt(accountID, 10),
+          upstream_model: model.id, priority: 0, weight: 100,
         });
       }
       // 成本价用 USD——LiteLLM 数据集本身就是美元，硬转成人民币需要一个
       // 汇率假设，与其编一个数字进账，不如老老实实按美元记账（没配对应
       // fx_rate 时这条成本不会参与毛利计算，见 internal/catalog 包文档，
       // 不影响计费本身）。
-      await call('POST', `/channels/${channel.ID}/cost-price`, { currency: 'USD', components: priceComponents(costIn, costOut) });
-      await call('POST', `/virtual-models/${vm.ID}/sell-price`, { tier, components: priceComponents(sellIn, sellOut) });
-      log(`导入成功: ${model.ID}`, 'ok');
+      await call('POST', `/channels/${channel.id}/cost-price`, { currency: 'USD', components: priceComponents(costIn, costOut) });
+      await call('POST', `/virtual-models/${vm.id}/sell-price`, { tier, components: priceComponents(sellIn, sellOut) });
+      log(`导入成功: ${model.id}`, 'ok');
     } catch (e) {
-      log(`导入失败: ${model.ID}: ${e}`, 'err');
+      log(`导入失败: ${model.id}: ${e}`, 'err');
     }
   }
 }
@@ -381,13 +381,13 @@ async function importSelected() {
 async function createTestUser() {
   try {
     const suffix = Date.now();
-    const account = await call('POST', '/accounts', { Type: 'personal', Name: 'test-user-' + suffix, Tier: 'free' });
+    const account = await call('POST', '/accounts', { type: 'personal', name: 'test-user-' + suffix, tier: 'free' });
     // 金额单位是"微元"，1 元 = 1,000,000（migrations/00006_billing_wallet.sql）；
     // 100 元 = 100,000,000——之前这里错填成了 1,000,000（只有 1 元），跟按钮
     // 文案不符，多聊几条消息很容易就把余额刷穿。
-    await call('POST', `/accounts/${account.ID}/wallet/adjust`, { amount: 100_000_000, ref_id: 'test-web-topup-' + suffix });
-    const key = await call('POST', `/accounts/${account.ID}/api-keys`, { name: 'test-web-key' });
-    $('testUserResult').innerHTML = `账户 ID: ${account.ID}<br>把下面这个 Key 粘贴到用户页面：<div class="rawkey">${key.RawKey}</div>`;
+    await call('POST', `/accounts/${account.id}/wallet/adjust`, { amount: 100_000_000, ref_id: 'test-web-topup-' + suffix, reason: 'test_web 联调充值' });
+    const key = await call('POST', `/accounts/${account.id}/api-keys`, { name: 'test-web-key' });
+    $('testUserResult').innerHTML = `账户 ID: ${account.id}<br>把下面这个 Key 粘贴到用户页面：<div class="rawkey">${key.raw_key}</div>`;
   } catch (e) { /* 已经记进日志了 */ }
 }
 </script>

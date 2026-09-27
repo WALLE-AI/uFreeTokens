@@ -6,15 +6,20 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
+	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
 // AdminDeps 是构造控制面路由所需的全部依赖。
@@ -55,13 +60,18 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Use(httpx.RequireBearerToken(d.AdminToken))
 
 		r.Route("/accounts", func(r chi.Router) {
+			r.Get("/", h.listAccounts)
 			r.Post("/", h.createAccount)
 			r.Get("/{accountID}", h.getAccount)
+			r.Get("/{accountID}/ledger", h.listLedger)
+			r.Get("/{accountID}/credit-grants", h.listCreditGrants)
+			r.Get("/{accountID}/usage", h.accountUsage)
 			r.Post("/{accountID}/api-keys", h.createAPIKey)
 			r.Get("/{accountID}/api-keys", h.listAPIKeys)
 			r.Post("/{accountID}/wallet/adjust", h.adjustWallet)
 			r.Post("/{accountID}/credit-grants", h.grantCredit)
 		})
+		r.Get("/api-keys", h.searchAPIKeys)
 		r.Post("/api-keys/{apiKeyID}/revoke", h.revokeAPIKey)
 
 		r.Post("/providers", h.createProvider)
@@ -70,11 +80,11 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Get("/provider-accounts/{providerAccountID}/upstream-models", h.listUpstreamModels)
 
 		r.Post("/virtual-models", h.createVirtualModel)
-		r.Get("/virtual-models", h.getVirtualModelByName)
+		r.Get("/virtual-models", h.virtualModels)
 		r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
 		r.Put("/virtual-models/{virtualModelID}/metadata", h.setVirtualModelMetadata)
 		r.Post("/channels", h.createChannel)
-		r.Get("/channels", h.findChannel)
+		r.Get("/channels", h.channels)
 		r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
 		r.Post("/channels/{channelID}/price-observations", h.ingestPriceObservation)
 		r.Post("/fx-rates", h.setFXRate)
@@ -83,15 +93,18 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 
 		r.Post("/price-sources", h.createPriceSource)
 		r.Post("/providers/{providerID}/price-observations", h.ingestUnmappedPriceObservation)
-		r.Get("/price-change-requests", h.listPendingChangeRequests)
+		r.Get("/price-change-requests", h.listChangeRequests)
 		r.Post("/price-change-requests/{changeRequestID}/approve", h.approveChangeRequest)
 		r.Post("/price-change-requests/{changeRequestID}/reject", h.rejectChangeRequest)
 
-		r.Get("/pending-model-listings", h.listPendingModelListings)
+		r.Get("/pending-model-listings", h.listPendingListings)
 		r.Post("/pending-model-listings/{listingID}/publish", h.publishPendingModelListing)
 		r.Post("/pending-model-listings/{listingID}/dismiss", h.dismissPendingModelListing)
 
 		r.Get("/audit-logs", h.listAuditLogs)
+
+		h.registerConsoleRoutes(r)
+		h.registerStatsRoutes(r)
 	})
 
 	return r
@@ -127,13 +140,24 @@ func decodeJSON(r *http.Request, v any) error {
 // 精细区分错误码，能定位问题就够了。
 func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	switch {
+	case isAdminNotFound(err):
+		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
+	case isAdminConflict(err):
+		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, wallet.ErrBalanceChanged):
+		httpx.WriteError(w, r, http.StatusConflict, "balance_changed", err.Error())
 	case errors.Is(err, admin.ErrAccountNotFound), errors.Is(err, admin.ErrAPIKeyNotFound),
 		errors.Is(err, admin.ErrProviderAccountNotFound),
 		errors.Is(err, admin.ErrVirtualModelNotFound), errors.Is(err, admin.ErrChannelNotFound),
 		errors.Is(err, pricesync.ErrChangeRequestNotFound), errors.Is(err, pricesync.ErrListingNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, pricesync.ErrChangeRequestNotPending), errors.Is(err, pricesync.ErrListingNotPending),
-		errors.Is(err, admin.ErrNoActiveProviderKey):
+		errors.Is(err, pricesync.ErrBlockedNeedsConfirm), errors.Is(err, admin.ErrNoActiveProviderKey):
+		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
+	case isUniqueViolation(err), errors.Is(err, wallet.ErrDuplicateAdjustRef):
+		// 唯一约束冲突（重复的 ref_id、重复的 provider code……）是"重复提交/已存在"，
+		// 不是参数格式错误——前端据此提示"该单号已调过账"而不是"参数错误"
+		// （运营后台接口方案 §0.5）。
 		httpx.WriteError(w, r, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, admin.ErrUpstreamUnavailable):
 		// 上游 /models 调不通/返回非预期内容——这是上游那边的问题，不是调用方
@@ -145,6 +169,11 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, e
 	}
 }
 
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // actorIDFromRequest 从 X-Actor-ID 头读出发起操作的管理员 ID——cmd/admin 还没有
 // 鉴权（见 internal/admin 包文档），没有"当前登录管理员"这个概念，这个头完全
 // 靠调用方自觉填写，读不到或解析失败就记 0（未知/系统操作）。等真正的管理员
@@ -152,6 +181,23 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, e
 func actorIDFromRequest(r *http.Request) int64 {
 	id, _ := strconv.ParseInt(r.Header.Get("X-Actor-ID"), 10, 64)
 	return id
+}
+
+// actorNameFromRequest 读出 X-Actor-Name（URL 编码的 UTF-8，前端用
+// encodeURIComponent 写入，HTTP 头本身不能直接放中文）。这是 RBAC 落地前的
+// 过渡：共享令牌下没有真实的管理员身份，至少让审计日志里能看到是谁操作的
+// （运营后台接口方案 §0.6）。解码失败就原样使用，最长保留 64 个字符。
+func actorNameFromRequest(r *http.Request) string {
+	raw := r.Header.Get("X-Actor-Name")
+	name, err := url.QueryUnescape(raw)
+	if err != nil {
+		name = raw
+	}
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > 64 {
+		name = string([]rune(name)[:64])
+	}
+	return name
 }
 
 // requestIP 尽量拿到调用方地址（去掉端口），拿不到就原样返回 RemoteAddr。
@@ -168,7 +214,7 @@ func requestIP(r *http.Request) string {
 // 见 internal/admin/audit.go 的取舍说明）。
 func (h *adminHandlers) recordAudit(r *http.Request, action, targetType, targetID string, before, after any) {
 	if _, err := h.svc.RecordAudit(r.Context(), admin.AuditLogInput{
-		ActorID: actorIDFromRequest(r), Action: action, TargetType: targetType, TargetID: targetID,
+		ActorID: actorIDFromRequest(r), ActorName: actorNameFromRequest(r), Action: action, TargetType: targetType, TargetID: targetID,
 		Before: before, After: after, IP: requestIP(r),
 	}); err != nil {
 		h.log.Error("record audit log failed", "action", action, "target_type", targetType, "target_id", targetID, "error", err)
@@ -193,6 +239,7 @@ func (h *adminHandlers) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "account.create", "account", strconv.FormatInt(acct.ID, 10), nil, acct)
 	httpx.WriteJSON(w, http.StatusCreated, acct)
 }
 
@@ -207,12 +254,22 @@ func (h *adminHandlers) getAccount(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"account": acct, "wallet": wal})
+	extras, err := h.svc.GetAccountExtras(r.Context(), id)
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"account": acct, "wallet": wal, "members": extras.Members, "active_grants_summary": extras.ActiveGrantsSummary,
+	})
 }
 
 type adjustWalletRequest struct {
 	Amount int64  `json:"amount"`
 	RefID  string `json:"ref_id"`
+	Reason string `json:"reason"`
+	// ExpectedCashBalance 非空时，与事务内的实际现金余额核对，不等返回 409 balance_changed。
+	ExpectedCashBalance *int64 `json:"expected_cash_balance_micro"`
 }
 
 func (h *adminHandlers) adjustWallet(w http.ResponseWriter, r *http.Request) {
@@ -228,13 +285,20 @@ func (h *adminHandlers) adjustWallet(w http.ResponseWriter, r *http.Request) {
 	}
 	// internal/wallet 是唯一能写钱包表的模块，这里直接调用它（经由 admin.Service
 	// 暴露出来的实例）而不是让 admin 包自己拥有钱包写入逻辑。
-	receipt, err := h.svc.Wallet().Adjust(r.Context(), id, in.Amount, in.RefID)
+	reason, ok := requireReason(w, r, in.Reason)
+	if !ok {
+		return
+	}
+	receipt, cashBefore, err := h.svc.Wallet().AdjustChecked(r.Context(), id, in.Amount, in.RefID, in.ExpectedCashBalance)
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	h.recordAudit(r, "wallet.adjust", "account", strconv.FormatInt(id, 10), nil, map[string]any{"amount": in.Amount, "ref_id": in.RefID, "receipt": receipt})
-	httpx.WriteJSON(w, http.StatusOK, receipt)
+	out := toWalletAdjustDTO(*receipt)
+	h.recordAudit(r, "wallet.adjust", "account", accountIDString(id),
+		map[string]any{"cash_balance_micro": cashBefore},
+		map[string]any{"cash_balance_micro": out.CashAfterMicro, "amount_micro": out.AmountMicro, "ref_id": out.RefID, "reason": reason})
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 type grantCreditRequest struct {
@@ -243,6 +307,7 @@ type grantCreditRequest struct {
 	ExpiresAt  *time.Time `json:"expires_at"`
 	ModelScope []string   `json:"model_scope"`
 	RefID      string     `json:"ref_id"`
+	Reason     string     `json:"reason"`
 }
 
 func (h *adminHandlers) grantCredit(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +321,10 @@ func (h *adminHandlers) grantCredit(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
+	reason, ok := requireReason(w, r, in.Reason)
+	if !ok {
+		return
+	}
 	granted, err := h.svc.GrantCredit(r.Context(), admin.GrantCreditInput{
 		AccountID: id, Source: in.Source, Amount: in.Amount,
 		ExpiresAt: in.ExpiresAt, ModelScope: in.ModelScope, RefID: in.RefID,
@@ -264,7 +333,10 @@ func (h *adminHandlers) grantCredit(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	h.recordAudit(r, "wallet.credit_grant", "account", strconv.FormatInt(id, 10), nil, granted)
+	h.recordAudit(r, "wallet.credit_grant", "account", accountIDString(id), nil, map[string]any{
+		"grant": granted, "source": in.Source, "amount_micro": in.Amount, "expires_at": in.ExpiresAt,
+		"model_scope": in.ModelScope, "ref_id": in.RefID, "reason": reason,
+	})
 	httpx.WriteJSON(w, http.StatusOK, granted)
 }
 
@@ -295,6 +367,8 @@ func (h *adminHandlers) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	// 只审计 APIKey 部分，明文 RawKey 绝不能进审计日志。
+	h.recordAudit(r, "api_key.create", "account", strconv.FormatInt(accountID, 10), nil, created.APIKey)
 	httpx.WriteJSON(w, http.StatusCreated, created)
 }
 
@@ -322,6 +396,7 @@ func (h *adminHandlers) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "api_key.revoke", "api_key", strconv.FormatInt(id, 10), nil, map[string]string{"status": "revoked"})
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -338,6 +413,7 @@ func (h *adminHandlers) createProvider(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "provider.create", "provider", strconv.FormatInt(p.ID, 10), nil, p)
 	httpx.WriteJSON(w, http.StatusCreated, p)
 }
 
@@ -359,6 +435,7 @@ func (h *adminHandlers) createProviderAccount(w http.ResponseWriter, r *http.Req
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "provider_account.create", "provider_account", strconv.FormatInt(acc.ID, 10), nil, acc)
 	httpx.WriteJSON(w, http.StatusCreated, acc)
 }
 
@@ -417,6 +494,7 @@ func (h *adminHandlers) createVirtualModel(w http.ResponseWriter, r *http.Reques
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "virtual_model.create", "virtual_model", strconv.FormatInt(vm.ID, 10), nil, vm)
 	httpx.WriteJSON(w, http.StatusCreated, vm)
 }
 
@@ -480,6 +558,8 @@ func (h *adminHandlers) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
+	h.recordAudit(r, "channel.create", "channel", strconv.FormatInt(ch.ID, 10), nil, ch)
 	httpx.WriteJSON(w, http.StatusCreated, ch)
 }
 
@@ -525,6 +605,7 @@ func (h *adminHandlers) setSellPrice(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
 	h.recordAudit(r, "sell_price.set", "virtual_model", strconv.FormatInt(vmID, 10), nil, map[string]any{"price_book_id": bookID, "tier": body.Tier, "components": body.Components})
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
 }
@@ -550,6 +631,7 @@ func (h *adminHandlers) setCostPrice(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
 	h.recordAudit(r, "cost_price.set", "channel", strconv.FormatInt(channelID, 10), nil, map[string]any{"price_book_id": bookID, "currency": body.Currency, "components": body.Components})
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"price_book_id": bookID})
 }
@@ -574,6 +656,7 @@ func (h *adminHandlers) setFXRate(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
 	h.recordAudit(r, "fx_rate.set", "fx_rate", body.Base, nil, in)
 	httpx.WriteJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
 }
@@ -581,13 +664,53 @@ func (h *adminHandlers) setFXRate(w http.ResponseWriter, r *http.Request) {
 // listAuditLogs 是审计导出的查询入口（技术方案 Phase 4）：?target_type=&target_id=
 // 都可以留空，留空表示不按那个维度过滤；?limit= 留空用默认值 100。
 func (h *adminHandlers) listAuditLogs(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	entries, err := h.svc.ListAuditLogs(r.Context(), admin.ListAuditLogsInput{
-		TargetType: r.URL.Query().Get("target_type"), TargetID: r.URL.Query().Get("target_id"), Limit: limit,
-	})
+	q := r.URL.Query()
+	in := admin.ListAuditLogsInput{
+		TargetType: q.Get("target_type"), TargetID: q.Get("target_id"),
+		ActorName: q.Get("actor_name"), Action: q.Get("action"), Before: q.Get("before"),
+	}
+	in.Limit, _ = strconv.Atoi(q.Get("limit"))
+	if v := q.Get("actor_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid actor_id")
+			return
+		}
+		in.ActorID = id
+	}
+	var err error
+	if in.From, err = parseTimeParam(q.Get("from"), false); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'from': "+err.Error())
+		return
+	}
+	if in.To, err = parseTimeParam(q.Get("to"), true); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'to': "+err.Error())
+		return
+	}
+	entries, next, err := h.svc.ListAuditLogs(r.Context(), in)
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"audit_logs": entries})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": entries, "next_cursor": next})
+}
+
+// parseTimeParam 接受 RFC3339 或 YYYY-MM-DD（按 UTC 解释）。endOfDay=true 时，
+// 纯日期表示"包含当天"，返回次日 00:00 作为开区间上界（和 /console/usage 的
+// 闭区间语义一致）。空字符串返回零值（不限）。
+func parseTimeParam(v string, endOfDay bool) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	d, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return time.Time{}, errors.New("want RFC3339 or YYYY-MM-DD")
+	}
+	if endOfDay {
+		d = d.AddDate(0, 0, 1)
+	}
+	return d, nil
 }

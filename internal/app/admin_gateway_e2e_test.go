@@ -184,15 +184,15 @@ func TestAdminCreatedConfig_WorksThroughGateway(t *testing.T) {
 
 	// 1. 建账户 + 充值 1 元（Adjust 是当前唯一的入账手段，真正的支付流程还没做）。
 	var account struct {
-		ID int64 `json:"ID"`
+		ID int64 `json:"id"`
 	}
-	ac.post("/accounts", map[string]any{"Type": "personal", "Name": "e2e-" + suffix, "Tier": "free"}, &account)
+	ac.post("/accounts", map[string]any{"type": "personal", "name": "e2e-" + suffix, "tier": "free"}, &account)
 	ac.post(fmt.Sprintf("/accounts/%d/wallet/adjust", account.ID),
-		map[string]any{"amount": 1_000_000, "ref_id": "e2e-recharge-" + suffix}, nil)
+		map[string]any{"amount": 1_000_000, "ref_id": "e2e-recharge-" + suffix, "reason": "e2e test top-up"}, nil)
 
 	// 2. 建 API Key。
 	var apiKey struct {
-		RawKey string `json:"RawKey"`
+		RawKey string `json:"raw_key"`
 	}
 	ac.post(fmt.Sprintf("/accounts/%d/api-keys", account.ID), map[string]any{"name": "e2e-key"}, &apiKey)
 	if apiKey.RawKey == "" {
@@ -201,7 +201,7 @@ func TestAdminCreatedConfig_WorksThroughGateway(t *testing.T) {
 
 	// 3. 建 Provider -> ProviderAccount(指向 mock 上游) -> ProviderKey。
 	var provider struct{ ID int64 }
-	ac.post("/providers", map[string]any{"Code": "e2e-provider-" + suffix, "Name": "E2E", "Protocol": "openai"}, &provider)
+	ac.post("/providers", map[string]any{"code": "e2e-provider-" + suffix, "name": "E2E", "protocol": "openai"}, &provider)
 
 	var providerAccount struct{ ID int64 }
 	ac.post("/provider-accounts", map[string]any{
@@ -214,13 +214,13 @@ func TestAdminCreatedConfig_WorksThroughGateway(t *testing.T) {
 	// 4. 建虚拟模型 + 渠道。
 	var vm struct{ ID int64 }
 	ac.post("/virtual-models", map[string]any{
-		"Name": "e2e-model-" + suffix, "Family": "test", "Type": "chat",
-		"ContextWindow": 128000, "MaxOutput": 8192, "Capabilities": []string{"stream"},
+		"name": "e2e-model-" + suffix, "family": "test", "type": "chat",
+		"context_window": 128000, "max_output": 8192, "capabilities": []string{"stream"},
 	}, &vm)
 
 	ac.post("/channels", map[string]any{
-		"VirtualModelID": vm.ID, "ProviderAccountID": providerAccount.ID,
-		"UpstreamModel": "upstream-model-name", "Priority": 0, "Weight": 100,
+		"virtual_model_id": vm.ID, "provider_account_id": providerAccount.ID,
+		"upstream_model": "upstream-model-name", "priority": 0, "weight": 100,
 	}, nil)
 
 	// 5. 发布售价：1 元/百万 token，方便手算预期扣费。
@@ -229,8 +229,8 @@ func TestAdminCreatedConfig_WorksThroughGateway(t *testing.T) {
 	}
 	ac.post(fmt.Sprintf("/virtual-models/%d/sell-price", vm.ID), map[string]any{
 		"components": []map[string]any{
-			{"Meter": "input", "Unit": "per_1m_tokens", "UnitPrice": "1"},
-			{"Meter": "output", "Unit": "per_1m_tokens", "UnitPrice": "1"},
+			{"meter": "input", "unit": "per_1m_tokens", "unit_price": "1"},
+			{"meter": "output", "unit": "per_1m_tokens", "unit_price": "1"},
 		},
 	}, &priceResp)
 

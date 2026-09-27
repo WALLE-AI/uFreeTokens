@@ -10,23 +10,23 @@ import (
 )
 
 type APIKey struct {
-	ID               int64
-	AccountID        int64
-	Name             string
-	DisplayPrefix    string
-	Status           string
-	AllowedModels    []string
-	RPMLimit         *int
-	TPMLimit         *int
-	ConcurrencyLimit *int
-	CreatedAt        time.Time
+	ID               int64     `json:"id"`
+	AccountID        int64     `json:"account_id"`
+	Name             string    `json:"name"`
+	DisplayPrefix    string    `json:"display_prefix"`
+	Status           string    `json:"status"`
+	AllowedModels    []string  `json:"allowed_models"`
+	RPMLimit         *int      `json:"rpm_limit"`
+	TPMLimit         *int      `json:"tpm_limit"`
+	ConcurrencyLimit *int      `json:"concurrency_limit"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // CreatedAPIKey 只在创建那一刻存在——RawKey 之后再也拿不到（数据库只存 HMAC），
 // 调用方必须在这次响应里把它交给用户，错过就要吊销重新生成。
 type CreatedAPIKey struct {
 	APIKey
-	RawKey string
+	RawKey string `json:"raw_key"`
 }
 
 type CreateAPIKeyInput struct {
@@ -86,7 +86,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, accountID int64) ([]APIKey, e
 	}
 	defer rows.Close()
 
-	var out []APIKey
+	out := []APIKey{}
 	for rows.Next() {
 		var k APIKey
 		if err := rows.Scan(&k.ID, &k.AccountID, &k.Name, &k.DisplayPrefix, &k.Status,

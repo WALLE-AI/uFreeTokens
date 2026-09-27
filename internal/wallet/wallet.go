@@ -34,6 +34,15 @@ var (
 	ErrReservationNotFound = errors.New("wallet: reservation not found")
 	// ErrReservationReleased 表示该 request_id 的冻结已经被释放，不能再结算。
 	ErrReservationReleased = errors.New("wallet: reservation already released")
+	// ErrDuplicateAdjustRef 表示同一账户已经用这个 refID 调过账。人工调账不能靠
+	// ledger_entries 的 UNIQUE 约束去重（grant_id 为 NULL，Postgres 视每个 NULL
+	// 互不相同），所以在 Adjust 里显式检查，防止运营重复提交导致重复入账。
+	ErrDuplicateAdjustRef = errors.New("wallet: this ref_id has already been used for an adjustment on this account")
+	// ErrBalanceChanged 表示调账时给出的"预期现金余额"与实际不符：运营看到的余额
+	// 页面已经过时（期间有消费、充值或别人调过账），应该刷新后重新确认。
+	ErrBalanceChanged = errors.New("wallet: cash balance has changed since it was displayed; refresh and confirm again")
+	// ErrNegativeCashBalance 表示人工扣减会让现金余额变成负数。
+	ErrNegativeCashBalance = errors.New("wallet: this adjustment would make the cash balance negative")
 )
 
 type Status string
@@ -158,18 +167,59 @@ func (s *Service) CreateWallet(ctx context.Context, accountID int64) error {
 // 情况。amount 可正可负（正数=入账，负数=扣减，比如撤销一笔错误的赠送）。
 // refID 建议填运营侧的工单号/操作记录 ID，方便审计时追溯这笔调整的来由。
 func (s *Service) Adjust(ctx context.Context, accountID int64, amount int64, refID string) (*Receipt, error) {
+	receipt, _, err := s.AdjustChecked(ctx, accountID, amount, refID, nil)
+	return receipt, err
+}
+
+// AdjustChecked 是 Adjust 的带防护版本，供运营后台使用（运营后台接口方案 §4.7）：
+//   - expectedCash 非 nil 时，在同一事务里锁住钱包行并核对当前现金余额，
+//     不等返回 ErrBalanceChanged——防止运营照着一份过时的余额页面调账；
+//   - 人工扣减不允许把现金余额扣成负数（ErrNegativeCashBalance）；
+//   - 额外返回调账前的现金余额，供审计日志记录 before 快照。
+func (s *Service) AdjustChecked(ctx context.Context, accountID int64, amount int64, refID string, expectedCash *int64) (*Receipt, int64, error) {
 	if amount == 0 {
-		return nil, fmt.Errorf("wallet: adjust amount must not be zero")
+		return nil, 0, fmt.Errorf("wallet: adjust amount must not be zero")
 	}
 	if refID == "" {
-		return nil, fmt.Errorf("wallet: adjust requires a non-empty refID for audit purposes")
+		return nil, 0, fmt.Errorf("wallet: adjust requires a non-empty refID for audit purposes")
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("wallet: begin tx: %w", err)
+		return nil, 0, fmt.Errorf("wallet: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// 幂等：同一 (account, refID) 只能调一次账。事务级 advisory lock 让并发的
+	// 重复提交串行化，再查一次是否已存在（ledger_entries 只追加、不能删，历史上
+	// 已有的重复记录无法清理，所以用"检查 + 锁"而不是唯一索引，见 ErrDuplicateAdjustRef）。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('wallet.adjust:' || $1::bigint || ':' || $2::text, 0))`, accountID, refID); err != nil {
+		return nil, 0, fmt.Errorf("wallet: adjust: acquire lock: %w", err)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE account_id = $1 AND ref_type = 'admin' AND type = 'adjust' AND ref_id = $2)`,
+		accountID, refID,
+	).Scan(&exists); err != nil {
+		return nil, 0, fmt.Errorf("wallet: adjust: check duplicate ref: %w", err)
+	}
+	if exists {
+		return nil, 0, ErrDuplicateAdjustRef
+	}
+
+	var cashBefore int64
+	if err := tx.QueryRow(ctx, `SELECT cash_balance FROM wallets WHERE account_id = $1 FOR UPDATE`, accountID).Scan(&cashBefore); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, fmt.Errorf("wallet: adjust: account %d has no wallet", accountID)
+		}
+		return nil, 0, fmt.Errorf("wallet: adjust: lock wallet: %w", err)
+	}
+	if expectedCash != nil && *expectedCash != cashBefore {
+		return nil, 0, ErrBalanceChanged
+	}
+	if amount < 0 && cashBefore+amount < 0 {
+		return nil, 0, ErrNegativeCashBalance
+	}
 
 	var cashAfter, bonusAfter int64
 	if err := tx.QueryRow(ctx,
@@ -179,9 +229,9 @@ func (s *Service) Adjust(ctx context.Context, accountID int64, amount int64, ref
 		accountID, amount,
 	).Scan(&cashAfter, &bonusAfter); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("wallet: adjust: account %d has no wallet", accountID)
+			return nil, 0, fmt.Errorf("wallet: adjust: account %d has no wallet", accountID)
 		}
-		return nil, fmt.Errorf("wallet: adjust: update wallet: %w", err)
+		return nil, 0, fmt.Errorf("wallet: adjust: update wallet: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -189,14 +239,14 @@ func (s *Service) Adjust(ctx context.Context, accountID int64, amount int64, ref
 		 VALUES ($1, 'adjust', $2, 'cash', $3, $4, 'admin', $5)`,
 		accountID, amount, cashAfter, bonusAfter, refID,
 	); err != nil {
-		return nil, fmt.Errorf("wallet: adjust: insert ledger entry: %w", err)
+		return nil, 0, fmt.Errorf("wallet: adjust: insert ledger entry: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("wallet: adjust: commit: %w", err)
+		return nil, 0, fmt.Errorf("wallet: adjust: commit: %w", err)
 	}
 
-	return &Receipt{RequestID: refID, AccountID: accountID, ChargedAmount: -amount, CashAfter: cashAfter, BonusAfter: bonusAfter}, nil
+	return &Receipt{RequestID: refID, AccountID: accountID, ChargedAmount: -amount, CashAfter: cashAfter, BonusAfter: bonusAfter}, cashBefore, nil
 }
 
 // Reserve 原子地冻结 amount 微元。可用余额 = cash_balance + bonus_balance +

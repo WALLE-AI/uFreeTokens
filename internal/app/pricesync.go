@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -34,6 +35,7 @@ func (h *adminHandlers) createPriceSource(w http.ResponseWriter, r *http.Request
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	h.recordAudit(r, "price_source.create", "price_source", strconv.FormatInt(id, 10), nil, body)
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -99,7 +101,8 @@ func (h *adminHandlers) ingestPriceObservation(w http.ResponseWriter, r *http.Re
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, result)
+	invalidateTodoCache()
+	httpx.WriteJSON(w, http.StatusCreated, toIngestResultDTO(*result))
 }
 
 // ingestUnmappedPriceObservation 是技术方案 §7.16.3 Mapper 阶段的入口：不知道
@@ -142,19 +145,8 @@ func (h *adminHandlers) ingestUnmappedPriceObservation(w http.ResponseWriter, r 
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, result)
-}
-
-func (h *adminHandlers) listPendingModelListings(w http.ResponseWriter, r *http.Request) {
-	if !h.requirePriceSync(w, r) {
-		return
-	}
-	list, err := h.pricesync.ListPendingListings(r.Context())
-	if err != nil {
-		writeAdminError(w, r, h.log, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"pending_listings": list})
+	invalidateTodoCache()
+	httpx.WriteJSON(w, http.StatusCreated, toUnmappedIngestResultDTO(*result))
 }
 
 func (h *adminHandlers) dismissPendingModelListing(w http.ResponseWriter, r *http.Request) {
@@ -166,10 +158,22 @@ func (h *adminHandlers) dismissPendingModelListing(w http.ResponseWriter, r *htt
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid listing id")
 		return
 	}
+	// body 可选（旧调用方不传 body）：只有 reason 一个字段，写进审计。
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &body); err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+			return
+		}
+	}
 	if err := h.pricesync.DismissListing(r.Context(), id); err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
+	h.recordAudit(r, "listing.dismiss", "pending_model_listing", strconv.FormatInt(id, 10), nil, map[string]string{"status": "dismissed", "reason": body.Reason})
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "dismissed"})
 }
 
@@ -214,23 +218,26 @@ func (h *adminHandlers) publishPendingModelListing(w http.ResponseWriter, r *htt
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, result)
+	out := toPublishListingResultDTO(*result)
+	invalidateTodoCache()
+	h.recordAudit(r, "listing.publish", "pending_model_listing", strconv.FormatInt(id, 10), nil, map[string]any{"request": body, "result": out})
+	httpx.WriteJSON(w, http.StatusCreated, out)
 }
 
-func (h *adminHandlers) listPendingChangeRequests(w http.ResponseWriter, r *http.Request) {
-	if !h.requirePriceSync(w, r) {
-		return
-	}
-	list, err := h.pricesync.ListPending(r.Context())
-	if err != nil {
-		writeAdminError(w, r, h.log, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"change_requests": list})
-}
-
+// decideChangeRequestBody 是审批/驳回的请求体。DecidedBy 保留以兼容旧调用方，
+// 但优先使用 X-Actor-ID（运营后台接口方案 §5.3）；ConfirmBlocked 只对批准有效。
 type decideChangeRequestBody struct {
-	DecidedBy int64 `json:"decided_by"`
+	DecidedBy      int64  `json:"decided_by"`
+	Reason         string `json:"reason"`
+	ConfirmBlocked bool   `json:"confirm_blocked"`
+}
+
+func (b decideChangeRequestBody) meta(r *http.Request) pricesync.DecisionMeta {
+	by := actorIDFromRequest(r)
+	if by == 0 {
+		by = b.DecidedBy
+	}
+	return pricesync.DecisionMeta{By: by, ByName: actorNameFromRequest(r), Reason: b.Reason, ConfirmBlocked: b.ConfirmBlocked}
 }
 
 func (h *adminHandlers) approveChangeRequest(w http.ResponseWriter, r *http.Request) {
@@ -247,11 +254,14 @@ func (h *adminHandlers) approveChangeRequest(w http.ResponseWriter, r *http.Requ
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	bookID, err := h.pricesync.Approve(r.Context(), id, body.DecidedBy)
+	bookID, err := h.pricesync.Approve(r.Context(), id, body.meta(r))
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
+	h.recordAudit(r, "price_change.approve", "price_change_request", strconv.FormatInt(id, 10), nil,
+		map[string]any{"applied_book_id": bookID, "reason": body.Reason, "confirm_blocked": body.ConfirmBlocked})
 	httpx.WriteJSON(w, http.StatusOK, map[string]int64{"applied_book_id": bookID})
 }
 
@@ -269,9 +279,12 @@ func (h *adminHandlers) rejectChangeRequest(w http.ResponseWriter, r *http.Reque
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	if err := h.pricesync.Reject(r.Context(), id, body.DecidedBy); err != nil {
+	if err := h.pricesync.Reject(r.Context(), id, body.meta(r)); err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
+	invalidateTodoCache()
+	h.recordAudit(r, "price_change.reject", "price_change_request", strconv.FormatInt(id, 10), nil,
+		map[string]any{"status": "rejected", "reason": body.Reason})
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }

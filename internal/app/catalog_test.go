@@ -50,22 +50,22 @@ func TestCatalog_PublicEndpoint_ReturnsActiveFreeTierModelsWithSellPrice(t *test
 
 	var vm struct{ ID int64 }
 	ac.post("/virtual-models", map[string]any{
-		"Name": visibleName, "Family": "test", "Type": "chat",
-		"ContextWindow": 128000, "MaxOutput": 8192, "Capabilities": []string{"stream"},
-		"VisibleTiers": []string{"free"},
+		"name": visibleName, "family": "test", "type": "chat",
+		"context_window": 128000, "max_output": 8192, "capabilities": []string{"stream"},
+		"visible_tiers": []string{"free"},
 	}, &vm)
 	ac.post(fmt.Sprintf("/virtual-models/%d/sell-price", vm.ID), map[string]any{
 		"components": []map[string]any{
-			{"Meter": "input", "Unit": "per_1m_tokens", "UnitPrice": "1.5"},
-			{"Meter": "output", "Unit": "per_1m_tokens", "UnitPrice": "3"},
+			{"meter": "input", "unit": "per_1m_tokens", "unit_price": "1.5"},
+			{"meter": "output", "unit": "per_1m_tokens", "unit_price": "3"},
 		},
 	}, nil)
 
 	// visible_tiers 不含 free：不应该出现在公开目录里。
 	ac.post("/virtual-models", map[string]any{
-		"Name": hiddenName, "Family": "test", "Type": "chat",
-		"ContextWindow": 128000, "MaxOutput": 8192, "Capabilities": []string{},
-		"VisibleTiers": []string{"enterprise"},
+		"name": hiddenName, "family": "test", "type": "chat",
+		"context_window": 128000, "max_output": 8192, "capabilities": []string{},
+		"visible_tiers": []string{"enterprise"},
 	}, nil)
 
 	catalogStore := catalog.NewStore(pool, box, 0) // TTL=0：每次 Get 都重新加载
