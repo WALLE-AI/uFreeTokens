@@ -20,7 +20,7 @@ import {
   SlidersHorizontal,
   X
 } from 'lucide-react';
-import { INITIAL_MODELS, PRIMARY_TAGS, synthesizeCallableModel, modelFromCatalog } from './data/models';
+import { INITIAL_MODELS, PRIMARY_TAGS, matchesPrimaryTag, synthesizeCallableModel, modelFromCatalog } from './data/models';
 import { Model, FilterState, SortOption, ViewMode, ModalityType } from './types';
 import { useApiKey } from './api/auth';
 import { listModels } from './api/models';
@@ -172,6 +172,17 @@ export default function App() {
     [baseModels]
   );
 
+  // 模态过滤 Tag 栏上的计数——之前是 data/models.ts 里写死的 444/52/29……，
+  // 和真实模型数据完全脱钩。现在用 matchesPrimaryTag 对 baseModels 实时统计，
+  // 数据库清空后这里也会正确显示 0。
+  const primaryTagCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    PRIMARY_TAGS.forEach((tag) => {
+      counts.set(tag.id, baseModels.filter((m) => matchesPrimaryTag(m, tag.id)).length);
+    });
+    return counts;
+  }, [baseModels]);
+
   // Keyboard shortcut ⌘K / Ctrl+K listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -244,17 +255,7 @@ export default function App() {
       }
 
       // Primary tag bar
-      if (filters.selectedPrimaryTag !== 'all') {
-        const tag = filters.selectedPrimaryTag;
-        if (tag === 'text' && !model.modalities.includes('text')) return false;
-        if (tag === 'image' && !model.modalities.includes('image')) return false;
-        if (tag === 'video' && !model.modalities.includes('video')) return false;
-        if (tag === 'audio' && !model.modalities.includes('audio')) return false;
-        if (tag === 'voice' && !model.tags.includes('voice') && !model.modalities.includes('audio')) return false;
-        if (tag === 'transcribe' && !model.tags.includes('transcription')) return false;
-        if (tag === 'embedding' && !model.tags.includes('embedding') && model.category !== 'Extraction') return false;
-        if (tag === 'rerank' && !model.tags.includes('rerank')) return false;
-      }
+      if (!matchesPrimaryTag(model, filters.selectedPrimaryTag)) return false;
 
       // Modalities checklist
       if (filters.selectedModalities.length > 0) {
@@ -832,6 +833,7 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-1.5 mb-4 text-xs select-none">
             {PRIMARY_TAGS.map((tag) => {
               const isSelected = filters.selectedPrimaryTag === tag.id;
+              const count = primaryTagCounts.get(tag.id) ?? 0;
               return (
                 <button
                   key={tag.id}
@@ -843,11 +845,9 @@ export default function App() {
                   }`}
                 >
                   <span>{tag.title}</span>
-                  {tag.count && (
-                    <span className={`ml-1 ${isSelected ? 'text-purple-200' : 'text-gray-400'}`}>
-                      {tag.count}
-                    </span>
-                  )}
+                  <span className={`ml-1 ${isSelected ? 'text-purple-200' : 'text-gray-400'}`}>
+                    {count}
+                  </span>
                 </button>
               );
             })}

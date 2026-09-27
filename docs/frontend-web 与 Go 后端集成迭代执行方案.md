@@ -1,5 +1,5 @@
 # frontend/web × Go 后端（V2）集成：迭代执行方案
-
+claude --resume d858d3ae-bf83-4b77-9048-f89cfb2da06d
 ## Context
 
 `frontend/web` 目前是纯 mock 的 React SPA：没有任何 fetch，模型列表写死，Playground 用 setTimeout 伪造回复，个人中心的 Key、余额、日志都是假数据。后端 gateway 已经提供 `/v1/models`、`/v1/usage`、`/v1/chat/completions`（流式），但存在几个会直接阻塞集成的问题：

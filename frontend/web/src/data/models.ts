@@ -753,14 +753,44 @@ export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model 
   };
 }
 
-export const PRIMARY_TAGS = [
-  { id: 'all', title: '全部', count: 444 },
-  { id: 'text', title: 'T 文本', count: 444 },
-  { id: 'image', title: '图像', count: 52 },
-  { id: 'video', title: '视频', count: 29 },
-  { id: 'voice', title: '语音', count: 18 },
-  { id: 'transcribe', title: '转写', count: 21 },
-  { id: 'embedding', title: '嵌入', count: 37 },
-  { id: 'rerank', title: '重排序', count: 7 },
-  { id: 'audio', title: '音频', count: 4 },
+// 注意：这里以前带着写死的 count（全部444/文本444/……），和真实模型数据完全
+// 脱钩——即便后端目录清空、filteredModels 变成 0 条，这排数字也纹丝不动。
+// count 现在改为在 App.tsx 里用 matchesPrimaryTag 对 baseModels 实时统计。
+export const PRIMARY_TAGS: { id: string; title: string }[] = [
+  { id: 'all', title: '全部' },
+  { id: 'text', title: 'T 文本' },
+  { id: 'image', title: '图像' },
+  { id: 'video', title: '视频' },
+  { id: 'voice', title: '语音' },
+  { id: 'transcribe', title: '转写' },
+  { id: 'embedding', title: '嵌入' },
+  { id: 'rerank', title: '重排序' },
+  { id: 'audio', title: '音频' },
 ];
+
+// 模态过滤 Tag 栏的匹配规则——App.tsx 的过滤流水线和分类计数统计共用这一份
+// 逻辑，避免两处各写一套、后续改动漏掉一处导致计数和实际过滤结果对不上。
+export function matchesPrimaryTag(model: Model, tag: string): boolean {
+  switch (tag) {
+    case 'all':
+      return true;
+    case 'text':
+      return model.modalities.includes('text');
+    case 'image':
+      return model.modalities.includes('image');
+    case 'video':
+      return model.modalities.includes('video');
+    case 'audio':
+      return model.modalities.includes('audio');
+    case 'voice':
+      return model.tags.includes('voice') || model.modalities.includes('audio');
+    case 'transcribe':
+      return model.tags.includes('transcription');
+    case 'embedding':
+      return model.tags.includes('embedding') || model.category === 'Extraction';
+    case 'rerank':
+      return model.tags.includes('rerank');
+    default:
+      return true;
+  }
+}
