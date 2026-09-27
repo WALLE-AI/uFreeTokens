@@ -233,6 +233,84 @@ func (s *Service) HandleWallet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleUsageInterval 是 GET /console/usage?from=&to=&group_by=day|model 的
+// 入口：需要会话。from/to 是 YYYY-MM-DD，留空默认本月至今；区间最长 90 天
+// （技术方案迭代5）。
+func (s *Service) HandleUsageInterval(w http.ResponseWriter, r *http.Request) {
+	sess, ok := SessionFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Not logged in.")
+		return
+	}
+	q := r.URL.Query()
+	from, err := parseOptionalDate(q.Get("from"))
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "'from' must be YYYY-MM-DD.")
+		return
+	}
+	to, err := parseOptionalDate(q.Get("to"))
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "'to' must be YYYY-MM-DD.")
+		return
+	}
+
+	rows, err := s.UsageInterval(r.Context(), sess.AccountID, from, to, q.Get("group_by"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidGroupBy):
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "'group_by' must be 'day' or 'model'.")
+		case errors.Is(err, ErrInvalidDateRange):
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid date range: max 90 days, and 'from' must not be after 'to'.")
+		default:
+			s.logger.Error("console: usage interval failed", "error", err)
+			httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to load usage.")
+		}
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": rows})
+}
+
+func parseOptionalDate(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse("2006-01-02", s)
+}
+
+// HandleLogs 是 GET /console/logs?before=&limit=&api_key_id= 的入口：需要
+// 会话。keyset 分页，倒序，时间窗最长 30 天，每页最多 100 条（技术方案迭代5）。
+func (s *Service) HandleLogs(w http.ResponseWriter, r *http.Request) {
+	sess, ok := SessionFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Not logged in.")
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+
+	var apiKeyID int64
+	if v := q.Get("api_key_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'api_key_id'.")
+			return
+		}
+		apiKeyID = id
+	}
+
+	entries, next, err := s.ListLogs(r.Context(), sess.AccountID, q.Get("before"), limit, apiKeyID)
+	if err != nil {
+		if errors.Is(err, ErrInvalidCursor) {
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'before' cursor.")
+			return
+		}
+		s.logger.Error("console: list logs failed", "error", err)
+		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to load logs.")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": entries, "next_cursor": next})
+}
+
 func apiKeyToJSON(k admin.APIKey) map[string]any {
 	return map[string]any{
 		"id": k.ID, "name": k.Name, "display_prefix": k.DisplayPrefix, "status": k.Status,

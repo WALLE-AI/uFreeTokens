@@ -110,6 +110,15 @@ func run() error {
 		CookieSecure: cfg.Console.CookieSecure,
 	})
 
+	// GET /v1/catalog 复用 relaySvc 的 catalog.Store（同一份配置快照，没必要
+	// 各自维护一份）；relaySvc 为 nil（没配 KEK）时目录接口一并返回 503——
+	// 加载快照本身需要能解密上游 Key（即便公开目录用不到明文），见
+	// buildRelayService 和 catalog.Store.loadProviderKeys 的注释。
+	var catalogStore *catalog.Store
+	if relaySvc != nil {
+		catalogStore = relaySvc.Catalog
+	}
+
 	router := app.NewGatewayRouter(app.GatewayDeps{
 		Cfg:        cfg,
 		Logger:     logger,
@@ -120,6 +129,8 @@ func run() error {
 		Pepper:     pepper,
 		Relay:      relaySvc,
 		Console:    consoleSvc,
+		Catalog:    catalogStore,
+		RateLimit:  consoleRateLimit,
 		TestWebDir: testWebDir,
 	})
 

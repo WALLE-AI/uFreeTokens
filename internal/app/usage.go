@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -36,13 +37,25 @@ type usageTotals struct {
 // 多少 token"这个自助查询的 HTTP 入口——钱包余额直接查 wallets 表，累计用量
 // 从 request_logs 按 account_id 聚合（status='success'，和
 // internal/reconcile.CheckLedgerVsRequestLogs 用的同一个"成功请求"口径）。
-// 只读，不写任何表。
+// 只读，不写任何表。可选的 ?since=（RFC3339）把用量统计的起点从"全量历史"
+// 收窄到某个时间点之后；留空（默认）保持全量，兼容 test_web 和已有调用方
+// （技术方案迭代5：新增区间查询走 /console/usage，这里只加最小的过滤能力）。
 func usageHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := auth.FromContext(r.Context())
 		if !ok {
 			httpx.WriteError(w, r, http.StatusUnauthorized, "invalid_api_key", "Invalid API key.")
 			return
+		}
+
+		var since *time.Time
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "'since' must be RFC3339.")
+				return
+			}
+			since = &t
 		}
 
 		var wallet usageWallet
@@ -57,8 +70,9 @@ func usageHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		var totals usageTotals
 		if err := pool.QueryRow(r.Context(),
 			`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(charged_amount), 0)
-			 FROM request_logs WHERE account_id = $1 AND status = 'success'`,
-			principal.AccountID,
+			 FROM request_logs
+			 WHERE account_id = $1 AND status = 'success' AND ($2::timestamptz IS NULL OR created_at >= $2)`,
+			principal.AccountID, since,
 		).Scan(&totals.TotalRequests, &totals.TotalInputTokens, &totals.TotalOutputTokens, &totals.TotalChargedAmountMicro); err != nil {
 			httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to load usage totals.")
 			return

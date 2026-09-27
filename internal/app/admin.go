@@ -72,6 +72,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 		r.Post("/virtual-models", h.createVirtualModel)
 		r.Get("/virtual-models", h.getVirtualModelByName)
 		r.Post("/virtual-models/{virtualModelID}/sell-price", h.setSellPrice)
+		r.Put("/virtual-models/{virtualModelID}/metadata", h.setVirtualModelMetadata)
 		r.Post("/channels", h.createChannel)
 		r.Get("/channels", h.findChannel)
 		r.Post("/channels/{channelID}/cost-price", h.setCostPrice)
@@ -435,6 +436,37 @@ func (h *adminHandlers) getVirtualModelByName(w http.ResponseWriter, r *http.Req
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, vm)
+}
+
+// setVirtualModelMetadata 是 PUT /virtual-models/{id}/metadata 的入口
+// （技术方案迭代5）：运营录入公开目录 GET /v1/catalog 的展示层文案与评分。
+func (h *adminHandlers) setVirtualModelMetadata(w http.ResponseWriter, r *http.Request) {
+	vmID, ok := pathInt64(r, "virtualModelID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid virtual model id")
+		return
+	}
+	var body struct {
+		DisplayName     string         `json:"display_name"`
+		Description     string         `json:"description"`
+		ProviderDisplay string         `json:"provider_display"`
+		Tags            []string       `json:"tags"`
+		Scores          map[string]any `json:"scores"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	in := admin.SetVirtualModelMetadataInput{
+		VirtualModelID: vmID, DisplayName: body.DisplayName, Description: body.Description,
+		ProviderDisplay: body.ProviderDisplay, Tags: body.Tags, Scores: body.Scores,
+	}
+	if err := h.svc.SetVirtualModelMetadata(r.Context(), in); err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	h.recordAudit(r, "virtual_model_metadata.set", "virtual_model", strconv.FormatInt(vmID, 10), nil, in)
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *adminHandlers) createChannel(w http.ResponseWriter, r *http.Request) {

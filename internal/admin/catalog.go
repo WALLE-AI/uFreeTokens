@@ -2,10 +2,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
@@ -210,6 +212,60 @@ func (s *Service) GetVirtualModelByName(ctx context.Context, name string) (*Virt
 		return nil, fmt.Errorf("admin: get virtual_model by name: %w", err)
 	}
 	return vm, nil
+}
+
+// SetVirtualModelMetadataInput 对应一条 virtual_model_metadata（技术方案
+// 迭代5：GET /v1/catalog 公开目录的展示层信息，由运营录入，不是自动生成的）。
+type SetVirtualModelMetadataInput struct {
+	VirtualModelID  int64
+	DisplayName     string
+	Description     string
+	ProviderDisplay string
+	Tags            []string
+	Scores          map[string]any // nil = 不设置/清空评分
+}
+
+// SetVirtualModelMetadata upsert 一条虚拟模型的展示层元数据（技术方案 §6：
+// 挂牌类文案/评分改动，不像价格那样要求版本化保留历史，改错了直接覆盖）。
+// virtual_model_id 不存在时返回 ErrVirtualModelNotFound（外键约束会拒绝插入，
+// 这里把 Postgres 的 23503 错误码翻译成包内统一的哨兵错误）。
+func (s *Service) SetVirtualModelMetadata(ctx context.Context, in SetVirtualModelMetadataInput) error {
+	if in.VirtualModelID <= 0 {
+		return errors.New("admin: virtual_model_id is required")
+	}
+	tags := in.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	var scoresJSON []byte
+	if in.Scores != nil {
+		var err error
+		scoresJSON, err = json.Marshal(in.Scores)
+		if err != nil {
+			return fmt.Errorf("admin: marshal scores: %w", err)
+		}
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO virtual_model_metadata (virtual_model_id, display_name, description, provider_display, tags, scores, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5, $6, now())
+		 ON CONFLICT (virtual_model_id) DO UPDATE SET
+		   display_name = EXCLUDED.display_name,
+		   description = EXCLUDED.description,
+		   provider_display = EXCLUDED.provider_display,
+		   tags = EXCLUDED.tags,
+		   scores = EXCLUDED.scores,
+		   updated_at = now()`,
+		in.VirtualModelID, in.DisplayName, in.Description, in.ProviderDisplay, tags, scoresJSON,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrVirtualModelNotFound
+		}
+		return fmt.Errorf("admin: upsert virtual_model_metadata: %w", err)
+	}
+	return nil
 }
 
 type Channel struct {

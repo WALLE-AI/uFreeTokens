@@ -14,25 +14,33 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/auth"
+	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/console"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 )
 
 // GatewayDeps 是构造网关路由所需的全部依赖，由 cmd/gateway/main.go 装配后传入。
 type GatewayDeps struct {
-	Cfg        *config.Config
-	Logger     *slog.Logger
-	Metrics    *observability.Metrics
-	PG         *pgxpool.Pool
-	Redis      *redis.Client
-	AuthStore  auth.Store
-	Pepper     []byte
-	Relay      *relay.Service   // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
-	Console    *console.Service // nil 时不挂载 /console/*（技术方案迭代3：Console 接口挂在 gateway 进程）
-	TestWebDir string           // 非空时在根路径同源提供 test_web/user.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
+	Cfg       *config.Config
+	Logger    *slog.Logger
+	Metrics   *observability.Metrics
+	PG        *pgxpool.Pool
+	Redis     *redis.Client
+	AuthStore auth.Store
+	Pepper    []byte
+	Relay     *relay.Service   // nil 时 /v1/chat/completions 等 relay 端点返回 503 not_implemented
+	Console   *console.Service // nil 时不挂载 /console/*（技术方案迭代3：Console 接口挂在 gateway 进程）
+	// Catalog 为 nil 时 GET /v1/catalog 返回 503 not_implemented（技术方案
+	// 迭代5：公开模型目录）。和 Relay 共用同一个 catalog.Store 实例——
+	// 二者本来就该看到同一份配置快照，没必要各自维护一份。
+	Catalog *catalog.Store
+	// RateLimit 目前只给 GET /v1/catalog 的按 IP 限流用；nil 时跳过限流。
+	RateLimit  *ratelimit.Limiter
+	TestWebDir string // 非空时在根路径同源提供 test_web/user.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
 }
 
 // NewGatewayRouter 组装数据面路由。/v1/chat/completions、/v1/embeddings 已接入
@@ -62,23 +70,35 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 		if origins := splitCommaList(d.Cfg); len(origins) > 0 {
 			v1.Use(httpx.CORS(origins))
 		}
-		v1.Use(auth.APIKey(d.AuthStore, d.Pepper))
 
-		v1.Get("/models", listModelsHandler(d.PG))
-		v1.Get("/usage", usageHandler(d.PG))
-		if d.Relay != nil {
-			v1.Post("/chat/completions", d.Relay.ChatCompletions)
-			v1.Post("/embeddings", d.Relay.Embeddings)
-			v1.Post("/messages", d.Relay.Messages)
+		// /v1/catalog 是公开模型目录（技术方案迭代5），故意不挂 auth.APIKey——
+		// 免鉴权是它存在的意义（给未注册的访客展示模型库）；按 IP 限流 +
+		// Cache-Control 防止被爬虫打爆，见 catalogHandler 的注释。
+		if d.Catalog != nil {
+			v1.Get("/catalog", catalogHandler(d.Catalog, d.RateLimit))
 		} else {
-			v1.Post("/chat/completions", notImplementedHandler("chat.completions"))
-			v1.Post("/embeddings", notImplementedHandler("embeddings"))
-			v1.Post("/messages", notImplementedHandler("messages"))
+			v1.Get("/catalog", notImplementedHandler("catalog"))
 		}
-		v1.Post("/completions", notImplementedHandler("completions"))
-		v1.Post("/images/generations", notImplementedHandler("images.generations"))
-		v1.Post("/audio/transcriptions", notImplementedHandler("audio.transcriptions"))
-		v1.Post("/audio/speech", notImplementedHandler("audio.speech"))
+
+		v1.Group(func(authed chi.Router) {
+			authed.Use(auth.APIKey(d.AuthStore, d.Pepper))
+
+			authed.Get("/models", listModelsHandler(d.PG))
+			authed.Get("/usage", usageHandler(d.PG))
+			if d.Relay != nil {
+				authed.Post("/chat/completions", d.Relay.ChatCompletions)
+				authed.Post("/embeddings", d.Relay.Embeddings)
+				authed.Post("/messages", d.Relay.Messages)
+			} else {
+				authed.Post("/chat/completions", notImplementedHandler("chat.completions"))
+				authed.Post("/embeddings", notImplementedHandler("embeddings"))
+				authed.Post("/messages", notImplementedHandler("messages"))
+			}
+			authed.Post("/completions", notImplementedHandler("completions"))
+			authed.Post("/images/generations", notImplementedHandler("images.generations"))
+			authed.Post("/audio/transcriptions", notImplementedHandler("audio.transcriptions"))
+			authed.Post("/audio/speech", notImplementedHandler("audio.speech"))
+		})
 	})
 
 	// /console/* 完全不挂 CORS（httpOnly Cookie 会话只信任同源请求，见
@@ -95,6 +115,8 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 				authed.Get("/me", d.Console.HandleMe)
 				authed.Get("/api-keys", d.Console.HandleListKeys)
 				authed.Get("/wallet", d.Console.HandleWallet)
+				authed.Get("/usage", d.Console.HandleUsageInterval)
+				authed.Get("/logs", d.Console.HandleLogs)
 
 				authed.Group(func(mutating chi.Router) {
 					mutating.Use(console.CSRFGuard)

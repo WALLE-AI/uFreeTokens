@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
@@ -26,6 +28,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/console"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
+	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
 
@@ -100,9 +103,11 @@ func resetConsoleIPRateLimits(t *testing.T, rdb *redis.Client) {
 	_ = rdb.Del(ctx, "rate:uft:rpm:console:register:ip:127.0.0.1", "rate:uft:rpm:console:login:ip:127.0.0.1").Err()
 }
 
-func buildConsoleGateway(t *testing.T) (gwURL string, consoleSvc *console.Service) {
+func buildConsoleGateway(t *testing.T) (gwURL string, consoleSvc *console.Service, pool *pgxpool.Pool) {
 	t.Helper()
-	pool, rdb, box := testPool(t), testRedis(t), testBox(t)
+	var rdb *redis.Client
+	var box *secretbox.Box
+	pool, rdb, box = testPool(t), testRedis(t), testBox(t)
 	resetConsoleIPRateLimits(t, rdb)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 
@@ -117,7 +122,7 @@ func buildConsoleGateway(t *testing.T) (gwURL string, consoleSvc *console.Servic
 		Pepper: []byte(testPepper), Console: consoleSvc,
 	}))
 	t.Cleanup(gw.Close)
-	return gw.URL, consoleSvc
+	return gw.URL, consoleSvc, pool
 }
 
 func uniqueEmail(t *testing.T) string {
@@ -126,7 +131,7 @@ func uniqueEmail(t *testing.T) string {
 }
 
 func TestConsole_RegisterLoginCreateKeyCallAndRevoke(t *testing.T) {
-	gwURL, _ := buildConsoleGateway(t)
+	gwURL, _, _ := buildConsoleGateway(t)
 	c := newConsoleClient(t, gwURL)
 	email := uniqueEmail(t)
 
@@ -201,7 +206,7 @@ func TestConsole_RegisterLoginCreateKeyCallAndRevoke(t *testing.T) {
 }
 
 func TestConsole_CannotRevokeAnotherAccountsKey(t *testing.T) {
-	gwURL, _ := buildConsoleGateway(t)
+	gwURL, _, _ := buildConsoleGateway(t)
 
 	// 账户 A：注册、登录、建一把 Key。
 	a := newConsoleClient(t, gwURL)
@@ -240,7 +245,7 @@ func TestConsole_CannotRevokeAnotherAccountsKey(t *testing.T) {
 }
 
 func TestConsole_WriteWithoutCSRFHeaderIsRejected(t *testing.T) {
-	gwURL, _ := buildConsoleGateway(t)
+	gwURL, _, _ := buildConsoleGateway(t)
 	c := newConsoleClient(t, gwURL)
 	email := uniqueEmail(t)
 	if resp, body := c.register(email, "correct horse battery staple"); resp.StatusCode != http.StatusCreated {
@@ -257,7 +262,7 @@ func TestConsole_WriteWithoutCSRFHeaderIsRejected(t *testing.T) {
 }
 
 func TestConsole_LoginRateLimitedAfterTooManyAttempts(t *testing.T) {
-	gwURL, _ := buildConsoleGateway(t)
+	gwURL, _, _ := buildConsoleGateway(t)
 	c := newConsoleClient(t, gwURL)
 	email := uniqueEmail(t)
 	if resp, body := c.register(email, "correct horse battery staple"); resp.StatusCode != http.StatusCreated {
@@ -283,7 +288,7 @@ func TestConsole_LoginRateLimitedAfterTooManyAttempts(t *testing.T) {
 }
 
 func TestConsole_WrongPasswordAndUnknownEmailReturnIdenticalResponses(t *testing.T) {
-	gwURL, _ := buildConsoleGateway(t)
+	gwURL, _, _ := buildConsoleGateway(t)
 
 	registered := newConsoleClient(t, gwURL)
 	email := uniqueEmail(t)
@@ -318,5 +323,211 @@ func TestConsole_WrongPasswordAndUnknownEmailReturnIdenticalResponses(t *testing
 	}
 	if wrongPassErr.Error.Code != unknownErr.Error.Code || wrongPassErr.Error.Message != unknownErr.Error.Message {
 		t.Errorf("responses differ: wrong-password = %+v, unknown-email = %+v, want identical (avoid email enumeration)", wrongPassErr, unknownErr)
+	}
+}
+
+// registerLoginAndCreateKey 是迭代5用量/日志测试共用的 setup：注册、登录、
+// 建一把 Key，返回一个带会话 Cookie 的客户端和这个账户的 (account_id,
+// api_key_id)，供直接往 request_logs 插种子数据用。
+func registerLoginAndCreateKey(t *testing.T, gwURL string) (c *consoleClient, accountID, apiKeyID int64) {
+	t.Helper()
+	c = newConsoleClient(t, gwURL)
+	email := uniqueEmail(t)
+
+	resp, body := c.register(email, "correct horse battery staple")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d, body = %s", resp.StatusCode, body)
+	}
+	var reg struct {
+		AccountID int64 `json:"account_id"`
+	}
+	if err := json.Unmarshal(body, &reg); err != nil {
+		t.Fatalf("unmarshal register response %s: %v", body, err)
+	}
+
+	if resp, body = c.login(email, "correct horse battery staple"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	resp, body = c.do(http.MethodPost, "/console/api-keys", map[string]any{"name": "seed-key"}, true)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create key status = %d, body = %s", resp.StatusCode, body)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("unmarshal create key response %s: %v", body, err)
+	}
+	return c, reg.AccountID, created.ID
+}
+
+// seedRequestLog 直接插入一行 request_logs——迭代5的用量区间/日志分页测试
+// 只需要验证聚合/keyset 分页逻辑正确，不需要走完整的 relay 链路（那需要真实
+// 上游），直接造数据更直接。
+func seedRequestLog(t *testing.T, pool *pgxpool.Pool, accountID, apiKeyID int64, requestID string, createdAt time.Time, vmName string, inputTokens, outputTokens, chargedAmount int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO request_logs
+		   (request_id, created_at, account_id, api_key_id, virtual_model, endpoint, is_stream, status, usage_source, input_tokens, output_tokens, charged_amount, http_status, latency_ms)
+		 VALUES ($1, $2, $3, $4, $5, 'chat.completions', false, 'success', 'upstream', $6, $7, $8, 200, 100)`,
+		requestID, createdAt, accountID, apiKeyID, vmName, inputTokens, outputTokens, chargedAmount,
+	); err != nil {
+		t.Fatalf("seed request_log: %v", err)
+	}
+}
+
+func TestConsole_UsageInterval_GroupsByDayAndModel(t *testing.T) {
+	gwURL, _, pool := buildConsoleGateway(t)
+	c, accountID, apiKeyID := registerLoginAndCreateKey(t, gwURL)
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.UTC)
+	yesterday := today.AddDate(0, 0, -1)
+	suffix := fmt.Sprintf("%d", now.UnixNano())
+	modelA := "usage-interval-a-" + suffix
+	modelB := "usage-interval-b-" + suffix
+
+	seedRequestLog(t, pool, accountID, apiKeyID, "req-"+suffix+"-1", today, modelA, 100, 50, 150)
+	seedRequestLog(t, pool, accountID, apiKeyID, "req-"+suffix+"-2", today.Add(time.Hour), modelA, 200, 100, 300)
+	seedRequestLog(t, pool, accountID, apiKeyID, "req-"+suffix+"-3", yesterday, modelB, 10, 5, 15)
+
+	resp, body := c.do(http.MethodGet, "/console/usage?group_by=day", nil, false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("usage?group_by=day status = %d, body = %s", resp.StatusCode, body)
+	}
+	var byDay struct {
+		Data []console.UsageIntervalRow `json:"data"`
+	}
+	if err := json.Unmarshal(body, &byDay); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	todayKey := today.Format("2006-01-02")
+	yesterdayKey := yesterday.Format("2006-01-02")
+	var gotToday, gotYesterday *console.UsageIntervalRow
+	for i := range byDay.Data {
+		switch byDay.Data[i].Group {
+		case todayKey:
+			gotToday = &byDay.Data[i]
+		case yesterdayKey:
+			gotYesterday = &byDay.Data[i]
+		}
+	}
+	if gotToday == nil || gotToday.Requests != 2 || gotToday.InputTokens != 300 || gotToday.OutputTokens != 150 || gotToday.ChargedAmountMicro != 450 {
+		t.Errorf("today's row = %+v, want requests=2 input=300 output=150 charged=450", gotToday)
+	}
+	if gotYesterday == nil || gotYesterday.Requests != 1 || gotYesterday.ChargedAmountMicro != 15 {
+		t.Errorf("yesterday's row = %+v, want requests=1 charged=15", gotYesterday)
+	}
+
+	resp, body = c.do(http.MethodGet, "/console/usage?group_by=model", nil, false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("usage?group_by=model status = %d, body = %s", resp.StatusCode, body)
+	}
+	var byModel struct {
+		Data []console.UsageIntervalRow `json:"data"`
+	}
+	if err := json.Unmarshal(body, &byModel); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	var gotModelA *console.UsageIntervalRow
+	for i := range byModel.Data {
+		if byModel.Data[i].Group == modelA {
+			gotModelA = &byModel.Data[i]
+		}
+	}
+	if gotModelA == nil || gotModelA.Requests != 2 || gotModelA.ChargedAmountMicro != 450 {
+		t.Errorf("model A row = %+v, want requests=2 charged=450", gotModelA)
+	}
+}
+
+func TestConsole_UsageInterval_RejectsRangeOver90Days(t *testing.T) {
+	gwURL, _, _ := buildConsoleGateway(t)
+	c, _, _ := registerLoginAndCreateKey(t, gwURL)
+
+	from := time.Now().AddDate(0, 0, -200).Format("2006-01-02")
+	to := time.Now().Format("2006-01-02")
+	resp, body := c.do(http.MethodGet, "/console/usage?from="+from+"&to="+to, nil, false)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestConsole_Logs_KeysetPaginationWindowAndCrossAccountIsolation(t *testing.T) {
+	gwURL, _, pool := buildConsoleGateway(t)
+	a, accountA, apiKeyA := registerLoginAndCreateKey(t, gwURL)
+	_, accountB, apiKeyB := registerLoginAndCreateKey(t, gwURL)
+
+	base := time.Now().UTC()
+	suffix := fmt.Sprintf("%d", base.UnixNano())
+	var requestIDs []string
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("log-%s-%d", suffix, i)
+		requestIDs = append(requestIDs, id)
+		// 各差 1 秒，保证 (created_at, request_id) 排序确定、不会因为时钟精度
+		// 撞在同一时间戳上。
+		seedRequestLog(t, pool, accountA, apiKeyA, id, base.Add(time.Duration(i)*time.Second), "logs-e2e-"+suffix, 10, 5, 15)
+	}
+	seedRequestLog(t, pool, accountB, apiKeyB, "log-b-"+suffix, base, "logs-e2e-"+suffix, 1, 1, 1)
+
+	// 倒序分页，每页 2 条，应该恰好翻 3 页（2+2+1）拿完账户 A 的全部 5 条，
+	// 且严格按 created_at 倒序，不包含账户 B 的那一条。
+	var collected []string
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		path := "/console/logs?limit=2"
+		if cursor != "" {
+			path += "&before=" + url.QueryEscape(cursor)
+		}
+		resp, body := a.do(http.MethodGet, path, nil, false)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("logs page %d status = %d, body = %s", page, resp.StatusCode, body)
+		}
+		var out struct {
+			Data       []console.LogEntry `json:"data"`
+			NextCursor string             `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		for _, e := range out.Data {
+			collected = append(collected, e.RequestID)
+			if e.VirtualModel != "logs-e2e-"+suffix && e.RequestID != "log-b-"+suffix {
+				t.Errorf("unexpected log entry leaked in: %+v", e)
+			}
+		}
+		if len(out.Data) < 2 {
+			break // 最后一页不满，说明拿完了
+		}
+		cursor = out.NextCursor
+	}
+
+	if len(collected) != 5 {
+		t.Fatalf("collected %d entries across pages, want 5: %v", len(collected), collected)
+	}
+	// requestIDs 是按 created_at 升序造的种子数据；分页是倒序返回，所以 collected
+	// 应该正好是 requestIDs 反过来。
+	for i, id := range collected {
+		want := requestIDs[len(requestIDs)-1-i]
+		if id != want {
+			t.Errorf("collected[%d] = %q, want %q (wrong keyset order)", i, id, want)
+		}
+	}
+
+	// 跨账户隔离：A 的会话传 B 的 api_key_id 过滤，不应该看到 B 的数据
+	// （也不应该报错——account_id 恒等于调用方自己的账户，参数不匹配就是空
+	// 结果，不用专门做 403）。
+	resp, body := a.do(http.MethodGet, fmt.Sprintf("/console/logs?api_key_id=%d", apiKeyB), nil, false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cross-account filter status = %d, body = %s", resp.StatusCode, body)
+	}
+	var crossOut struct {
+		Data []console.LogEntry `json:"data"`
+	}
+	if err := json.Unmarshal(body, &crossOut); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	if len(crossOut.Data) != 0 {
+		t.Errorf("cross-account api_key_id filter returned %d entries, want 0: %+v", len(crossOut.Data), crossOut.Data)
 	}
 }

@@ -7,6 +7,7 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -28,6 +29,21 @@ type VirtualModel struct {
 	Capabilities  []string
 	VisibleTiers  []string
 	Status        string
+	// Metadata 是运营在 virtual_model_metadata 表里维护的展示层信息（技术方案
+	// 迭代5：GET /v1/catalog 公开目录）。nil 表示运营还没有为这个模型录入过
+	// 元数据；路由/计费逻辑完全不关心这个字段，只有公开目录接口读它。
+	Metadata *VirtualModelMetadata
+}
+
+// VirtualModelMetadata 对应 virtual_model_metadata 表的一行（运营录入，
+// 不是订阅上游拿到的数据）。Scores 的具体键名（如 intelligence_index）由
+// 运营和前端约定，后端不解析、不校验其内部结构，原样透传。
+type VirtualModelMetadata struct {
+	DisplayName     string
+	Description     string
+	ProviderDisplay string
+	Tags            []string
+	Scores          map[string]any
 }
 
 // HasCapability 判断该虚拟模型是否声明了某能力（tools/vision/json_schema/stream 等）。
@@ -219,6 +235,9 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 	if err := s.loadModels(ctx, snap); err != nil {
 		return nil, err
 	}
+	if err := s.loadMetadata(ctx, snap); err != nil {
+		return nil, err
+	}
 	if err := s.loadProviderAccounts(ctx, snap); err != nil {
 		return nil, err
 	}
@@ -338,6 +357,52 @@ func (s *Store) loadModels(ctx context.Context, snap *Snapshot) error {
 			return fmt.Errorf("catalog: scan virtual_model: %w", err)
 		}
 		snap.Models[m.Name] = m
+	}
+	return rows.Err()
+}
+
+// loadMetadata 用虚拟模型名字关联 virtual_model_metadata（LEFT JOIN 的效果
+// 通过"找不到就跳过"实现，而不是真的写 SQL LEFT JOIN——loadModels 已经把
+// 全部 active 虚拟模型加载进 snap.Models，这里只需要把有元数据的那些补上
+// Metadata 字段）。元数据行对应的模型如果已下架/隐藏（不在 snap.Models 里），
+// 直接跳过：元数据是纯展示层数据，没有宿主模型时没有意义。
+func (s *Store) loadMetadata(ctx context.Context, snap *Snapshot) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT vm.name, m.display_name, m.description, m.provider_display, m.tags, m.scores
+		 FROM virtual_model_metadata m JOIN virtual_models vm ON vm.id = m.virtual_model_id`)
+	if err != nil {
+		return fmt.Errorf("catalog: load virtual_model_metadata: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			name                                      string
+			displayName, description, providerDisplay *string
+			tags                                      []string
+			scoresRaw                                 []byte
+		)
+		if err := rows.Scan(&name, &displayName, &description, &providerDisplay, &tags, &scoresRaw); err != nil {
+			return fmt.Errorf("catalog: scan virtual_model_metadata: %w", err)
+		}
+		vm, ok := snap.Models[name]
+		if !ok {
+			continue
+		}
+		meta := &VirtualModelMetadata{Tags: tags}
+		if displayName != nil {
+			meta.DisplayName = *displayName
+		}
+		if description != nil {
+			meta.Description = *description
+		}
+		if providerDisplay != nil {
+			meta.ProviderDisplay = *providerDisplay
+		}
+		if len(scoresRaw) > 0 {
+			_ = json.Unmarshal(scoresRaw, &meta.Scores)
+		}
+		vm.Metadata = meta
 	}
 	return rows.Err()
 }
