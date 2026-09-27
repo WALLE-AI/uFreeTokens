@@ -19,10 +19,11 @@ import {
   SlidersHorizontal,
   X
 } from 'lucide-react';
-import { INITIAL_MODELS, PRIMARY_TAGS, synthesizeCallableModel } from './data/models';
+import { INITIAL_MODELS, PRIMARY_TAGS, synthesizeCallableModel, modelFromCatalog } from './data/models';
 import { Model, FilterState, SortOption, ViewMode, ModalityType } from './types';
 import { useApiKey } from './api/auth';
 import { listModels } from './api/models';
+import { listCatalog, CatalogModel } from './api/catalog';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ModelCard } from './components/ModelCard';
@@ -88,9 +89,29 @@ export default function App() {
   const [activeNav, setActiveNav] = useState('模型');
   const [personalDashboardTab, setPersonalDashboardTab] = useState<string>('api-keys');
 
-  // 已连接 Key 时拉一次真实模型目录，和 mock 数据合并（技术方案迭代2：
-  // GET /v1/catalog 免鉴权公开目录要到迭代5才有，这里先用需要鉴权的
-  // GET /v1/models 表明"这把 Key 具体能调用哪些模型"）。
+  // 模型库以 GET /v1/catalog（免鉴权公开目录）为主数据源（技术方案迭代6），
+  // 匿名访客也能看到真实数据；INITIAL_MODELS 只在目录接口暂不可用时兜底，
+  // 以及给运营还没录入元数据的模型补展示层字段（描述、系列……），见
+  // data/models.ts 的 modelFromCatalog。
+  const [catalogModels, setCatalogModels] = useState<CatalogModel[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listCatalog()
+      .then((models) => {
+        if (!cancelled) setCatalogModels(models);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogModels(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 已连接 Key 时额外拉一次 GET /v1/models（需要鉴权），标记这把 Key 具体
+  // 能调用哪些模型——和公开目录是两个不同维度："模型存在"（catalog）不等于
+  // "这把 Key 能调用它"（models，比如 tier 限制或 allowed_models 白名单）。
   const apiKey = useApiKey();
   const [remoteModelIds, setRemoteModelIds] = useState<Set<string> | null>(null);
 
@@ -113,17 +134,20 @@ export default function App() {
   }, [apiKey]);
 
   const baseModels = useMemo<Model[]>(() => {
-    if (!remoteModelIds) return INITIAL_MODELS;
+    const mockById = new Map(INITIAL_MODELS.map((m) => [m.id, m]));
+    let models: Model[] = catalogModels
+      ? catalogModels.map((cm) => modelFromCatalog(cm, mockById.get(cm.name)))
+      : INITIAL_MODELS;
 
-    const mockIds = new Set(INITIAL_MODELS.map((m) => m.id));
-    const merged = INITIAL_MODELS.map((m) =>
-      remoteModelIds.has(m.id) ? { ...m, isCallable: true } : m
-    );
-    remoteModelIds.forEach((id) => {
-      if (!mockIds.has(id)) merged.push(synthesizeCallableModel(id));
-    });
-    return merged;
-  }, [remoteModelIds]);
+    if (remoteModelIds) {
+      const knownIds = new Set(models.map((m) => m.id));
+      models = models.map((m) => (remoteModelIds.has(m.id) ? { ...m, isCallable: true } : m));
+      remoteModelIds.forEach((id) => {
+        if (!knownIds.has(id)) models.push(synthesizeCallableModel(id));
+      });
+    }
+    return models;
+  }, [catalogModels, remoteModelIds]);
 
   // Keyboard shortcut ⌘K / Ctrl+K listener
   useEffect(() => {

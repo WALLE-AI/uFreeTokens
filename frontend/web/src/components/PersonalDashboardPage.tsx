@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   LayoutGrid,
   Key,
@@ -39,8 +39,12 @@ import {
   createKey as consoleCreateKey,
   revokeKey as consoleRevokeKey,
   getWallet as getConsoleWallet,
+  getUsageInterval,
+  getLogs,
   ConsoleApiKey,
   ConsoleWallet,
+  UsageIntervalRow,
+  ConsoleLogEntry,
 } from '../api/console';
 import { ApiError } from '../api/errors';
 import { ConnectKeyModal } from './ConnectKeyModal';
@@ -171,6 +175,82 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
       cancelled = true;
     };
   }, [apiKey, me]);
+
+  // 本月每日消费趋势（技术方案迭代6：credits tab 用 /console/usage 的按天
+  // 聚合画柱状图），登录控制台就能看，不需要额外连 API Key。
+  const [dailyUsage, setDailyUsage] = useState<UsageIntervalRow[] | null>(null);
+
+  useEffect(() => {
+    if (!me) {
+      setDailyUsage(null);
+      return;
+    }
+    let cancelled = false;
+    getUsageInterval({ groupBy: 'day' })
+      .then((rows) => {
+        if (!cancelled) setDailyUsage(rows);
+      })
+      .catch(() => {
+        // 静默失败：柱状图是个加分项，拿不到不应该打断整个 credits tab。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [me]);
+
+  // 调用日志（技术方案迭代6：activity/logs tab 接 /console/logs，无限滚动）。
+  const [logs, setLogs] = useState<ConsoleLogEntry[]>([]);
+  const [logsCursor, setLogsCursor] = useState<string>('');
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsExhausted, setLogsExhausted] = useState(false);
+  const logsSentinelRef = useRef<HTMLDivElement | null>(null);
+  const isLogsTab = activeTab === 'activity' || activeTab === 'logs';
+
+  const loadMoreLogs = useCallback(
+    (reset: boolean) => {
+      setLogsLoading(true);
+      getLogs({ before: reset ? undefined : logsCursor || undefined, limit: 20 })
+        .then((res) => {
+          setLogs((prev) => (reset ? res.data : [...prev, ...res.data]));
+          setLogsCursor(res.nextCursor);
+          setLogsExhausted(res.data.length < 20 || res.nextCursor === '');
+          setLogsError(null);
+        })
+        .catch((err) => {
+          setLogsError(err instanceof ApiError ? err.message : '加载调用日志失败，请稍后重试');
+        })
+        .finally(() => setLogsLoading(false));
+    },
+    [logsCursor]
+  );
+
+  useEffect(() => {
+    if (!isLogsTab || !me) return;
+    setLogs([]);
+    setLogsCursor('');
+    setLogsExhausted(false);
+    loadMoreLogs(true);
+    // 只在切进这个 tab、或登录状态变化时重新拉第一页；loadMoreLogs 本身依赖
+    // logsCursor，不能放进依赖数组，否则会无限重新拉取第一页。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLogsTab, me]);
+
+  useEffect(() => {
+    if (!isLogsTab || !me) return;
+    const sentinel = logsSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !logsLoading && !logsExhausted) {
+          loadMoreLogs(false);
+        }
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [isLogsTab, me, logsLoading, logsExhausted, loadMoreLogs]);
 
   // New Key Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
@@ -884,6 +964,38 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                 </div>
               </div>
             ) : null}
+
+            {me && dailyUsage && dailyUsage.length > 0 && (
+              <div className="bg-white border border-gray-200 rounded-xl p-4">
+                <div className="flex items-baseline justify-between mb-3">
+                  <div className="text-xs font-medium text-gray-700">本月每日消费趋势</div>
+                  <div className="text-xs text-gray-500">
+                    本月已消费{' '}
+                    <span className="font-semibold text-gray-800">
+                      {microToDisplay(dailyUsage.reduce((sum, row) => sum + row.chargedAmountMicro, 0))}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-end gap-1 h-24">
+                  {dailyUsage.map((row) => {
+                    const max = Math.max(...dailyUsage.map((r) => r.chargedAmountMicro), 1);
+                    const heightPct = Math.max((row.chargedAmountMicro / max) * 100, 2);
+                    return (
+                      <div key={row.group} className="flex-1 h-full flex items-end" title={`${row.group}: ${microToDisplay(row.chargedAmountMicro)}`}>
+                        <div
+                          className="w-full bg-purple-500 hover:bg-purple-600 rounded-t transition-colors"
+                          style={{ height: `${heightPct}%` }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between text-[10px] text-gray-400 mt-1.5">
+                  <span>{dailyUsage[0]?.group}</span>
+                  <span>{dailyUsage[dailyUsage.length - 1]?.group}</span>
+                </div>
+              </div>
+            )}
           </div>
         ) : activeTab === 'profile' ? (
           <div>
@@ -935,35 +1047,82 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
             </div>
             )}
           </div>
-        ) : activeTab === 'activity' || activeTab === 'logs' ? (
+        ) : isLogsTab ? (
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight mb-2">
               {activeTab === 'activity' ? '活动记录' : '调用日志'}
             </h1>
-            <p className="text-xs text-gray-500 mb-6">实时请求追踪与审计历史。</p>
+            <p className="text-xs text-gray-500 mb-6">最近 30 天的调用记录，只包含元数据，不含请求/响应正文。</p>
 
-            <div className="bg-white border border-gray-200 rounded-xl p-4 text-xs">
-              <div className="flex items-center justify-between pb-3 border-b border-gray-100 font-medium text-gray-500">
-                <span>时间</span>
-                <span>模型</span>
-                <span>Tokens</span>
-                <span>状态</span>
-              </div>
-              <div className="divide-y divide-gray-50">
-                <div className="py-2.5 flex items-center justify-between text-gray-700">
-                  <span className="font-mono text-gray-400 text-[11px]">7 天前 14:23</span>
-                  <span className="font-semibold text-gray-900">deepseek/deepseek-pro</span>
-                  <span className="font-mono text-gray-500">1,248 tok</span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-medium">200 成功</span>
-                </div>
-                <div className="py-2.5 flex items-center justify-between text-gray-700">
-                  <span className="font-mono text-gray-400 text-[11px]">7 天前 14:21</span>
-                  <span className="font-semibold text-gray-900">openai/gpt-4o</span>
-                  <span className="font-mono text-gray-500">856 tok</span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-medium">200 成功</span>
+            {!me ? (
+              <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center">
+                <div className="text-xs text-gray-500 mb-3">登录控制台后即可查看调用日志。</div>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setAuthModal('login')}
+                    className="px-3.5 py-1.5 border border-gray-200 text-gray-700 rounded-lg text-xs cursor-pointer"
+                  >
+                    登录
+                  </button>
+                  <button
+                    onClick={() => setAuthModal('register')}
+                    className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                  >
+                    注册
+                  </button>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-white border border-gray-200 rounded-xl overflow-hidden text-xs">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 font-medium text-gray-500">
+                  <span className="w-36 shrink-0">时间</span>
+                  <span className="flex-1">模型</span>
+                  <span className="w-24 shrink-0 text-right">Tokens</span>
+                  <span className="w-20 shrink-0 text-right">费用</span>
+                  <span className="w-20 shrink-0 text-right">状态</span>
+                </div>
+                <div className="divide-y divide-gray-50 max-h-[32rem] overflow-y-auto">
+                  {logs.length === 0 && !logsLoading && !logsError ? (
+                    <div className="py-8 text-center text-gray-400">最近 30 天没有调用记录</div>
+                  ) : (
+                    logs.map((log) => (
+                      <div key={log.requestId} className="flex items-center gap-2 px-4 py-2.5 text-gray-700">
+                        <span className="w-36 shrink-0 font-mono text-gray-400 text-[11px]">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </span>
+                        <span className="flex-1 font-semibold text-gray-900 truncate">{log.virtualModel}</span>
+                        <span className="w-24 shrink-0 text-right font-mono text-gray-500">
+                          {(log.inputTokens + log.outputTokens).toLocaleString()} tok
+                        </span>
+                        <span className="w-20 shrink-0 text-right font-mono text-gray-700">
+                          {microToDisplay(log.chargedAmountMicro)}
+                        </span>
+                        <span className="w-20 shrink-0 text-right">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                              log.status === 'success'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-rose-50 text-rose-700'
+                            }`}
+                          >
+                            {log.httpStatus || '—'} {log.status === 'success' ? '成功' : '失败'}
+                          </span>
+                        </span>
+                      </div>
+                    ))
+                  )}
+                  {logsError && <div className="py-4 text-center text-rose-500">{logsError}</div>}
+                  {!logsExhausted && !logsError && (
+                    <div ref={logsSentinelRef} className="py-4 text-center text-gray-400">
+                      {logsLoading ? '加载中...' : ''}
+                    </div>
+                  )}
+                  {logsExhausted && logs.length > 0 && (
+                    <div className="py-3 text-center text-gray-300 text-[11px]">已加载全部（最近 30 天）</div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div>

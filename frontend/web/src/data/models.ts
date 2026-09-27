@@ -1,4 +1,5 @@
-import { Model } from '../types';
+import { Model, ModelScores } from '../types';
+import { CatalogModel } from '../api/catalog';
 
 export const INITIAL_MODELS: Model[] = [
   {
@@ -620,11 +621,13 @@ export const INITIAL_MODELS: Model[] = [
   }
 ];
 
-// synthesizeCallableModel 给一个真实存在于 GET /v1/models 目录、但 mock 数据
-// 里没有对应条目的模型 id 生成一张最小可用的卡片——价格、评分这些字段后端
-// 目前还没有公开目录可查（要到迭代5的 GET /v1/catalog 才有），所以全部留空/
-// 0 并打上"演示数据"角标，明确告诉用户这些数字不是真的，但这张卡片本身
-// 代表一个已连接账户真实能调用的模型（isCallable=true）。
+// synthesizeCallableModel 给一个真实存在于 GET /v1/models 目录、但公开目录
+// GET /v1/catalog 和 mock 数据里都没有对应条目的模型 id 生成一张最小可用的
+// 卡片——比如目录接口暂时不可用时的降级路径，或者这个模型对 free tier 不
+// 可见（/v1/catalog 只返回 free tier 可见的模型，但已连接的 Key 可能是更高
+// tier，能调用 /v1/catalog 看不到的模型）。价格、评分留空/0 并打上"演示
+// 数据"角标，明确告诉用户这些数字不是真的；卡片本身代表一个已连接账户真实
+// 能调用的模型（isCallable=true）。
 export function synthesizeCallableModel(id: string): Model {
   const slashIndex = id.indexOf('/');
   const provider = slashIndex > 0 ? id.slice(0, slashIndex) : id;
@@ -661,6 +664,87 @@ export function synthesizeCallableModel(id: string): Model {
     modelAgeMonths: 0,
     scores: { intelligenceIndex: 0, codingIndex: 0, agenticIndex: 0 },
     isCallable: true,
+  };
+}
+
+function formatContextDisplay(tokens: number): string | null {
+  if (tokens <= 0) return null;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M 上下文`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K 上下文`;
+  return `${tokens} 上下文`;
+}
+
+// normalizeScores 从运营录入的自由格式 JSON（internal/console 的
+// virtual_model_metadata.scores，后端不解析其内部结构）里挑出我们前端认识
+// 的三个键；识别不到（运营还没按这个约定录入，或者干脆没录评分）时回退到
+// mock 覆盖表的值，再不行就是 0——0 分在 UI 上显眼到足以说明"这不是真实
+// 评分"，比编造一个看起来合理的数字更诚实。
+function normalizeScores(raw: Record<string, number> | undefined, fallback?: ModelScores): ModelScores {
+  const pick = (key: keyof ModelScores): number => {
+    const v = raw?.[key as string];
+    if (typeof v === 'number') return v;
+    return (fallback?.[key] as number) ?? 0;
+  };
+  return {
+    intelligenceIndex: pick('intelligenceIndex'),
+    codingIndex: pick('codingIndex'),
+    agenticIndex: pick('agenticIndex'),
+  };
+}
+
+// modelFromCatalog 把 GET /v1/catalog 的一条真实模型数据转成 Model——技术
+// 方案迭代6：模型库以这个接口为主数据源，mockOverride（按 id 从
+// INITIAL_MODELS 里找到的同名条目，找不到则 undefined）只用来补运营还没
+// 录入的展示层字段（描述、系列、图标底色……），硬性字段（上下文窗口、价格、
+// 能力）永远以 catalog 的真实数据为准，绝不被 mock 覆盖——那样会让"离线
+// 兜底数据"喧宾夺主，用户看到的价格和后端实际计费对不上。
+export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model {
+  const slashIndex = cm.name.indexOf('/');
+  const provider = slashIndex > 0 ? cm.name.slice(0, slashIndex) : cm.name;
+
+  const inputComponent = cm.sellPrice?.components.find((c) => c.meter === 'input' && c.unit === 'per_1m_tokens');
+  const outputComponent = cm.sellPrice?.components.find((c) => c.meter === 'output' && c.unit === 'per_1m_tokens');
+  const inputPricePerM = inputComponent?.unitPrice ?? mockOverride?.inputPricePerM ?? 0;
+  const outputPricePerM = outputComponent?.unitPrice ?? mockOverride?.outputPricePerM ?? 0;
+  // 售价来自 sell_price.currency（技术方案：对外售价统一 CNY），用 ¥ 而不是
+  // mock 数据惯用的 $，避免用户把真实计价误认成美元。
+  const priceSymbol = cm.sellPrice?.currency === 'USD' ? '$' : '¥';
+
+  return {
+    id: cm.name,
+    name: cm.displayName || mockOverride?.name || cm.name,
+    provider: mockOverride?.provider || provider,
+    providerDisplay: cm.providerDisplay || mockOverride?.providerDisplay || provider,
+    author: mockOverride?.author || provider,
+    series: mockOverride?.series || 'Other',
+    description: cm.description || mockOverride?.description || '',
+    iconBg: mockOverride?.iconBg || 'bg-gray-700 text-white',
+    badge: mockOverride?.badge ?? null,
+    badgeColor: mockOverride?.badgeColor,
+    date: mockOverride?.date || '—',
+    releaseDate: mockOverride?.releaseDate || '1970-01-01',
+    contextTokens: cm.contextWindow,
+    contextDisplay: formatContextDisplay(cm.contextWindow),
+    maxOutputTokens: cm.maxOutput,
+    inputPricePerM,
+    outputPricePerM,
+    inputPriceDisplay: `${priceSymbol}${inputPricePerM} / 百万 Input Token`,
+    outputPriceDisplay: `${priceSymbol}${outputPricePerM} / 百万 Output Token`,
+    tokensDisplay: mockOverride?.tokensDisplay,
+    modalities: mockOverride?.modalities || ['text'],
+    category: mockOverride?.category || 'Other',
+    tags: cm.tags && cm.tags.length > 0 ? cm.tags : mockOverride?.tags || [],
+    variants: mockOverride?.variants || ['standard'],
+    hasDiscount: mockOverride?.hasDiscount,
+    discountPercent: mockOverride?.discountPercent,
+    distillable: mockOverride?.distillable ?? false,
+    zeroDataRetention: mockOverride?.zeroDataRetention ?? false,
+    inRegionRouting: mockOverride?.inRegionRouting || [],
+    supportedParameters: cm.capabilities,
+    toolCallingCapability: mockOverride?.toolCallingCapability ?? (cm.capabilities.includes('tools') ? 80 : 0),
+    modelAgeMonths: mockOverride?.modelAgeMonths ?? 0,
+    isDeprecated: mockOverride?.isDeprecated,
+    scores: normalizeScores(cm.scores, mockOverride?.scores),
   };
 }
 
