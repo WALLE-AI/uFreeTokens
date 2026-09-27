@@ -28,6 +28,7 @@ export interface CatalogModel {
   providerDisplay?: string;
   tags?: string[];
   scores?: Record<string, number>;
+  status: 'active' | 'deprecated';
 }
 
 interface RawSellPriceComponent {
@@ -54,6 +55,7 @@ interface RawCatalogModel {
   provider_display?: string;
   tags?: string[];
   scores?: Record<string, number>;
+  status: 'active' | 'deprecated';
 }
 
 function mapModel(raw: RawCatalogModel): CatalogModel {
@@ -79,6 +81,7 @@ function mapModel(raw: RawCatalogModel): CatalogModel {
     providerDisplay: raw.provider_display,
     tags: raw.tags,
     scores: raw.scores,
+    status: raw.status,
   };
 }
 

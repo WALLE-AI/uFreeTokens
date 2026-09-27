@@ -49,6 +49,10 @@ type catalogModel struct {
 	ProviderDisplay string         `json:"provider_display,omitempty"`
 	Tags            []string       `json:"tags,omitempty"`
 	Scores          map[string]any `json:"scores,omitempty"`
+	// Status 是 "active" 或 "deprecated"（技术方案迭代：左侧栏 Inactive
+	// models 筛选项）。deprecated 模型只在这里展示，router/relay 不会路由
+	// 到它们——见 internal/catalog.Snapshot.DeprecatedModels 的注释。
+	Status string `json:"status"`
 }
 
 type catalogPrice struct {
@@ -83,27 +87,35 @@ func catalogHandler(store *catalog.Store, rl *ratelimit.Limiter) http.HandlerFun
 			return
 		}
 
-		models := make([]catalogModel, 0, len(snap.Models))
-		for _, vm := range snap.Models {
-			if vm.Status != "active" || !tierVisible(vm.VisibleTiers, "free") {
-				continue
+		models := make([]catalogModel, 0, len(snap.Models)+len(snap.DeprecatedModels))
+		appendVisible := func(vms map[string]*catalog.VirtualModel) {
+			for _, vm := range vms {
+				if !tierVisible(vm.VisibleTiers, "free") {
+					continue
+				}
+				cm := catalogModel{
+					Name: vm.Name, Family: vm.Family, Type: vm.Type,
+					ContextWindow: vm.ContextWindow, MaxOutput: vm.MaxOutput, Capabilities: vm.Capabilities,
+					Status: vm.Status,
+				}
+				if book, ok := snap.SellPriceBooks[vm.ID]; ok {
+					cm.SellPrice = toCatalogPrice(book)
+				}
+				if vm.Metadata != nil {
+					cm.DisplayName = vm.Metadata.DisplayName
+					cm.Description = vm.Metadata.Description
+					cm.ProviderDisplay = vm.Metadata.ProviderDisplay
+					cm.Tags = vm.Metadata.Tags
+					cm.Scores = vm.Metadata.Scores
+				}
+				models = append(models, cm)
 			}
-			cm := catalogModel{
-				Name: vm.Name, Family: vm.Family, Type: vm.Type,
-				ContextWindow: vm.ContextWindow, MaxOutput: vm.MaxOutput, Capabilities: vm.Capabilities,
-			}
-			if book, ok := snap.SellPriceBooks[vm.ID]; ok {
-				cm.SellPrice = toCatalogPrice(book)
-			}
-			if vm.Metadata != nil {
-				cm.DisplayName = vm.Metadata.DisplayName
-				cm.Description = vm.Metadata.Description
-				cm.ProviderDisplay = vm.Metadata.ProviderDisplay
-				cm.Tags = vm.Metadata.Tags
-				cm.Scores = vm.Metadata.Scores
-			}
-			models = append(models, cm)
 		}
+		appendVisible(snap.Models)
+		// deprecated 模型也带出来，前端"Inactive models → Show deprecated"靠
+		// status 字段做客户端过滤；这里不排除它们，因为它们本来就不在
+		// snap.Models 里，不存在被误路由的风险（见 catalog.Snapshot 的注释）。
+		appendVisible(snap.DeprecatedModels)
 		sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
 		w.Header().Set("Cache-Control", "public, max-age=60")

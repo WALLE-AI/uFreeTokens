@@ -80,6 +80,10 @@ interface CheckboxGroupProps {
   selectedItems?: string[];
   onToggle: (item: string) => void;
   showMore?: boolean;
+  // searchable：候选项超过 8 个时自动带一个前缀搜索框（技术方案 E7）——
+  // Providers/Model authors 这类会随目录增长的长列表用得上，其余固定的
+  // 短列表不需要。
+  searchable?: boolean;
 }
 
 export const CheckboxGroup: React.FC<CheckboxGroupProps> = ({
@@ -87,12 +91,34 @@ export const CheckboxGroup: React.FC<CheckboxGroupProps> = ({
   selectedItems = [],
   onToggle,
   showMore = true,
+  searchable = false,
 }) => {
   const [expanded, setExpanded] = useState(!showMore);
-  const displayItems = expanded ? items : items.slice(0, 3);
+  const [query, setQuery] = useState('');
+
+  const searchActive = searchable && items.length > 8 && query.trim().length > 0;
+  const visibleItems = searchActive
+    ? items.filter((i) => i.toLowerCase().includes(query.trim().toLowerCase()))
+    : items;
+  const displayItems = expanded || searchActive ? visibleItems : visibleItems.slice(0, 3);
+  // 折叠状态下，已选中但被折叠隐藏的项不给任何提示会让用户以为筛选没生效
+  // （技术方案 E5）——在"更多..."按钮上报个数，而不是静默隐藏。
+  const hiddenSelectedCount =
+    !expanded && !searchActive
+      ? selectedItems.filter((s) => !visibleItems.slice(0, 3).includes(s)).length
+      : 0;
 
   return (
     <div className="space-y-2 pl-0.5">
+      {searchable && items.length > 8 && (
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索…"
+          className="w-full text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-purple-400 focus:border-purple-400"
+        />
+      )}
       {displayItems.map((item) => {
         const isChecked = selectedItems.includes(item);
         return (
@@ -110,14 +136,21 @@ export const CheckboxGroup: React.FC<CheckboxGroupProps> = ({
           </label>
         );
       })}
-      {showMore && items.length > 3 && (
+      {showMore && !searchActive && items.length > 3 && (
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
           className="text-gray-400 hover:text-purple-600 text-xs font-normal pt-0.5 block transition-colors cursor-pointer"
         >
-          {expanded ? '收起' : '更多...'}
+          {expanded
+            ? '收起'
+            : hiddenSelectedCount > 0
+            ? `更多...（${hiddenSelectedCount} 项已选）`
+            : '更多...'}
         </button>
+      )}
+      {searchActive && visibleItems.length === 0 && (
+        <p className="text-gray-400 text-xs pt-0.5">没有匹配结果</p>
       )}
     </div>
   );
@@ -129,10 +162,20 @@ interface SliderControlProps {
   val: number;
   onChange: (v: number) => void;
   ticks?: string[];
+  // tickValues：每个 tick 文案对应的真实数值，用来算它在滑块上的准确位置。
+  // 不传时按 ticks 在 [min,max] 里均匀分布（等价于旧行为）。
+  tickValues?: number[];
+  // scaleExponent > 1 时滑块用幂函数映射（value = min + (max-min)*(pos/POS_MAX)^exponent），
+  // 让低值区间占据更多滑块行程——避免 context length/价格这类高度集中在
+  // 低端的数据只能挤在最左侧几像素内调节（技术方案 E3）。tick 位置用同一套
+  // 映射反算，天然和滑块手柄对齐（顺带修好 E2 的刻度错位问题）。
+  scaleExponent?: number;
   labelMin?: string;
   labelMax?: string;
   displayValue?: string;
 }
+
+const SLIDER_POS_MAX = 1000;
 
 export const SliderControl: React.FC<SliderControlProps> = ({
   min = 0,
@@ -140,10 +183,27 @@ export const SliderControl: React.FC<SliderControlProps> = ({
   val,
   onChange,
   ticks = [],
+  tickValues,
+  scaleExponent = 1,
   labelMin,
   labelMax,
   displayValue,
 }) => {
+  const scaled = scaleExponent !== 1;
+  const valueToPos = (v: number) => {
+    if (!scaled) return v;
+    const t = Math.max((v - min) / (max - min), 0);
+    return Math.pow(t, 1 / scaleExponent) * SLIDER_POS_MAX;
+  };
+  const posToValue = (p: number) => {
+    if (!scaled) return p;
+    return min + (max - min) * Math.pow(p / SLIDER_POS_MAX, scaleExponent);
+  };
+
+  const resolvedTickValues =
+    tickValues ??
+    ticks.map((_, i) => (ticks.length > 1 ? min + ((max - min) * i) / (ticks.length - 1) : min));
+
   return (
     <div className="px-1 py-1 space-y-1.5">
       {displayValue && (
@@ -151,24 +211,30 @@ export const SliderControl: React.FC<SliderControlProps> = ({
       )}
       <input
         type="range"
-        min={min}
-        max={max}
-        value={val}
-        onChange={(e) => onChange(Number(e.target.value))}
+        min={scaled ? 0 : min}
+        max={scaled ? SLIDER_POS_MAX : max}
+        value={scaled ? valueToPos(val) : val}
+        onChange={(e) => onChange(scaled ? Math.round(posToValue(Number(e.target.value))) : Number(e.target.value))}
         className="purple-track"
       />
       {ticks.length > 0 && (
-        <div>
-          <div className="flex justify-between px-0.5 text-[10px] text-gray-300">
-            {ticks.map((_, i) => (
-              <span key={i}>|</span>
-            ))}
-          </div>
-          <div className="flex justify-between text-[11px] text-gray-500 font-medium mt-0.5">
-            {ticks.map((t) => (
-              <span key={t}>{t}</span>
-            ))}
-          </div>
+        <div className="relative h-3.5 mt-0.5">
+          {ticks.map((t, i) => {
+            const tv = resolvedTickValues[i];
+            const pct = scaled
+              ? (valueToPos(tv) / SLIDER_POS_MAX) * 100
+              : ((tv - min) / (max - min || 1)) * 100;
+            const align = i === 0 ? 'left-0' : i === ticks.length - 1 ? 'right-0' : undefined;
+            return (
+              <span
+                key={t}
+                style={align ? undefined : { left: `${pct}%`, transform: 'translateX(-50%)' }}
+                className={`absolute text-[11px] text-gray-500 font-medium whitespace-nowrap ${align ?? ''}`}
+              >
+                {t}
+              </span>
+            );
+          })}
         </div>
       )}
       {(labelMin || labelMax) && (
@@ -227,6 +293,10 @@ interface SidebarProps {
   onFilterChange: (newFilters: Partial<FilterState>) => void;
   onResetFilters: () => void;
   totalFilteredCount: number;
+  // Providers/Model authors 候选列表，从真实加载到的模型动态派生（技术
+  // 方案 A2），不再是组件内部硬编码的字符串数组。
+  availableProviders: string[];
+  availableAuthors: string[];
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -234,6 +304,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onFilterChange,
   onResetFilters,
   totalFilteredCount,
+  availableProviders,
+  availableAuthors,
 }) => {
   const handleToggleModality = (rawItem: string) => {
     const map: Record<string, ModalityType> = {
@@ -306,7 +378,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Top action row */}
       <div className="flex items-center justify-between pb-3 border-b border-gray-100">
         <span className="text-xs font-semibold text-gray-700">
-          筛选条件 <span className="text-purple-600 font-bold ml-1">({totalFilteredCount})</span>
+          匹配模型 <span className="text-purple-600 font-bold ml-1">({totalFilteredCount})</span>
         </span>
         <button
           onClick={onResetFilters}
@@ -353,6 +425,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           val={filters.minContextLength}
           onChange={(v) => onFilterChange({ minContextLength: v })}
           ticks={['4K', '64K', '1M']}
+          tickValues={[4, 64, 1000]}
+          scaleExponent={3}
           displayValue={filters.minContextLength > 0 ? `≥ ${filters.minContextLength}K tokens` : undefined}
         />
       </SidebarSection>
@@ -365,6 +439,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           val={filters.maxPromptPrice}
           onChange={(v) => onFilterChange({ maxPromptPrice: v })}
           ticks={['FREE', '$0.50', '$10+']}
+          tickValues={[0, 0.5, 10]}
+          scaleExponent={3}
           displayValue={filters.maxPromptPrice >= 15 ? '不限价格' : `≤ $${filters.maxPromptPrice}/M`}
         />
       </SidebarSection>
@@ -415,6 +491,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </label>
           ))}
         </div>
+        <p className="text-[10px] text-gray-400 pt-1">
+          此项支持排除不满足条件的模型；下方其余"是否类"筛选仅支持"只看满足项"。
+        </p>
       </SidebarSection>
 
       {/* 9. Zero data retention */}
@@ -455,6 +534,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           val={filters.maxOutputPrice}
           onChange={(v) => onFilterChange({ maxOutputPrice: v })}
           ticks={['FREE', '$2', '$30+']}
+          tickValues={[0, 2, 30]}
+          scaleExponent={3}
           displayValue={filters.maxOutputPrice >= 60 ? '不限价格' : `≤ $${filters.maxOutputPrice}/M`}
         />
       </SidebarSection>
@@ -500,6 +581,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* 15. Artificial Analysis Indexes */}
       <SidebarSection title="Artificial Analysis" icon={<AreaChart className="w-4 h-4" />}>
+        <p className="text-[10px] text-gray-400 -mt-1">0–100 百分位评分，数值越高越强</p>
         <div className="space-y-4 pt-1">
           <div>
             <div className="flex items-center justify-between text-xs font-semibold text-gray-700 mb-1">
@@ -507,7 +589,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <BarChart2 className="w-3.5 h-3.5 text-gray-500" />
                 <span>Intelligence Index</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="综合智能水平评测得分（0–100，来自 Artificial Analysis 基准）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
             <IndexRangeSlider
               minVal="0"
@@ -523,7 +605,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Code2 className="w-3.5 h-3.5 text-gray-500" />
                 <span>Coding Index</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="编程能力评测得分（0–100，来自 Artificial Analysis 基准）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
             <IndexRangeSlider
               minVal="0"
@@ -539,7 +621,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Cpu className="w-3.5 h-3.5 text-gray-500" />
                 <span>Agentic Index</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="自主任务执行（Agent）能力评测得分（0–100，来自 Artificial Analysis 基准）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
             <IndexRangeSlider
               minVal="0"
@@ -553,6 +635,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* 16. Design Arena */}
       <SidebarSection title="Design Arena" icon={<PenTool className="w-4 h-4" />}>
+        <p className="text-[10px] text-gray-400 -mt-1">Elo 原始评分（非百分制，量级与上方指数不同）</p>
         <div className="space-y-3.5 pt-1">
           <div>
             <div className="flex items-center justify-between text-xs text-gray-700 font-semibold mb-1">
@@ -560,9 +643,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Code2 className="w-3.5 h-3.5 text-gray-500" />
                 <span>Code Categories</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="代码生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,387" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,387"
+              currentVal={filters.minDesignArenaCode}
+              onChange={(v) => onFilterChange({ minDesignArenaCode: v })}
+            />
           </div>
 
           <div>
@@ -571,9 +659,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Layout className="w-3.5 h-3.5 text-gray-500" />
                 <span>UI Component</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="UI 组件生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,389" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,389"
+              currentVal={filters.minDesignArenaUI}
+              onChange={(v) => onFilterChange({ minDesignArenaUI: v })}
+            />
           </div>
 
           <div>
@@ -582,9 +675,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Gamepad2 className="w-3.5 h-3.5 text-gray-500" />
                 <span>Game Development</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="游戏开发类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,413" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,413"
+              currentVal={filters.minDesignArenaGame}
+              onChange={(v) => onFilterChange({ minDesignArenaGame: v })}
+            />
           </div>
 
           <div>
@@ -593,9 +691,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <LineChart className="w-3.5 h-3.5 text-gray-500" />
                 <span>Data Visualization</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="数据可视化类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,366" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,366"
+              currentVal={filters.minDesignArenaDataViz}
+              onChange={(v) => onFilterChange({ minDesignArenaDataViz: v })}
+            />
           </div>
 
           <div>
@@ -604,9 +707,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Box className="w-3.5 h-3.5 text-gray-500" />
                 <span>3D</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="3D 内容生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,432" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,432"
+              currentVal={filters.minDesignArena3D}
+              onChange={(v) => onFilterChange({ minDesignArena3D: v })}
+            />
           </div>
 
           <div>
@@ -615,9 +723,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <ImageIcon className="w-3.5 h-3.5 text-gray-500" />
                 <span>Image</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="图像生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,385" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,385"
+              currentVal={filters.minDesignArenaImage}
+              onChange={(v) => onFilterChange({ minDesignArenaImage: v })}
+            />
           </div>
 
           <div>
@@ -626,9 +739,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Video className="w-3.5 h-3.5 text-gray-500" />
                 <span>Video</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="视频生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="2,000" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="2,000"
+              currentVal={filters.minDesignArenaVideo}
+              onChange={(v) => onFilterChange({ minDesignArenaVideo: v })}
+            />
           </div>
 
           <div>
@@ -637,9 +755,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Feather className="w-3.5 h-3.5 text-gray-500" />
                 <span>SVG</span>
               </div>
-              <Info className="w-3 h-3 text-gray-400" />
+              <span title="SVG 矢量图生成类任务的 Design Arena Elo 评分（非百分制）"><Info className="w-3 h-3 text-gray-400" /></span>
             </div>
-            <IndexRangeSlider minVal="0" maxVal="1,352" />
+            <IndexRangeSlider
+              minVal="0"
+              maxVal="1,352"
+              currentVal={filters.minDesignArenaSVG}
+              onChange={(v) => onFilterChange({ minDesignArenaSVG: v })}
+            />
           </div>
         </div>
       </SidebarSection>
@@ -647,20 +770,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* 17. Providers */}
       <SidebarSection title="Providers" icon={<Landmark className="w-4 h-4" />}>
         <CheckboxGroup
-          items={['AI21', 'AionLabs', 'AkashML', 'anthropic', 'deepseek', 'google', 'inference.net', 'meta', 'openai', 'sakana', 'union']}
+          items={availableProviders}
           selectedItems={filters.selectedProviders}
           onToggle={handleToggleProvider}
           showMore={true}
+          searchable={true}
         />
       </SidebarSection>
 
       {/* 18. Model authors */}
       <SidebarSection title="Model authors" icon={<UserIcon className="w-4 h-4" />}>
         <CheckboxGroup
-          items={['aion-labs', 'alibaba', 'amazon', 'anthropic', 'deepseek', 'google', 'meta', 'openai', 'sakana', 'union-labs']}
+          items={availableAuthors}
           selectedItems={filters.selectedAuthors}
           onToggle={handleToggleAuthor}
           showMore={true}
+          searchable={true}
         />
       </SidebarSection>
     </aside>

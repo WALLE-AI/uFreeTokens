@@ -24,6 +24,7 @@ import (
 type catalogResponseModel struct {
 	Name      string `json:"name"`
 	Family    string `json:"family"`
+	Status    string `json:"status"`
 	SellPrice *struct {
 		Currency   string `json:"currency"`
 		Components []struct {
@@ -112,6 +113,60 @@ func TestCatalog_PublicEndpoint_ReturnsActiveFreeTierModelsWithSellPrice(t *test
 	}
 	if !found {
 		t.Errorf("free-tier model %q not found in public catalog: %+v", visibleName, out.Data)
+	}
+}
+
+// TestCatalog_IncludesDeprecatedModelsWithStatusField 验证 GET /v1/catalog
+// 会把 status='deprecated' 的模型也带出来（供前端"Show deprecated"筛选项
+// 使用），且 status 字段准确反映 active/deprecated——deprecated 模型没有
+// 走 admin 的创建接口（目前没有能把模型置为 deprecated 的公开接口），
+// 直接用 SQL 插入，和 internal/catalog 包测试里"直接建库表行"的套路一致。
+func TestCatalog_IncludesDeprecatedModelsWithStatusField(t *testing.T) {
+	pool := testPool(t)
+	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	deprecatedName := "catalog-e2e-deprecated-" + suffix
+
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO virtual_models (name, family, type, context_window, max_output, capabilities, visible_tiers, status)
+		 VALUES ($1, 'test', 'chat', 128000, 8192, '{}', '{free}', 'deprecated')`,
+		deprecatedName); err != nil {
+		t.Fatalf("insert deprecated virtual_model: %v", err)
+	}
+
+	catalogStore := catalog.NewStore(pool, testBox(t), 0)
+	gw := httptest.NewServer(app.NewGatewayRouter(app.GatewayDeps{Logger: logger, PG: pool, Catalog: catalogStore}))
+	defer gw.Close()
+
+	resp, err := http.Get(gw.URL + "/v1/catalog")
+	if err != nil {
+		t.Fatalf("GET /v1/catalog: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	var out struct {
+		Data []catalogResponseModel `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal response %s: %v", body, err)
+	}
+
+	var found bool
+	for _, m := range out.Data {
+		if m.Name == deprecatedName {
+			found = true
+			if m.Status != "deprecated" {
+				t.Errorf("status = %q, want %q", m.Status, "deprecated")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("deprecated model %q not found in public catalog: %+v", deprecatedName, out.Data)
 	}
 }
 

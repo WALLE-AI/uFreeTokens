@@ -689,6 +689,11 @@ function normalizeScores(raw: Record<string, number> | undefined, fallback?: Mod
     intelligenceIndex: pick('intelligenceIndex'),
     codingIndex: pick('codingIndex'),
     agenticIndex: pick('agenticIndex'),
+    // designArena 目前后端 GET /v1/catalog 还不返回这套嵌套结构（运营还没
+    // 约定 scores.design_arena.* 的键名），只能用 mock 覆盖表兜底演示；
+    // 真实模型没有 mockOverride 时就是 undefined，左侧栏对应筛选项会把它
+    // 当 0 分处理（技术方案阶段 B 会补上真实数据源）。
+    designArena: fallback?.designArena,
   };
 }
 
@@ -743,7 +748,7 @@ export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model 
     supportedParameters: cm.capabilities,
     toolCallingCapability: mockOverride?.toolCallingCapability ?? (cm.capabilities.includes('tools') ? 80 : 0),
     modelAgeMonths: mockOverride?.modelAgeMonths ?? 0,
-    isDeprecated: mockOverride?.isDeprecated,
+    isDeprecated: cm.status === 'deprecated' || mockOverride?.isDeprecated,
     scores: normalizeScores(cm.scores, mockOverride?.scores),
   };
 }

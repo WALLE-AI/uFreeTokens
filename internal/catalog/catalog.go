@@ -172,6 +172,12 @@ type Snapshot struct {
 	// （技术方案 §7.16.9）。取每个币种 effective_date 最新的一条（不含未来生效的）。
 	// 没有汇率数据的币种不在这个 map 里。
 	FXRates map[string]decimal.Decimal
+	// DeprecatedModels 是 status='deprecated' 的虚拟模型（by name），只供
+	// GET /v1/catalog 展示用（配合前端"Show deprecated"筛选项）。故意不放进
+	// Models：router/relay 只认 Models，这样已下架模型永远不会被重新路由到，
+	// 即使运营在公开目录里把它标成"可见"。'hidden' 状态的模型两个 map 都不进——
+	// 那是主动隐藏，不应该出现在任何公开响应里。
+	DeprecatedModels map[string]*VirtualModel
 }
 
 // Store 负责从数据库加载 Snapshot 并做简单的 TTL 缓存。
@@ -230,9 +236,13 @@ func (s *Store) load(ctx context.Context) (*Snapshot, error) {
 		SellPriceBooks:   map[int64]pricing.Book{},
 		CostPriceBooks:   map[int64]pricing.Book{},
 		FXRates:          map[string]decimal.Decimal{},
+		DeprecatedModels: map[string]*VirtualModel{},
 	}
 
 	if err := s.loadModels(ctx, snap); err != nil {
+		return nil, err
+	}
+	if err := s.loadDeprecatedModels(ctx, snap); err != nil {
 		return nil, err
 	}
 	if err := s.loadMetadata(ctx, snap); err != nil {
@@ -361,10 +371,34 @@ func (s *Store) loadModels(ctx context.Context, snap *Snapshot) error {
 	return rows.Err()
 }
 
+// loadDeprecatedModels 单独加载 status='deprecated' 的虚拟模型，只放进
+// snap.DeprecatedModels（不进 snap.Models，见该字段注释——router/relay 不会
+// 看到它们，这里只是为了 GET /v1/catalog 能把它们标注出来给前端筛选用）。
+func (s *Store) loadDeprecatedModels(ctx context.Context, snap *Snapshot) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, family, type, context_window, max_output, capabilities, visible_tiers, status
+		 FROM virtual_models WHERE status = 'deprecated'`)
+	if err != nil {
+		return fmt.Errorf("catalog: load deprecated virtual_models: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		m := &VirtualModel{}
+		if err := rows.Scan(&m.ID, &m.Name, &m.Family, &m.Type, &m.ContextWindow, &m.MaxOutput,
+			&m.Capabilities, &m.VisibleTiers, &m.Status); err != nil {
+			return fmt.Errorf("catalog: scan deprecated virtual_model: %w", err)
+		}
+		snap.DeprecatedModels[m.Name] = m
+	}
+	return rows.Err()
+}
+
 // loadMetadata 用虚拟模型名字关联 virtual_model_metadata（LEFT JOIN 的效果
-// 通过"找不到就跳过"实现，而不是真的写 SQL LEFT JOIN——loadModels 已经把
-// 全部 active 虚拟模型加载进 snap.Models，这里只需要把有元数据的那些补上
-// Metadata 字段）。元数据行对应的模型如果已下架/隐藏（不在 snap.Models 里），
+// 通过"找不到就跳过"实现，而不是真的写 SQL LEFT JOIN——loadModels/
+// loadDeprecatedModels 已经把 active + deprecated 虚拟模型都加载进
+// snap.Models/snap.DeprecatedModels，这里只需要把有元数据的那些补上
+// Metadata 字段）。元数据行对应的模型如果是 'hidden'（两个 map 都没有），
 // 直接跳过：元数据是纯展示层数据，没有宿主模型时没有意义。
 func (s *Store) loadMetadata(ctx context.Context, snap *Snapshot) error {
 	rows, err := s.pool.Query(ctx,
@@ -386,6 +420,9 @@ func (s *Store) loadMetadata(ctx context.Context, snap *Snapshot) error {
 			return fmt.Errorf("catalog: scan virtual_model_metadata: %w", err)
 		}
 		vm, ok := snap.Models[name]
+		if !ok {
+			vm, ok = snap.DeprecatedModels[name]
+		}
 		if !ok {
 			continue
 		}

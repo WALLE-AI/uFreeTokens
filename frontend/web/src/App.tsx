@@ -64,6 +64,16 @@ const DEFAULT_FILTERS: FilterState = {
   minIntelligenceIndex: 0,
   minCodingIndex: 0,
   minAgenticIndex: 0,
+  // Design Arena 是 Elo 风格原始分，和上面的 minIntelligenceIndex 等指数
+  // 阈值用同一套"min"语义：默认 0 = 不筛选，拖高滑块才开始生效。
+  minDesignArenaCode: 0,
+  minDesignArenaUI: 0,
+  minDesignArenaGame: 0,
+  minDesignArenaDataViz: 0,
+  minDesignArena3D: 0,
+  minDesignArenaImage: 0,
+  minDesignArenaVideo: 0,
+  minDesignArenaSVG: 0,
 };
 
 export default function App() {
@@ -150,6 +160,17 @@ export default function App() {
     }
     return models;
   }, [catalogModels, remoteModelIds]);
+
+  // 左侧栏 Providers/Model authors 候选列表：从真实加载到的模型派生，而不是
+  // 硬编码字符串数组——后端新增厂商时筛选项自动跟上（技术方案 A2）。
+  const availableProviders = useMemo(
+    () => Array.from(new Set(baseModels.map((m) => m.provider))).sort(),
+    [baseModels]
+  );
+  const availableAuthors = useMemo(
+    () => Array.from(new Set(baseModels.map((m) => m.author))).sort(),
+    [baseModels]
+  );
 
   // Keyboard shortcut ⌘K / Ctrl+K listener
   useEffect(() => {
@@ -349,6 +370,18 @@ export default function App() {
       if (filters.minCodingIndex > 0 && model.scores.codingIndex < filters.minCodingIndex) return false;
       if (filters.minAgenticIndex > 0 && model.scores.agenticIndex < filters.minAgenticIndex) return false;
 
+      // Design Arena（Elo 原始分，和上面三个百分位指数不是同一套量级，见
+      // Sidebar.tsx 的 E8 说明文案）
+      const da = model.scores.designArena;
+      if (filters.minDesignArenaCode > 0 && (da?.codeCategories ?? 0) < filters.minDesignArenaCode) return false;
+      if (filters.minDesignArenaUI > 0 && (da?.uiComponent ?? 0) < filters.minDesignArenaUI) return false;
+      if (filters.minDesignArenaGame > 0 && (da?.gameDev ?? 0) < filters.minDesignArenaGame) return false;
+      if (filters.minDesignArenaDataViz > 0 && (da?.dataViz ?? 0) < filters.minDesignArenaDataViz) return false;
+      if (filters.minDesignArena3D > 0 && (da?.threeD ?? 0) < filters.minDesignArena3D) return false;
+      if (filters.minDesignArenaImage > 0 && (da?.image ?? 0) < filters.minDesignArenaImage) return false;
+      if (filters.minDesignArenaVideo > 0 && (da?.video ?? 0) < filters.minDesignArenaVideo) return false;
+      if (filters.minDesignArenaSVG > 0 && (da?.svg ?? 0) < filters.minDesignArenaSVG) return false;
+
       return true;
     }).sort((a, b) => {
       // Pinned models always stay at the very top
@@ -487,6 +520,8 @@ export default function App() {
             onFilterChange={handleUpdateFilters}
             onResetFilters={handleResetFilters}
             totalFilteredCount={filteredModels.length}
+            availableProviders={availableProviders}
+            availableAuthors={availableAuthors}
           />
         </div>
 
@@ -513,6 +548,8 @@ export default function App() {
                   onFilterChange={handleUpdateFilters}
                   onResetFilters={handleResetFilters}
                   totalFilteredCount={filteredModels.length}
+                  availableProviders={availableProviders}
+                  availableAuthors={availableAuthors}
                 />
               </div>
             </div>

@@ -82,6 +82,14 @@ export interface FilterState {
   minIntelligenceIndex: number;
   minCodingIndex: number;
   minAgenticIndex: number;
+  minDesignArenaCode: number;
+  minDesignArenaUI: number;
+  minDesignArenaGame: number;
+  minDesignArenaDataViz: number;
+  minDesignArena3D: number;
+  minDesignArenaImage: number;
+  minDesignArenaVideo: number;
+  minDesignArenaSVG: number;
 }
 
 export type SortOption =
