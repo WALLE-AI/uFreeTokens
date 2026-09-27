@@ -1,167 +1,207 @@
 # uFreeTokens 前端（frontend/web）× Go 后端 集成技术架构
 
-> 目的：把 `frontend/web`（React 19 + Vite + Tailwind 的"模型集市"UI，目前全部数据都是前端硬编码 mock）接到 `cmd/gateway` / `cmd/admin` 两个真实 Go 服务上。本文只覆盖**架构设计**，不改代码。
+> 本文档最初是"接入前的差距分析"，Phase 0-2 已经全部实现（见
+> `docs/frontend-web 与 Go 后端集成迭代执行方案.md` 的迭代 0-6）。现在改为
+> "当前实际接入方式"的说明文档；仍然保留原有章节编号，方便和执行方案互相
+> 对照。
 >
-> 内部运营后台（`frontend/admin`）的技术栈/UI 风格与鉴权设计见 [`frontend/admin/ARCHITECTURE.md`](../admin/ARCHITECTURE.md)，两份文档配套阅读；`frontend/test_web` 仅为手工联调页面，不作为任何一方的 UI/工程参考。
+> 内部运营后台（`frontend/admin`）的技术栈/UI 风格与鉴权设计见
+> [`frontend/admin/ARCHITECTURE.md`](../admin/ARCHITECTURE.md)；
+> `frontend/test_web` 仅为手工联调页面，不作为任何一方的 UI/工程参考。
 
 ---
 
-## 0. 现状评估
+## 0. 现状
 
 | 层 | 现状 |
 |---|---|
-| `frontend/web` | 纯前端 SPA，**没有任何 `fetch` 调用**。`data/models.ts` 是写死的模型数组；`PlaygroundModal.tsx` 用 `setTimeout` 拼字符串伪造"AI 回复"；`PersonalDashboardPage.tsx` 的 API Key / 余额 / 调用日志全部是 `useState` 里的假数据。 |
-| `frontend/test_web` | 已经是**真实联调页面**（`admin.html` + `user.html`），用原生 `fetch` 打真实的 `cmd/admin` / `cmd/gateway`，是本次接入最可靠的参考实现。 |
-| `cmd/gateway`（:8080） | 数据面，OpenAI 兼容 `/v1/*`，鉴权用 `Authorization: Bearer sk-uft-...`（API Key）。 |
-| `cmd/admin`（:8081） | 控制面，鉴权是**单一共享密钥** `UFT_ADMIN_TOKEN`，账户/Key/供应商/定价/审计全部在这里，**没有按用户区分的登录态**。 |
-| 用户注册/登录 | **未实现**。`docs/uFreeTokens Go 后端优化技术方案 V2.md` 把"账户体系：注册登录"列在 Phase 1 路线图里，但当前代码里 `internal/auth` 只有 API Key 的 HMAC 校验中间件，没有密码登录、没有 Session/JWT。API Key 目前只能由持有 `UFT_ADMIN_TOKEN` 的人通过 `POST /accounts/{id}/api-keys` 创建。 |
-
-**核心结论**：前端现在设计的"个人中心 → API 密钥 自助创建/删除、注册登录"这条路径，在后端**还没有对应的、可以安全暴露给浏览器的接口**——唯一存在的创建入口需要管理员密钥，这个密钥绝不能进前端 bundle。这是接入方案里第一个必须澄清的架构缺口，见 §3。
+| `frontend/web` | React SPA，`src/api/` 是全项目唯一发起网络请求的地方（`client.ts`/`errors.ts`/`auth.ts`/`sse.ts`/`chat.ts`/`models.ts`/`usage.ts`/`catalog.ts`/`console.ts`）。模型库、Playground、个人中心的 API 密钥/余额/用量/调用日志都接了真实数据；`data/models.ts` 的 `INITIAL_MODELS` 现在只作为 `GET /v1/catalog` 不可用时的离线兜底，以及给运营还没录入元数据的模型补展示层字段（描述、系列、图标底色……）。 |
+| `frontend/test_web` | 手工联调页面（`admin.html` + `user.html`），继续作为验证"后端本身是否工作正常"的独立参考，和 `frontend/web` 互不依赖。 |
+| `cmd/gateway`（:8080） | 数据面 `/v1/*` + 控制台 `/console/*`（技术方案迭代 3 起，两者共用同一个进程，鉴权完全独立：`/v1/*` 用 `Authorization: Bearer sk-uft-...`，`/console/*` 用 httpOnly Cookie Session）。 |
+| `cmd/admin`（:8081） | 控制面，鉴权是单一共享密钥 `UFT_ADMIN_TOKEN`，供应商/渠道/定价/审计/虚拟模型元数据在这里维护，继续没有按用户区分的登录态——这是运营内部工具，`frontend/web` 从不直连它。 |
+| 用户注册/登录 | **已实现**（`internal/console`）：argon2id 密码哈希 + Redis Session（httpOnly Cookie），挂在 `cmd/gateway` 的 `/console/*`，不是独立进程，也不是 JWT。 |
 
 ---
 
-## 1. 目标架构总览
+## 1. 架构总览
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  frontend/web  (React SPA, 静态托管 / CDN)                            │
 │                                                                        │
-│   Presentation：现有组件基本不变（ModelCard/Table、PlaygroundModal、   │
-│                 PersonalDashboardPage …）                              │
+│   Presentation：ModelCard/Table、PlaygroundModal、                     │
+│                 PersonalDashboardPage、ConnectKeyModal、               │
+│                 LoginModal/RegisterModal …                             │
 │            │                                                          │
 │            ▼                                                          │
-│   src/api/ 新增服务层（唯一允许发网络请求的地方）                      │
-│     ├─ client.ts      fetch 封装：baseURL、超时、错误解析              │
-│     ├─ auth.ts        本地 API Key 存取（Phase 0）/ 未来 session      │
-│     ├─ models.ts      GET /v1/models（+ 目录增强，见 §4）             │
-│     ├─ usage.ts       GET /v1/usage                                   │
-│     ├─ chat.ts        POST /v1/chat/completions（SSE 流式解析）       │
-│     └─ keys.ts        Phase 1 起：POST/GET /console/api-keys          │
+│   src/api/（唯一允许发网络请求的地方）                                 │
+│     ├─ client.ts   request()：baseURL 留空=同源，超时，错误解析        │
+│     ├─ errors.ts   ApiError.fromResponse，code → 中文提示映射          │
+│     ├─ auth.ts     authStore（BYOK Key，localStorage）+               │
+│     │               consoleAuthStore（缓存 GET /console/me 的结果）    │
+│     ├─ sse.ts       ReadableStream 版 SSE 解析器                       │
+│     ├─ chat.ts      POST /v1/chat/completions（流式）                 │
+│     ├─ models.ts    GET /v1/models（需要 API Key）                    │
+│     ├─ catalog.ts   GET /v1/catalog（免鉴权公开目录）                 │
+│     ├─ usage.ts      GET /v1/usage（需要 API Key）                     │
+│     └─ console.ts   /console/*（注册/登录/Key/钱包/区间用量/日志）    │
 └───────────────┬──────────────────────────────────┬───────────────────┘
-                │ 直连（公网可暴露）                  │ Phase1 起新增 /console/*
+                │ dev: Vite proxy 同源转发            │ prod: Nginx 反代同源
                 ▼                                    ▼
-     ┌─────────────────────┐              ┌─────────────────────────┐
-     │  cmd/gateway :8080   │              │  cmd/admin :8081         │
-     │  数据面 /v1/*         │              │  控制面（当前=共享密钥）  │
-     │  鉴权=API Key         │              │  Phase1 新增：           │
-     │                       │              │  账户注册/登录 + 按账户  │
-     │                       │              │  自助 Key CRUD（会话鉴权）│
-     └─────────────────────┘              └─────────────────────────┘
+                    ┌───────────────────────────┐
+                    │      cmd/gateway :8080     │
+                    │  /v1/*     鉴权=API Key     │
+                    │  /console/* 鉴权=Cookie      │
+                    │             Session          │
+                    │  （两套鉴权完全独立）          │
+                    └───────────────┬───────────┘
+                                    │ 需要管理员密钥的运营操作
+                                    ▼
+                    ┌───────────────────────────┐
+                    │      cmd/admin :8081        │
+                    │  供应商/渠道/定价/审计/       │
+                    │  虚拟模型元数据（共享密钥）    │
+                    └───────────────────────────┘
 ```
 
-关键原则：**前端 bundle 永远不持有 `UFT_ADMIN_TOKEN`**。凡是需要管理员密钥的接口（供应商/渠道/定价/审计），不对 `frontend/web` 暴露，继续只用 `frontend/test_web` 或未来独立的运营后台访问。
+关键原则不变：**前端 bundle 永远不持有 `UFT_ADMIN_TOKEN`**，也不直连 `cmd/admin`。
 
 ---
 
-## 2. Gateway 接入（现在就能做，Phase 0）
+## 2. Gateway 数据面接入（Phase 0，已实现）
 
-这部分后端已完整可用，直接照 `frontend/test_web/user.html` 的模式接：
-
-| 前端场景 | 接口 | 鉴权 | 备注 |
+| 前端场景 | 接口 | 鉴权 | 说明 |
 |---|---|---|---|
-| 模型库列表 | `GET /v1/models` | `Bearer <api-key>` | 返回 OpenAI 风格 `{object:"list", data:[{id, object, created, owned_by}]}`，**没有价格/评分/上下文长度等字段**（见 §4 的缺口） |
-| 个人中心 → 余额与账单 | `GET /v1/usage` | `Bearer <api-key>` | 返回 `{wallet:{cash_balance_micro, bonus_balance_micro, frozen_micro}, usage:{total_requests, total_input_tokens, total_output_tokens, total_charged_amount_micro}}`；**是全量累计值，没有按时间段/按 Key 拆分**，"本月已消费""调用日志"这类需要区间数据的 UI 暂时接不了（见 §6） |
-| Playground 对话 | `POST /v1/chat/completions`（`stream:true`） | `Bearer <api-key>` | SSE 流式；`Content-Type: text/event-stream`。**必须用 `fetch` + `ReadableStream` 手动解析**，不能用浏览器原生 `EventSource`（它不支持自定义 Header 和 POST body） |
-| Embeddings / Anthropic 兼容 | `POST /v1/embeddings`、`POST /v1/messages` | `Bearer <api-key>` | 暂无对应前端 UI，先不接 |
+| 模型库（已连接 Key 时标记"可调用"） | `GET /v1/models` | `Bearer <api-key>` | OpenAI 风格 `{object:"list", data:[{id, object, created, owned_by}]}` |
+| 模型库主数据源 | `GET /v1/catalog` | 免鉴权 | 见 §4 |
+| 个人中心 → 余额与账单 | `GET /v1/usage`（`?since=` 可选） | `Bearer <api-key>` | `{wallet:{cash_balance_micro, bonus_balance_micro, frozen_micro}, usage:{total_requests, total_input_tokens, total_output_tokens, total_charged_amount_micro}}` |
+| Playground 对话 | `POST /v1/chat/completions`（`stream:true`） | `Bearer <api-key>` | SSE 流式，`fetch` + `ReadableStream` 手动解析（`src/api/sse.ts`），不用浏览器原生 `EventSource` |
 
-金额单位：所有金额是 **int64 micro 单位（1,000,000 = 1 元/刀）**，前端要在 `src/api/usage.ts` 里统一做 `microToDisplay(amount, currency)` 转换，不要在组件里裸算。
+金额单位：所有金额是 int64 micro 单位（1,000,000 = 1 元），`src/api/usage.ts` 的 `microToDisplay` 统一转换。
 
-错误处理：所有接口失败都是 OpenAI 风格 `{"error":{"message","type","code","request_id"}}`；`client.ts` 里统一 parse 成 `ApiError`，UI 层按 `code`（如 `insufficient_balance`、`rate_limit_exceeded`）做针对性提示（比如提示去充值、提示降低并发）。
+错误处理：`{"error":{"message","type","code","request_id"}}`，`src/api/errors.ts` 的 `ApiError.fromResponse` 统一解析，把已知 code（`insufficient_balance` 等）映射成中文提示。
 
-**Phase 0 的鉴权方式**：既然没有登录系统，"个人中心"暂时退化成 OpenRouter/新 API 站点常见的 **BYOK 模式**——用户把已经拿到的 API Key 粘贴进一个"连接"输入框，前端把它存 `localStorage`，之后所有 `/v1/*` 请求带上它。这正是 `frontend/test_web/user.html` 已经验证过的路径，风险和 test_web README 里写的一致（Key 明文存浏览器），可以先上线但要在 UI 上提示。
-
----
-
-## 3. 缺口：自助注册登录与 API Key 自助管理（需要后端配合，Phase 1）
-
-现状：`POST /accounts/{id}/api-keys`（创建 Key）、`POST /accounts`（建账户）都挂在 `cmd/admin`，鉴权是**全局共享**的 `UFT_ADMIN_TOKEN`——这个接口组的设计前提是"运营人员手工操作"，不是"终端用户自助"。`frontend/web` 的"个人中心 → API 密钥"页面如果直接打这些接口，等于把管理员密钥下发给每一个访问者，是严重的权限漏洞。
-
-**需要后端新增**（对应 V2 方案 §7.15 已规划、尚未实现的部分）：
-
-1. `internal/auth` 增加账户级登录：`POST /console/register`、`POST /console/login`（argon2id 密码），签发短期 JWT + refresh token 或 Redis Session。
-2. `cmd/admin`（或新拆一个 `cmd/console`，视规模决定）增加一组**按账户鉴权**（不是共享密钥）的自助接口：
-   - `GET/POST/DELETE /console/api-keys` —— 只能操作 JWT 里的 `account_id` 名下的 Key，对应前端 `ApiKeyItem` 的创建/列表/撤销。
-   - `GET /console/wallet` —— 复用 `internal/wallet`，等价于把 `/v1/usage` 的钱包部分单独暴露给未持有 API Key、只登录了控制台的用户。
-3. 这组接口上线前，`frontend/web` 的注册/登录/自助建 Key UI 只能停留在 **UI 原型态**（当前状态），不要接后端。
-
-**过渡方案（如果业务上必须马上有"自助建 Key"体验）**：在 `cmd/admin` 前面加一层极薄的、只做"限流 + 验证码/邮箱验证"的公开代理端点，服务端持有 `UFT_ADMIN_TOKEN` 调用真正的 admin 接口，前端只拿到该代理端点地址——本质是抢跑一个最小 Console 服务，仍然建议按 V2 路线图正式做（argon2id + JWT），避免后续迁移。
+跨域：dev 用 `vite.config.ts` 的 `server.proxy` 把 `/v1`、`/console` 转发到本地 gateway；prod 用 Nginx 反代同源（见 `deploy/nginx/web.conf`）。两者都是同源，正常情况下不需要 CORS；`internal/httpx.CORS` 只在 `gateway.cors_origins` 显式配置时才启用，供前后端分开部署、无法同源反代的场景使用，见 §9。
 
 ---
 
-## 4. 缺口：模型目录的定价/评分数据（Phase 2）
+## 3. Console：自助注册登录与 API Key 管理（Phase 1，已实现）
 
-`frontend/web` 的 `Model` 类型（`types.ts`）字段远比 `GET /v1/models` 丰富：价格（`inputPricePerM`/`outputPricePerM`）、评分（`scores.intelligenceIndex` 等）、上下文长度、变体（免费版/思考版）、折扣标记……这些目前**只存在于前端 mock 数据里**，后端对应的真实数据（`virtual_models` 售价、`internal/pricing` Price Book）**只通过 admin 接口暴露**，没有面向客户端的 `/v1/prices` 或增强版 `/v1/models`。
+`internal/console` 挂在 `cmd/gateway` 的 `/console/*`（**不是**独立的 `cmd/console` 进程，也不是原计划的 JWT）：
 
-建议：
-- 后端在 `cmd/gateway` 增加一个**只读、可选鉴权（或免鉴权）**的目录接口，例如 `GET /v1/catalog`，在 `internal/catalog` 快照的基础上 join 虚拟模型售价（tier 相关）、能力元数据（`supportedParameters`、`toolCallingCapability`），返回结构对齐前端 `Model` 类型的子集。
-- 评分类字段（intelligenceIndex/codingIndex/agenticIndex/DesignArena）是纯运营/评测数据，后端没有也不会自动产生，需要业务方决定是否引入一张 `model_benchmarks` 配置表，短期可以继续留空或前端本地维护一份"评分覆盖表"叠加在真实目录之上。
-- 在这个接口上线前，模型库页面可以先只替换"是否上架""模型 ID/名称""上下文长度"这类能从 `/v1/models` + `internal/catalog` 拿到的字段，价格/评分继续用 mock，UI 上用一个"演示数据"角标提示用户。
+- `POST /console/register`：argon2id（m=64MiB, t=2, p=2）哈希密码，同一个数据库事务里创建 account（personal/free）+ wallet + user + owner 身份的 account_member。不自动登录，也不做邮箱验证（`users.email_verified` 保持 false——没有邮件基础设施，宁可不发注册赠送余额也不在未验证的前提下发钱）。
+- `POST /console/login`：校验通过后签发会话——token 存 Redis（`uft:sess:<sha256(token)>`），TTL 7 天滑动续期，Cookie 名 `uft_session`，HttpOnly + SameSite=Lax，`console.cookie_secure` 配置项控制要不要加 Secure（本地 http 开发环境必须关）。
+- `POST /console/logout`：删会话、清 Cookie。
+- `GET /console/me`：需要会话，返回 `{user_id, email, email_verified, account_id, account_tier}`。
+- `GET /console/api-keys`、`POST /console/api-keys`（明文只在创建响应里出现一次）、`POST /console/api-keys/{id}/revoke`：需要会话；写请求还需要 `X-UFT-CSRF: 1` 头（见下）。按 `account_id` 限定范围，A 账户无法吊销 B 账户的 Key（返回 404，不区分"不存在"和"越权"）。
+- `GET /console/wallet`：需要会话，不需要 API Key——控制台鉴权与 API Key 鉴权完全分离，这是原始设计里就确认的决策。
+- `GET /console/usage?from=&to=&group_by=day|model`、`GET /console/logs?before=&limit=&api_key_id=`：见 §4/§6。
 
----
+**CSRF 防护**（`internal/console.CSRFGuard`）：非 GET/HEAD/OPTIONS 请求必须同时满足"带自定义头 `X-UFT-CSRF: 1`"和"Origin/Referer 与 Host 同源"，两个条件都不依赖 CORS 预检——`/console/*` 完全不开 CORS，跨站 fetch 想加这个自定义头会先触发预检，而预检必然因为没有 CORS 配置而失败。
 
-## 5. Playground 流式对话改造要点
+**登录/注册限流**：`internal/ratelimit.AllowRPMStrict`（fail-closed，专为防暴力破解设计）。登录按 IP 10 次/分钟 + 按邮箱 5 次/分钟，注册按 IP 3 次/分钟。密码错误和邮箱不存在返回完全相同的响应（内容和近似耗时），避免用户名枚举。
 
-现状 `PlaygroundModal.tsx` 用 `setTimeout` 拼假回复。真实接入：
-
-1. 请求：`POST /v1/chat/completions`，body 用现有设置面板的 `temperature`/`maxTokens`/`systemPrompt` 组出 OpenAI 格式 `messages` 数组，`stream: true`。
-2. 用 `fetch(url, {method:'POST', headers, body})` 拿到 `response.body`（`ReadableStream`），手写一个按行分割 `data: {...}\n\n` 的 SSE parser（后端用的是 `bufio.Reader` 而非 `Scanner`，说明上游可能吐出很长的单行 SSE，前端 parser 也不能假设行长度上限）。
-3. 每个 chunk 增量拼进当前 assistant message 的 `content`，做打字机效果；`[DONE]` 或流结束时停止。
-4. 错误/中断：网络异常或 4xx/5xx 直接走 `client.ts` 统一的 `ApiError` 展示；用户主动关闭弹窗时 `AbortController.abort()` 取消请求，避免后端按"客户端断开"走计费兜底估算（V2 方案 §7.9.4）。
-5. 计费透明度：回复展示区可以选择性展示这次调用消耗的 token/费用——但 `/v1/chat/completions` 的非流式响应里带 `usage`，流式响应的 usage 在最后一个 chunk（需要请求里带 `stream_options.include_usage=true`），要不要展示取决于后端是否支持该参数，需与后端确认。
+`src/api/auth.ts` 因此维护两套完全独立的状态：`authStore`（BYOK 模式的 API Key，localStorage）和 `consoleAuthStore`（登录态，纯内存缓存 `GET /console/me` 的结果，页面刷新后自动重新探测）。一个用户可以只连 Key 不登录控制台，也可以登录了控制台但还没在这台设备连 Key。
 
 ---
 
-## 6. 个人中心其余 Tab 的数据可行性一览
+## 4. 模型目录（Phase 2，已实现）
 
-| Tab | 当前可行性 | 说明 |
-|---|---|---|
-| API 密钥 | **阻塞**，见 §3 | 需要 console 自助鉴权体系 |
-| 余额与账单（概览部分） | **可行（Phase 0）** | `GET /v1/usage` 的 `wallet.*` 字段 |
-| 余额与账单（"本月已消费"分月统计） | **阻塞** | 后端目前只给全量累计，没有区间聚合接口，需要后端在 `request_logs`（或 ClickHouse 同步表）上加一个按时间范围聚合的查询接口 |
-| 调用日志 / 活动记录 | **阻塞** | 需要一个分页查询 `request_logs` 的接口（当前完全没有暴露给客户端），V2 方案里提到"控制台用量报表"在 Phase 2 |
-| 安全护栏 / BYOK / 模型路由 / 系统预设 / 分类器 | **不接** | 后端没有对应领域模型，属于纯前端占位功能，先保留静态展示 |
-| 工作区（多工作区切换） | **不接** | 后端账户模型目前是 `account`，没有"工作区"这一级概念，如果要做需要先在后端设计，超出当前后端范围 |
+`GET /v1/catalog`（免鉴权，`internal/app/catalog.go`）：只返回 `status=active` 且对 `free` tier 可见的虚拟模型，按 IP 限流（60 次/分钟）+ `Cache-Control: public, max-age=60`。响应形状：
 
----
-
-## 7. 客户端服务层设计（`src/api/`）
-
-```ts
-// client.ts —— 唯一发请求的地方
-const GATEWAY_BASE = import.meta.env.VITE_GATEWAY_BASE_URL // 默认 http://localhost:8080
-// 不要出现 VITE_ADMIN_BASE_URL / 管理员 token 相关的任何 env，防止被打进前端 bundle
-
-async function request(path, opts) {
-  const key = authStore.getApiKey() // localStorage，Phase 0
-  const res = await fetch(`${GATEWAY_BASE}${path}`, {
-    ...opts,
-    headers: { ...opts.headers, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-  })
-  if (!res.ok) throw await ApiError.fromResponse(res) // 解析 {error:{message,type,code,request_id}}
-  return res
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "name": "deepseek-ai/DeepSeek-V4-Flash",
+      "family": "deepseek",
+      "type": "chat",
+      "context_window": 128000,
+      "max_output": 8192,
+      "capabilities": ["stream", "tools"],
+      "sell_price": {
+        "currency": "CNY",
+        "components": [
+          {"meter": "input", "unit": "per_1m_tokens", "unit_price": "1.5"},
+          {"meter": "output", "unit": "per_1m_tokens", "unit_price": "3"}
+        ]
+      },
+      "display_name": "DeepSeek V4 Flash",
+      "description": "运营录入的介绍文案",
+      "provider_display": "DeepSeek",
+      "tags": ["reasoning", "coding"],
+      "scores": {"intelligenceIndex": 39.5, "codingIndex": 82, "agenticIndex": 68}
+    }
+  ]
 }
 ```
 
-- `authStore`：Phase 0 只管 API Key 的存取（对应 test_web 的"连接"流程）；Phase 1 切换成 JWT/refresh 时只改这一个模块，组件不用动。
-- 所有组件里现在直接 `useState` 造假数据的地方（`INITIAL_MODELS`、`apiKeys`、余额卡片数字），改造成 `useEffect` 调 `src/api/*` + loading/error 状态，不再需要改动 UI 结构本身。
-- 环境变量：新增 `frontend/web/.env.example` 条目 `VITE_GATEWAY_BASE_URL=http://localhost:8080`；**明确不引入任何指向 `:8081`（admin）的前端可读 env**。
+`display_name`/`description`/`provider_display`/`tags`/`scores` 来自运营在 `virtual_model_metadata` 表（迁移 00014）录入的展示层数据，通过 `cmd/admin` 的 `PUT /virtual-models/{id}/metadata` 维护；没录入时这几个字段直接缺失（不是空字符串）。`scores` 是自由格式 JSON，后端不解析其内部结构，前端约定用 `intelligenceIndex`/`codingIndex`/`agenticIndex` 三个键（`src/data/models.ts` 的 `normalizeScores`），运营录入时需要遵循这个约定。
+
+`src/data/models.ts` 的 `modelFromCatalog(cm, mockOverride)` 把一条 catalog 数据转成前端 `Model` 类型：硬性字段（上下文窗口、价格、能力）永远来自 catalog，展示层字段缺失时按 `id` 从 `INITIAL_MODELS` 找同名条目回退。`GET /v1/models`（需要 API Key）额外用来标记"这把 Key 具体能调用哪些模型"（`isCallable`），和"模型是否公开存在于目录"是两个维度——`/v1/catalog` 只对 free tier 可见，已连接的 Key 可能是更高 tier，能调用目录里看不到的模型，这种情况下 `synthesizeCallableModel` 会生成一张打了"演示数据"角标的最小卡片。
 
 ---
 
-## 8. 分阶段落地计划
+## 5. Playground 流式对话（已实现）
 
-| 阶段 | 内容 | 前置条件 |
+`src/components/PlaygroundModal.tsx` 调用 `src/api/chat.ts` 的 `streamChat`：
+
+1. 请求体用设置面板的 `temperature`/`maxTokens`/`systemPrompt` 组出 OpenAI 格式 `messages`，`stream: true`。
+2. `fetch` 拿到 `response.body`，`src/api/sse.ts` 的 `parseSSE` 按 `\n\n` 切分事件，不假设单行长度上限（和后端 `bufio.Reader` 而非 `Scanner` 的假设一致）。
+3. 每个 chunk 的增量拼进当前 assistant message；回复末尾展示 usage（token 数）。
+4. **计费透明度（已确认，不再是待定项）**：网关（`adapter/openai.go` 的 `BuildRequest`）对所有流式请求无条件向上游注入 `stream_options.include_usage=true`，不需要前端自己声明就能保证按真实 usage 计费；`streamChat` 仍然主动带上这个参数，是为了让客户端自己也能看到那个 usage chunk（网关只有在客户端自己请求了 `include_usage` 时才会转发这个 chunk，见 `internal/relay.isUsageOnlyChunk`——不请求就看不到，协议行为和不使用这个参数完全一致）。
+5. **断开连接的计费方式（已确认）**：用户主动关闭弹窗或清空对话会 `AbortController.abort()`。网关这一侧：流式请求在客户端断开、上游还没来得及吐出 usage chunk 时，不再按预扣上限 `reserveOutput` 计费（那会让"看了两个字就断开"和"跑满整个 max_tokens"付一样的钱），而是按已经转发给客户端的内容字节数估算（仍不超过 `reserveOutput`），`request_logs.usage_source` 记为 `estimated`。
+
+---
+
+## 6. 个人中心各 Tab 的数据来源
+
+| Tab | 状态 | 说明 |
 |---|---|---|
-| **Phase 0**（现在可做） | 接 `GET /v1/models`（仅替换可用字段）、`GET /v1/usage`（余额卡片）、`POST /v1/chat/completions`（Playground 真实对话）；鉴权用 BYOK（粘贴 API Key，localStorage） | 无需后端改动，`frontend/test_web/user.html` 已验证同一套接口 |
-| **Phase 1** | 后端新增 console 注册/登录 + 按账户自助 API Key CRUD（§3）；前端接通个人中心的注册/登录、API 密钥自助创建/删除 | 需要后端排期实现 `internal/auth` 的密码登录与自助 Key 接口 |
-| **Phase 2** | 后端新增只读目录/定价接口（§4）；前端模型库页面价格/上下文长度改用真实数据；新增区间用量聚合接口，接通"本月已消费""调用日志" | 需要后端在 catalog/pricing、request_logs 聚合上补接口 |
-| **Phase 3** | 充值/支付对接（对应 V2 路线图 Phase 2 的在线支付），接通"余额与账单"的充值入口 | 依赖后端支付网关落地 |
+| API 密钥 | **已实现** | `/console/api-keys`，需要登录控制台（不是连 API Key），见 §3 |
+| 余额与账单（总额度/累计消费/冻结中金额） | **已实现** | 连了 Key 用 `GET /v1/usage`（有完整用量统计）；只登录未连 Key 用 `GET /console/wallet`（只有余额，没有用量统计） |
+| 余额与账单（本月每日消费趋势） | **已实现** | `GET /console/usage?group_by=day`，登录控制台即可看，不需要连 API Key |
+| 调用日志 / 活动记录 | **已实现** | `GET /console/logs`，`(created_at, request_id)` keyset 分页，`IntersectionObserver` 触发无限滚动，时间窗最长 30 天，只有元数据（模型/状态/tokens/费用/延迟/usage_source），不含请求/响应正文 |
+| 安全护栏 / BYOK / 模型路由 / 系统预设 / 分类器 | **不接** | 后端没有对应领域模型，纯前端占位功能，保留静态展示 |
+| 工作区（多工作区切换） | **不接** | 后端账户模型是 `account`，没有"工作区"这一级概念 |
+
+---
+
+## 7. 客户端服务层（`src/api/`，已实现）
+
+实际文件（不再是设计草图）：
+
+| 文件 | 职责 |
+|---|---|
+| `client.ts` | `request(path, opts)`：baseURL 留空表示同源；`headers` 选项供 `console.ts` 的写请求带 `X-UFT-CSRF: 1`；不设置全局超时之外的重试逻辑 |
+| `errors.ts` | `ApiError.fromResponse`，code → 中文提示映射表 |
+| `auth.ts` | `authStore`（BYOK Key，localStorage）+ `consoleAuthStore`/`useConsoleUser`（登录态，纯内存） |
+| `sse.ts` | `parseSSE`：`ReadableStream<Uint8Array>` → 逐条 `data:` 负载字符串 |
+| `chat.ts` | `streamChat`：POST `/v1/chat/completions`，始终带 `stream_options.include_usage=true` |
+| `models.ts` | `listModels(apiKey)`：GET `/v1/models` |
+| `catalog.ts` | `listCatalog()`：GET `/v1/catalog`（免鉴权） |
+| `usage.ts` | `getUsage(apiKey)` + `microToDisplay` |
+| `console.ts` | `register/login/logout/getMe/listKeys/createKey/revokeKey/getWallet/getUsageInterval/getLogs` |
+
+环境变量：`frontend/web/.env.example` 只有 `VITE_GATEWAY_BASE_URL`（留空=同源）；**没有、也不应该有**任何指向 `:8081`（admin）的前端可读 env。
+
+---
+
+## 8. 分阶段落地计划（Phase 0-2 已完成）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **Phase 0** | `GET /v1/models`、`GET /v1/usage`、`POST /v1/chat/completions`（Playground 真实对话）；BYOK 鉴权 | ✅ 已完成（迭代 0-2） |
+| **Phase 1** | Console 注册/登录 + 按账户自助 API Key CRUD；前端接通个人中心的注册/登录、API 密钥自助创建/吊销 | ✅ 已完成（迭代 3-4） |
+| **Phase 2** | `GET /v1/catalog` 公开目录 + 运营元数据；区间用量聚合 `/console/usage`；调用日志 `/console/logs`；前端模型库改用真实数据、credits tab 消费趋势图、activity/logs tab 无限滚动 | ✅ 已完成（迭代 5-6） |
+| **Phase 3** | 充值/支付对接，接通"余额与账单"的充值入口 | ⏳ 未开始，依赖后端支付网关落地 |
 
 ---
 
 ## 9. 安全注意事项
 
-1. `UFT_ADMIN_TOKEN` 任何时候都不能出现在 `frontend/web` 的构建产物、网络请求或 localStorage 里。
-2. Gateway 需要为 `frontend/web` 的部署域名开放 CORS（当前 `cmd/gateway` 是否已配置 CORS 中间件需要另行确认，若未配置需要后端补充，允许的 Header 至少包含 `Authorization`、`Content-Type`）。
-3. BYOK 模式下 API Key 明文存 `localStorage` 是已知取舍（和 test_web 一致），上线前应在 UI 上做"该密钥仅保存在本机浏览器"的提示，并提供"退出并清除本地密钥"的入口。
-4. Phase 1 引入登录态后，`localStorage` 里的短期 JWT 需要设置合理过期时间，`refresh` 流程走 `client.ts` 统一拦截 401 自动刷新，避免每个调用点重复处理。
+1. `UFT_ADMIN_TOKEN` 任何时候都不能出现在 `frontend/web` 的构建产物、网络请求或 localStorage 里；`frontend/web` 从不直连 `cmd/admin`。
+2. **CORS 已实现**（`internal/httpx.CORS`）：只挂在 `/v1`，且在 `auth.APIKey` 之前（预检 OPTIONS 不带 Authorization，先过 CORS 中间件应答，不会被鉴权中间件拦成 401）。默认不开启（`gateway.cors_origins` 为空），dev/prod 都走同源反代，不需要它；只有前后端分开部署、无法同源反代时才需要显式配置。不开 credentials，`/console/*` 完全不挂这个中间件——Cookie 会话只信任同源请求。
+3. BYOK 模式下 API Key 明文存 `localStorage` 是已知取舍，`ConnectKeyModal` 已经在 UI 上提示"仅保存在本机浏览器"，并提供"断开并清除"入口。
+4. Console 会话是 httpOnly Cookie（前端 JS 拿不到 token 本身），`consoleAuthStore` 只缓存 `GET /console/me` 的返回值；写操作的 CSRF 防护见 §3。

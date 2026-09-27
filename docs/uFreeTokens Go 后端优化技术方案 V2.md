@@ -208,51 +208,58 @@ Client ──HTTPS──► LB(SLB/Nginx, 关闭缓冲) ──► gateway
 
 ## 5. 工程目录结构
 
+> 下面标注了每个模块的实际状态（✅ 已实现 / ⚠️ 实现方式和设计不同 / ❌ 未独立成包，
+> 功能并入了别的模块 / 🆕 设计时没列出、后来新增），基于当前代码树核对，
+> 供后续阅读本文档时校准预期——这份目录结构本身仍然是最初的设计意图，
+> 不是每一处都照单实现，模块化单体阶段没必要为每个设计里的概念都单独开包。
+
 ```text
 uFreeTokens/
 ├── cmd/
-│   ├── gateway/main.go          # 数据面入口
-│   ├── admin/main.go            # 控制面入口
-│   └── worker/main.go           # 异步任务入口
+│   ├── gateway/main.go          # ✅ 数据面入口
+│   ├── admin/main.go            # ✅ 控制面入口
+│   └── worker/main.go           # ✅ 异步任务入口
 ├── internal/
-│   ├── app/                     # 依赖装配（wire 手写即可）、生命周期、优雅退出
-│   ├── config/                  # 进程配置
-│   ├── httpx/                   # 中间件：requestid、recover、accesslog、cors、错误响应
-│   ├── auth/                    # API Key 生成/校验、控制台会话
-│   ├── account/                 # 账户、用户、组织、成员
-│   ├── catalog/                 # 模型/渠道/价格/促销 的只读内存快照 + 热加载
-│   ├── schema/                  # 统一内部请求/响应结构（OpenAI 语义超集）
-│   ├── adapter/                 # 协议适配器
-│   │   ├── openai/              # OpenAI 及所有 OpenAI 兼容上游（DeepSeek、SiliconFlow、火山、百炼…）
-│   │   ├── anthropic/
-│   │   ├── gemini/
-│   │   └── registry.go
-│   ├── router/                  # 候选过滤、分层、加权选择、亲和性
-│   ├── keypool/                 # 上游 Key 选择、冷却、并发/速率本地令牌桶
-│   ├── health/                  # EWMA 延迟、滑动窗口成功率、熔断器
-│   ├── relay/                   # 请求编排：重试、流式透传、用量累计
-│   ├── usage/                   # 用量累计器、tokenizer 兜底
-│   ├── pricing/                 # 价格计算（纯函数，重点单测）
-│   ├── promotion/               # 促销规则匹配与额度计数
-│   ├── billing/                 # Quote / Reserve / Settle / Release 编排
-│   ├── wallet/                  # 余额、冻结、账本流水（唯一允许写 wallet 表的模块）
-│   ├── payment/                 # 充值订单、支付回调、退款
-│   ├── ratelimit/               # GCRA、TPM、并发租约
-│   ├── risk/                    # 风控规则与封禁
-│   ├── reqlog/                  # 请求日志批量异步写入
-│   ├── reconcile/               # 对账任务
-│   ├── pricesync/               # 上游价格同步：fetcher 插件、归一化、校验、差异、策略、发布、毛利守护（§7.16）
-│   ├── secret/                  # 上游 Key 加解密（信封加密）
-│   ├── observability/           # metrics、tracing、logging 初始化
-│   └── store/                   # sqlc 生成代码 + 事务工具
-├── migrations/                  # SQL 迁移
-├── sql/queries/                 # sqlc 查询定义
-├── api/openapi/                 # 控制面 OpenAPI 规范
-├── deploy/                      # Dockerfile、compose、k8s/helm
-├── test/
-│   ├── mockupstream/            # 可编排故障的 mock 上游
-│   └── e2e/
-└── Makefile
+│   ├── app/                     # ✅ 依赖装配、路由挂载（NewGatewayRouter/NewAdminRouter）
+│   ├── config/                  # ✅ 进程配置
+│   ├── httpx/                   # ✅ requestid/recover/accesslog/cors/错误响应
+│   ├── auth/                    # ✅ 只有 API Key 生成/校验；"控制台会话"实际在 internal/console/（🆕，见下）
+│   ├── account/                 # ❌ 未独立成包；账户/用户/成员的写路径在 internal/admin/、internal/console/ 里
+│   ├── catalog/                 # ✅ 模型/渠道/价格 的只读内存快照 + TTL 重载（促销匹配单独在 internal/promotion/）
+│   ├── schema/                  # ✅ 统一内部请求/响应结构
+│   ├── adapter/                 # ⚠️ 协议适配器，但没有按协议拆子目录——
+│   │                            #    openai.go/anthropic.go/gemini.go 平铺在包内，registry 在 adapter.go
+│   ├── router/                  # ✅ 候选过滤、分层、加权选择
+│   ├── keypool/                 # ❌ 未独立成包；Key 选择/冷却并入 internal/router + internal/health
+│   ├── health/                  # ✅ 熔断器 + Key 冷却（Redis 共享）
+│   ├── relay/                   # ✅ 请求编排：重试、流式透传、用量累计；也承担了下面 usage/billing 的职责
+│   ├── usage/                   # ❌ 未独立成包；用量估算/来源判定内联在 internal/relay
+│   ├── pricing/                 # ✅ 价格计算纯函数
+│   ├── promotion/               # ✅ 促销规则匹配与额度计数
+│   ├── billing/                 # ❌ 未独立成包；Quote/Reserve/Settle/Release 编排内联在 internal/relay，
+│   │                            #    Reserve/Settle/Release 本身实现在 internal/wallet
+│   ├── wallet/                  # ✅ 余额、冻结、账本流水（唯一允许写 wallet 表的模块）
+│   ├── payment/                 # ❌ 未实现（Phase 3，充值/支付对接尚未开始）
+│   ├── ratelimit/               # ✅ GCRA、TPM、并发租约，另有 AllowRPMStrict（fail-closed，给登录/注册防暴力破解用）
+│   ├── risk/                    # ✅ 风控规则与封禁
+│   ├── reqlog/                  # ✅ 请求日志批量异步写入
+│   ├── reconcile/               # ✅ 对账任务
+│   ├── pricesync/               # ✅ 上游价格同步（§7.16）
+│   ├── secret/                  # ⚠️ 实际包名是 internal/secretbox/（上游 Key 信封加密）
+│   ├── console/                 # 🆕 Phase 1 起新增：面向终端用户的自助注册/登录/API Key/钱包/
+│   │                            #    区间用量/调用日志，挂在 cmd/gateway 的 /console/*（见 §7.1、
+│   │                            #    §7.16.10 附近），鉴权是 httpOnly Cookie Session，和 /v1/* 的
+│   │                            #    API Key 鉴权完全独立
+│   ├── chsync/                  # 🆕 分析型存储（ClickHouse）同步状态，Phase 3/4 范围
+│   ├── observability/           # ✅ metrics、logging 初始化（tracing 尚未接入）
+│   └── store/                   # ⚠️ 手写的 Postgres/Redis 连接封装，不是 sqlc 生成代码
+│                                #    （sqlc 引入被推迟，业务代码里直接手写 SQL + pgx）
+├── migrations/                  # ✅ SQL 迁移（goose）
+├── sql/queries/                 # ❌ 未引入（同上，sqlc 被推迟）
+├── api/openapi/                 # ❌ 未生成 OpenAPI 规范；接口文档见 docs/API.md（迭代7新增）
+├── deploy/                      # ⚠️ 目前只有 docker-compose.yml（本地依赖）+ nginx/web.conf（迭代7新增前端反代示例）
+├── test/                        # ❌ 未独立成 test/ 目录；测试就近放在各 internal/<pkg>/*_test.go
+└── Makefile                     # ✅
 ```
 
 依赖方向（强制，可用 `go-arch-lint` / `depguard` 校验）：
@@ -606,12 +613,44 @@ r := chi.NewRouter()
 r.Use(httpx.RequestID, httpx.Recover, httpx.AccessLog(logger), otelhttp.NewMiddleware("gateway"))
 
 r.Route("/v1", func(r chi.Router) {
-    r.Use(auth.APIKey(authSvc))         // 401
-    r.Use(risk.Guard(riskSvc))          // 403 封禁/IP
-    r.Get("/models", h.ListModels)
-    r.Post("/chat/completions", h.Relay(schema.EndpointChat))
-    r.Post("/completions", h.Relay(schema.EndpointCompletion))
-    r.Post("/embeddings", h.Relay(schema.EndpointEmbedding))
+    // /v1/catalog 是唯一免鉴权的端点（公开模型目录，Phase 2 实现），
+    // 不挂 auth.APIKey；其余端点都要求 API Key。
+    r.Get("/catalog", h.PublicCatalog)
+
+    r.Group(func(r chi.Router) {
+        r.Use(auth.APIKey(authSvc))         // 401
+        r.Use(risk.Guard(riskSvc))          // 403 封禁/IP
+        r.Get("/models", h.ListModels)
+        r.Get("/usage", h.Usage)                       // 自助查询钱包余额 + 累计用量
+        r.Post("/chat/completions", h.Relay(schema.EndpointChat))
+        r.Post("/completions", h.Relay(schema.EndpointCompletion))
+        r.Post("/embeddings", h.Relay(schema.EndpointEmbedding))
+        r.Post("/messages", h.Relay(schema.EndpointMessages)) // Anthropic 兼容入口，内部转译成 chat.completions 走同一条计费管线
+    })
+})
+
+// /console/* 是面向终端用户的自助控制台（Phase 1 起），和 /v1/* 共用这个
+// gateway 进程，但鉴权完全独立：httpOnly Cookie Session，不是 API Key，
+// 不挂 auth.APIKey，也不开 CORS（Cookie 会话只信任同源请求）。
+r.Route("/console", func(r chi.Router) {
+    r.Post("/register", h.ConsoleRegister)
+    r.Post("/login", h.ConsoleLogin)
+    r.Post("/logout", h.ConsoleLogout)
+
+    r.Group(func(r chi.Router) {
+        r.Use(console.RequireSession(sessionStore))
+        r.Get("/me", h.ConsoleMe)
+        r.Get("/api-keys", h.ConsoleListKeys)
+        r.Get("/wallet", h.ConsoleWallet)
+        r.Get("/usage", h.ConsoleUsageInterval)   // 按天/按模型聚合的区间用量
+        r.Get("/logs", h.ConsoleLogs)             // keyset 分页的调用日志
+
+        r.Group(func(r chi.Router) {
+            r.Use(console.CSRFGuard) // 非 GET 请求要求同源 + 自定义头
+            r.Post("/api-keys", h.ConsoleCreateKey)
+            r.Post("/api-keys/{id}/revoke", h.ConsoleRevokeKey)
+        })
+    })
 })
 ```
 
@@ -984,6 +1023,22 @@ func Charge(book *catalog.PriceBook, q QuoteCtx, u usage.Usage, disc Discount) (
                                           → usage_source = estimated
 3. 上游在首字节前失败（4xx/5xx 未产出内容） → 不计费，释放冻结
 ```
+
+**当前实现（`internal/relay`）与上面设计的差异，是有意的阶段性简化，不是遗漏**：
+
+- 网关（`adapter/openai.go` 的 `BuildRequest`）对所有流式请求无条件向上游注入
+  `stream_options.include_usage=true`，所以绝大多数走 openai 兼容协议的上游
+  都会命中"1. 上游返回 usage"这条路径；`usage_source=estimated` 主要出现在
+  "客户端在上游吐出最终 usage chunk 之前就断开连接"这一种场景。
+- 估算算法目前是**字节数 × 系数**（`estimateTokens`：约 4 字节/token 的经验值），
+  不是"对应模型族的 tokenizer"——按模型族接入真正的 tokenizer（如
+  tiktoken/sentencepiece）留作后续，字节估算的误差在预扣/兜底场景下可接受，
+  但不适合作为最终账单的精确依据，仅用于：(a) 预扣费用时的输入 token 估算，
+  (b) 客户端断开时按"已转发给客户端的内容字节数"估算已产生的输出（见下）。
+- **客户端断开时**：不再按预扣上限 `reserveOutput`（"最多可能用掉多少"）计费，
+  而是按已经转发给客户端的内容字节数估算实际输出（仍不超过
+  `reserveOutput`，防止估算函数本身异常时超收）——用户看了两个字就断开和跑满
+  整个 `max_tokens` 不应该付一样的钱。
 
 对账任务比较 `estimated` 请求占比与上游账单差异，若某渠道估算占比异常高，说明其 usage 回传有问题，应调整适配器。
 
@@ -1374,7 +1429,7 @@ HTML 来源：`PuerkitoBio/goquery` 按每个站点配置的选择器提取表�
 - **价格变更中心**：待审批列表，展示逐计量项 diff、来源证据（原始页面快照/接口响应链接）、多来源对照、近 7 天影响估算、毛利变化；支持批准（可修改生效时间）、驳回、批量处理。
 - **价格时间线**：每个渠道/虚拟模型的全部价格版本、生效区间、操作人、来源，可一键"以某历史版本重新发布"。
 - **通知**：飞书/钉钉/企业微信/邮件；售价变更可对用户发送公告（控制台站内信、邮件，Phase2 起支持 Webhook）。
-- **对外价格**：`GET /v1/models` 扩展字段返回当前售价与已预约的未来售价，控制台模型广场同源展示。
+- **对外价格**：走 `GET /v1/catalog`（Phase 2 已实现，免鉴权公开目录，见 §7.1、§7.16.4 附近的 `virtual_model_metadata`），返回当前生效的售价（`sell_price.components`）；已预约但尚未生效的未来售价暂不通过这个接口暴露（`internal/catalog.Store` 只加载 `effective_from <= now()` 的最新版本），要看价格时间线仍然走 `cmd/admin` 的价格变更中心。`GET /v1/models` 保持纯 OpenAI 兼容格式（`{id, object, created, owned_by}`），不叠加售价字段——两个接口分工明确：`/v1/models` 给已持有 API Key 的客户端做"这把 Key 能调用哪些模型 ID"查询，`/v1/catalog` 给未注册的访客/控制台模型库做展示，鉴权方式也不同（前者需要 API Key，后者免鉴权）。
 
 监控与告警：
 
