@@ -35,6 +35,7 @@ import { ModelDetailPage } from './components/ModelDetailPage';
 import { BenchmarksPage, BenchmarkDetailPage } from './components/BenchmarksPage';
 import { RankingsPage } from './components/RankingsPage';
 import { HarnessPage } from './components/HarnessPage';
+import { HomePage } from './components/HomePage';
 import { PersonalDashboardPage } from './components/PersonalDashboardPage';
 import { ModelCompareModal } from './components/ModelCompareModal';
 import { PlaygroundModal } from './components/PlaygroundModal';
@@ -82,7 +83,7 @@ const DocsRoutes = lazy(() => import('./docs/DocsLayout'));
 // 顶栏导航名 ↔ 路由路径。Header / CommandPalette 仍然以导航名（中文）通信，
 // 在 App 这一层统一换算成 URL，页面刷新、分享链接、浏览器前进后退都能还原。
 const NAV_PATHS: Record<string, string> = {
-  首页: '/models',
+  首页: '/',
   模型: '/models',
   基准测试: '/benchmarks',
   排行榜: '/rankings',
@@ -94,6 +95,8 @@ const NAV_PATHS: Record<string, string> = {
 function navFromPathname(pathname: string): string {
   const seg = pathname.split('/')[1] ?? '';
   switch (seg) {
+    case '':
+      return '首页';
     case 'benchmarks':
       return '基准测试';
     case 'rankings':
@@ -963,7 +966,22 @@ export default function App() {
       />
 
       <Routes>
-        <Route path="/" element={<Navigate to="/models" replace />} />
+        <Route
+          path="/"
+          element={
+            <HomePage
+              allModels={baseModels}
+              onSearch={(q) => {
+                handleUpdateFilters({ searchQuery: q });
+                navigate('/models');
+              }}
+              onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+              onSelectModel={openModel}
+              onOpenPlayground={(m) => setActiveModelForPlayground(m)}
+              onNavigate={(path) => navigate(path)}
+            />
+          }
+        />
         <Route path="/models" element={modelListView} />
         <Route
           path="/models/*"

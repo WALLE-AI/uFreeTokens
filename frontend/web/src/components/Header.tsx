@@ -107,7 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <div
-          onClick={() => onSelectNav && onSelectNav('模型')}
+          onClick={() => onSelectNav && onSelectNav('首页')}
           className="flex items-center space-x-1.5 font-bold text-gray-900 cursor-pointer hover:opacity-90"
         >
           <Layers className="w-4 h-4 text-purple-600" />
