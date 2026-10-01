@@ -255,7 +255,14 @@ export default function AnalyticsPage() {
           value={interval}
           onChange={(v) => hourAllowed && setParams({ interval: v === 'day' ? null : v })}
         />
-        <span className="text-[11px] text-gray-400 ml-auto">时间按 UTC 分桶 · 统计结果缓存 60 秒</span>
+        <span className="text-[11px] text-gray-400 ml-auto">
+          {chart.data?.source === 'rollup' && (
+            <span className="mr-2 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200" title="时间边界按整点对齐，最近约 5 分钟可能尚未汇总，P50/P95 为直方图近似">
+              小时汇总
+            </span>
+          )}
+          时间按北京时间分桶 · 超过 48 小时读小时汇总表 · 统计结果缓存 60 秒
+        </span>
       </div>
 
       {rangeError ? (

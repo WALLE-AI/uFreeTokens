@@ -1,0 +1,37 @@
+---
+title: 更新日志
+description: uFreeTokens 面向开发者的接口与行为变更记录，按时间倒序排列。
+section: changelog
+order: 0
+---
+
+## 2026-10-01
+
+- **开发者文档重建**：文档改为中英双语，API 参考由接口定义自动生成，并且只收录当前真正可用的接口。
+
+## 2026-09-27
+
+- **网站注册与自助 API Key**：支持邮箱注册、登录；在「个人中心」→「API 密钥」中自助创建和吊销 Key。完整 Key 只在创建时显示一次，吊销立即生效。
+- **新增 `GET /v1/catalog`**：免鉴权的公开模型目录，返回模型类型、上下文长度、最大输出、能力和人民币售价；响应缓存 60 秒，按 IP 限流。同日起目录也会列出已废弃的模型（`status: "deprecated"`），这些模型不可调用。
+- **`GET /v1/usage` 新增 `since` 参数**：传入 RFC3339 时间，只统计该时间之后的用量；不传时仍统计全部历史。
+- **流式计费修正**：
+  - 网关会自动向上游请求用量数据，客户端不需要再自己设置 `stream_options.include_usage`；
+  - 只有客户端自己设置了 `stream_options.include_usage: true` 时，最后那个只含 `usage` 的数据块才会转发给客户端，其余情况下的返回内容与普通流式请求完全一致；
+  - 客户端中途断开、上游未返回用量时，改为按已转发的内容估算输出 token 计费，不再按预扣上限收费。
+- **浏览器跨域**：`/v1` 接口支持按来源白名单开启 CORS，允许的请求头为 `Authorization`、`Content-Type`、`X-Request-Id`，并暴露 `X-Request-Id`、`Retry-After` 响应头。
+- **网站接入真实数据**：模型库读取实时目录；支持「连接 API Key」模式（Key 保存在浏览器 localStorage）；Playground 改为真实的流式调用；个人中心显示真实余额、用量和调用日志。
+
+## 2026-09-26
+
+- **新增 `GET /v1/usage`**：用 API Key 查询账户余额（现金、赠送、冻结）和累计请求数、token 数、消费金额。
+- **新增 `POST /v1/embeddings`**：文本向量接口，按输入 token 计费。
+- **新增 `POST /v1/messages`**：Anthropic Messages 兼容入口，与 `/v1/chat/completions` 共用同一套鉴权、限流和计费；暂不支持工具调用，错误响应使用 OpenAI 格式。
+- **更多上游**：网关可以接入 Anthropic、Gemini 协议的上游模型，调用方式仍然是统一的 OpenAI 格式。
+
+## 2026-09-25
+
+- **首个可用版本**：`POST /v1/chat/completions`（支持流式）和 `GET /v1/models`，使用 `Authorization: Bearer sk-uft-...` 鉴权。
+- **两阶段计费**：请求前按上限预扣，完成后按实际用量结算；余额不足时返回 `402 insufficient_balance`，不转发、不扣费。结算时优先扣除赠送余额。
+- **自动重试**：上游 Key 或渠道出错时，在开始向客户端返回内容之前自动换 Key 或换渠道重试。
+- **按 Key 限流**：支持每分钟请求数、每分钟 token 数和并发数限制，超限返回 `429`（`rate_limit_exceeded` / `concurrency_limit_exceeded`）并带 `Retry-After` 响应头。
+- **统一错误格式与请求 ID**：所有错误使用 `{"error": {...}}` 的 OpenAI 兼容格式，每个响应都带 `X-Request-Id`。

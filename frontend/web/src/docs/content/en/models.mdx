@@ -1,0 +1,101 @@
+---
+title: Models
+description: What model IDs are, and how the public /v1/catalog differs from /v1/models.
+section: getting-started
+order: 30
+translatedFrom: 7e711b73bdeb
+---
+
+## Model IDs
+
+The `model` field of a request takes a **model ID** listed on the platform, such as `deepseek-ai/DeepSeek-V4-Flash`. Model IDs are case-sensitive and must match the catalog's `name` (or the `id` from `/v1/models`) exactly.
+
+One model ID may be served by several upstream channels; the gateway picks one and fails over between them. You only need to care about the model ID and its price in the catalog.
+
+## Two ways to list models
+
+| | `GET /v1/catalog` | `GET /v1/models` |
+|---|---|---|
+| Auth | No key needed | API key required |
+| Answers | Which models the platform offers publicly, and at what price | Which model IDs this key can call |
+| Returns | ID, type, context window, max output, capabilities, price, description, etc. | Only the OpenAI-style `id` / `object` / `owned_by` |
+| Scope | Models visible to the free tier, including deprecated ones (`status: "deprecated"`) | Active models visible to your account's tier |
+| Caching and limits | `Cache-Control: public, max-age=60`; 60 requests per minute per client IP | The key's regular rate limits |
+
+### GET /v1/catalog
+
+The public catalog needs no key, which makes it a good source for showing models and prices in your own app:
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/catalog
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "name": "deepseek-ai/DeepSeek-V4-Flash",
+      "family": "deepseek",
+      "type": "chat",
+      "context_window": 128000,
+      "max_output": 8192,
+      "capabilities": ["stream", "tools"],
+      "sell_price": {
+        "currency": "CNY",
+        "components": [
+          {"meter": "input", "unit": "per_1m_tokens", "unit_price": "1.5"},
+          {"meter": "output", "unit": "per_1m_tokens", "unit_price": "3"}
+        ]
+      },
+      "display_name": "DeepSeek V4 Flash",
+      "provider_display": "DeepSeek",
+      "status": "active"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `name` | The model ID to pass as `model` |
+| `type` | `chat`, `embedding`, etc.; `/v1/embeddings` only accepts `embedding` models |
+| `context_window` / `max_output` | Context window and maximum output tokens |
+| `capabilities` | Supported features, e.g. `stream`, `tools` |
+| `sell_price` | Price in CNY; `unit_price` is a decimal string in yuan. See [Billing](/docs/en/billing) |
+| `display_name`, `description`, `provider_display`, `tags`, `scores` | Display metadata; may be absent |
+| `status` | `active` is callable; `deprecated` is listed for reference only, and calling it returns `404 model_not_found` |
+
+Data can be up to 60 seconds stale because of caching. Exceeding the per-IP limit returns `429 rate_limit_exceeded` with a `Retry-After` header.
+
+### GET /v1/models
+
+Returns the model IDs that the key's account can call, in the OpenAI format, so the SDK's `models.list()` works as-is:
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/models \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "deepseek-ai/DeepSeek-V4-Flash", "object": "model", "created": 0, "owned_by": "ufreetokens"}
+  ]
+}
+```
+
+`created` is currently always `0`; it is not the model's listing date.
+
+## Account tiers and visibility
+
+Each model is configured with the account tiers that can see it. Requesting a model that does not exist, is deprecated, or is not visible to your tier always returns the same `404 model_not_found` — the gateway does not tell these cases apart.
+
+If a key is restricted to a subset of models, requesting any other model returns `403 model_not_allowed`.
+
+## Live model list
+
+The table below reads `GET /v1/catalog` directly and shows the models currently listed:
+
+<LiveModelList />

@@ -1,0 +1,59 @@
+---
+title: Overview
+description: uFreeTokens is an OpenAI-compatible, multi-provider LLM API gateway — one key, one base URL, billed in CNY.
+section: getting-started
+order: 0
+translatedFrom: ed414c2b662e
+---
+
+## What is uFreeTokens
+
+uFreeTokens is an OpenAI-compatible LLM API gateway. It puts models from multiple upstream providers behind a single base URL and a single set of API keys:
+
+- **One entry point**: call every listed model with the OpenAI request/response format. Existing OpenAI SDK code only needs a new `base_url` and `api_key`.
+- **Unified billing**: all models are priced in Chinese yuan (CNY) and charged against one account balance — pre-authorized up front, then settled on actual usage.
+- **Automatic failover**: if an upstream key or channel fails, the gateway retries on another key or channel before it starts sending you any content.
+
+## Base URL
+
+Every endpoint lives under `/v1`:
+
+```text
+{{BASE_URL}}/v1
+```
+
+Apart from the public model catalog `GET /v1/catalog`, every endpoint requires an API key in the request header:
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+## Available endpoints
+
+| Endpoint | Purpose | Auth |
+|---|---|---|
+| `GET /v1/catalog` | Public model catalog with prices and context lengths | None |
+| `GET /v1/models` | Model IDs callable with the current key (OpenAI format) | API key |
+| `GET /v1/usage` | Account balance and cumulative usage | API key |
+| `POST /v1/chat/completions` | Chat completions, with streaming (SSE) and tool calling | API key |
+| `POST /v1/embeddings` | Text embeddings | API key |
+| `POST /v1/messages` | Anthropic Messages-compatible entry point (no tool calling) | API key |
+
+## What is not available yet
+
+The following paths are reserved but currently return `503` with error code `not_implemented`:
+
+- `POST /v1/completions` (legacy text completions)
+- `POST /v1/images/generations` (image generation)
+- `POST /v1/audio/transcriptions` (speech-to-text)
+- `POST /v1/audio/speech` (text-to-speech)
+
+Online top-up is also not available on the website yet; newly registered accounts start with a balance of 0.
+
+## How these docs are organized
+
+- **Getting started**: [Quickstart](/docs/en/quickstart), [Authentication](/docs/en/authentication), [Models](/docs/en/models), [Billing](/docs/en/billing).
+- **Guides**: [Streaming](/docs/en/streaming), [Anthropic-compatible API](/docs/en/anthropic-messages), [Tool calling](/docs/en/tool-calling), [Embeddings](/docs/en/embeddings), [Usage](/docs/en/usage), [Errors](/docs/en/errors), [Rate limits](/docs/en/rate-limits), [Request IDs](/docs/en/request-id).
+- **Integrations**: [OpenAI SDK](/docs/en/integrations/openai-sdk), [Anthropic SDK](/docs/en/integrations/anthropic-sdk).
+- **API reference**: [parameters, responses and error codes for every endpoint](/docs/en/api).
+- **Changelog**: [the real history of platform changes](/docs/en/changelog).

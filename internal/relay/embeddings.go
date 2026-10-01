@@ -117,7 +117,7 @@ func (s *Service) Embeddings(w http.ResponseWriter, r *http.Request) {
 	meta := requestMeta{
 		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
 		accountTier: principal.AccountTier,
-		vmName:      vm.Name, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
+		vmName:      vm.Name, vmID: vm.ID, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 		logEndpoint: logEndpointEmbeddings,
 	}
 

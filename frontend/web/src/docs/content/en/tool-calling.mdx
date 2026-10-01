@@ -1,0 +1,247 @@
+---
+title: Tool Calling (Function Calling)
+description: Use tools and tool_choice on /v1/chat/completions to let the model call functions you define, and complete the full call → tool result → final answer loop.
+section: guides
+order: 30
+translatedFrom: 1c2cd5bfd8aa
+---
+
+Tool calling (function calling) lets the model "request" a call to a function you define: the model returns a function name and JSON arguments, your code runs the function, and you send the result back so the model can produce its final answer. The gateway uses the OpenAI Chat Completions `tools` / `tool_choice` protocol.
+
+## How the gateway handles tool calls
+
+- **Capability-based routing**: when a request contains a non-empty `tools` array, the gateway only routes it to channels that have the `tools` capability. If the model has no available channel with that capability, you get `503 no_available_channel`.
+- **Pass-through**: `tools`, `tool_choice`, `parallel_tool_calls`, `role: "tool"` messages and the `tool_calls` in responses are neither validated nor rewritten — they are forwarded to the upstream and returned to you as-is (only the response `id` and `model` are rewritten). Whether a tool definition is valid, which `tool_choice` values are supported, and how good the generated arguments are all depend on the model and upstream.
+- **Billing unchanged**: tool definitions and tool results count as input tokens, and generated `tool_calls` count as output tokens, exactly like a normal chat.
+
+<Callout type="info" title="Check that the model supports tools">
+
+Only models whose catalog `capabilities` include `tools` support tool calling. Check the [model list](/docs/en/models), or filter `GET /v1/catalog`:
+
+```bash title="List models that support tools"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.capabilities | index("tools")) | .name'
+```
+
+</Callout>
+
+## Request parameters
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `tools` | array | List of tools, each shaped like `{"type": "function", "function": {"name", "description", "parameters"}}`, where `parameters` is a JSON Schema |
+| `tool_choice` | string or object | Optional. `"auto"` (model decides), `"none"` (never call), `"required"` (must call), or `{"type": "function", "function": {"name": "..."}}` to force a specific function. Support depends on the model |
+
+## The full loop
+
+<Steps>
+
+<Step title="Send a request with tools">
+
+Send the user's question together with the tool definitions.
+
+</Step>
+
+<Step title="Read tool_calls">
+
+If the model decides to call a tool, `choices[0].finish_reason` is `tool_calls` and `choices[0].message.tool_calls` contains the function name and its arguments as a JSON string.
+
+</Step>
+
+<Step title="Run the function and send the result back">
+
+Run the function in your code. Append the assistant message from the previous step (including `tool_calls`) to `messages` unchanged, then append one `role: "tool"` message per call, with `tool_call_id` set to the call's `id` and `content` set to the function result (a string).
+
+</Step>
+
+<Step title="Get the final answer">
+
+Send the full `messages` (and the same `tools`) again; the model produces the final answer based on the tool results.
+
+</Step>
+
+</Steps>
+
+The first response looks roughly like this:
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "object": "chat.completion",
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\": \"Hangzhou\"}"}
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 156, "completion_tokens": 21, "total_tokens": 177}
+}
+```
+
+## Examples
+
+The examples below walk through both rounds. `get_weather` is a local sample function that returns fixed data.
+
+<CodeTabs>
+
+```python title="Python"
+import json
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+MODEL = "deepseek-ai/DeepSeek-V4-Flash"
+
+def get_weather(city: str) -> dict:
+    # Sample function: replace with a real weather lookup
+    return {"city": city, "weather": "sunny", "temperature_c": 26}
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name, e.g. Hangzhou"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+messages = [{"role": "user", "content": "What's the weather like in Hangzhou right now?"}]
+
+# Round 1: the model decides whether to call a tool
+first = client.chat.completions.create(model=MODEL, messages=messages, tools=tools, tool_choice="auto")
+msg = first.choices[0].message
+
+if msg.tool_calls:
+    messages.append(msg.model_dump(exclude_none=True))  # append the assistant message as-is
+    for call in msg.tool_calls:
+        args = json.loads(call.function.arguments)
+        result = get_weather(**args)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": json.dumps(result),
+        })
+
+    # Round 2: final answer based on the tool results
+    final = client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+    print(final.choices[0].message.content)
+else:
+    print(msg.content)
+```
+
+```ts title="TypeScript"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+const MODEL = "deepseek-ai/DeepSeek-V4-Flash";
+
+function getWeather(city: string) {
+  // Sample function: replace with a real weather lookup
+  return { city, weather: "sunny", temperature_c: 26 };
+}
+
+const tools: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "get_weather",
+      description: "Get the current weather for a city",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "City name, e.g. Hangzhou" } },
+        required: ["city"],
+      },
+    },
+  },
+];
+
+const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+  { role: "user", content: "What's the weather like in Hangzhou right now?" },
+];
+
+// Round 1: the model decides whether to call a tool
+const first = await client.chat.completions.create({ model: MODEL, messages, tools, tool_choice: "auto" });
+const msg = first.choices[0].message;
+
+if (msg.tool_calls?.length) {
+  messages.push(msg); // append the assistant message as-is
+  for (const call of msg.tool_calls) {
+    if (call.type !== "function") continue;
+    const args = JSON.parse(call.function.arguments);
+    messages.push({
+      role: "tool",
+      tool_call_id: call.id,
+      content: JSON.stringify(getWeather(args.city)),
+    });
+  }
+
+  // Round 2: final answer based on the tool results
+  const final = await client.chat.completions.create({ model: MODEL, messages, tools });
+  console.log(final.choices[0].message.content);
+} else {
+  console.log(msg.content);
+}
+```
+
+```bash title="cURL (round 2)"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+      }
+    }],
+    "messages": [
+      {"role": "user", "content": "What'\''s the weather like in Hangzhou right now?"},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Hangzhou\"}"}}
+      ]},
+      {"role": "tool", "tool_call_id": "call_0", "content": "{\"city\": \"Hangzhou\", \"weather\": \"sunny\", \"temperature_c\": 26}"}
+    ]
+  }'
+```
+
+</CodeTabs>
+
+In the cURL example, replace `call_0` with the actual `tool_calls[].id` returned in round 1.
+
+## Notes
+
+- **Streaming**: tool calling also works with `stream: true`. `tool_calls` then arrive incrementally in each chunk's `delta.tool_calls`, and you need to concatenate `arguments` by `index` yourself. See [Streaming](/docs/en/streaming).
+- **Validate arguments**: `arguments` is a JSON string generated by the model and may be malformed or missing fields. Parse and validate it before running anything.
+- **No tools on the Anthropic-compatible endpoint**: a `POST /v1/messages` request with `tools` returns `400 invalid_request`. Use `/v1/chat/completions` instead.
+
+## Related
+
+- [Chat Completions API reference](/docs/en/api/createChatCompletion)
+- [Model list](/docs/en/models)
+- [Error handling](/docs/en/errors)

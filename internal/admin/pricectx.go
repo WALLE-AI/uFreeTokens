@@ -63,7 +63,7 @@ func (s *Service) loadPriceContext(ctx context.Context, channelIDs, vmIDs []int6
 			return nil, err
 		}
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT DISTINCT ON (base) base, rate, effective_date
 		 FROM fx_rates WHERE quote = 'CNY' AND effective_date <= CURRENT_DATE
 		 ORDER BY base, effective_date DESC`)
@@ -84,7 +84,7 @@ func (s *Service) loadPriceContext(ctx context.Context, channelIDs, vmIDs []int6
 
 // loadCurrentBriefs 取每个 key 当前生效的价格版本及其基础 input/output 单价。
 func (s *Service) loadCurrentBriefs(ctx context.Context, kind, keyColumn string, ids []int64) (map[int64]*PriceBrief, error) {
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(
+	rows, err := s.db(ctx).Query(ctx, fmt.Sprintf(
 		`WITH cur AS (
 		   SELECT DISTINCT ON (pb.%[1]s) pb.id, pb.%[1]s AS key, pb.currency, pb.effective_from
 		   FROM price_books pb

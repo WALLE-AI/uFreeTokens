@@ -1,9 +1,12 @@
+import { zonedParts } from './tz';
+
+// 时间统一按运营时区（ADMIN_TZ）显示，与统计分桶口径一致，不随浏览器时区变化。
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const p = zonedParts(d);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
 export function formatRelative(iso: string | null | undefined): string {

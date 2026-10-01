@@ -1,0 +1,135 @@
+---
+title: Quickstart
+description: Register, create an API key, and make your first call with cURL, Python, or Node.js.
+section: getting-started
+order: 10
+translatedFrom: 11b601adfcb3
+---
+
+## Your first call
+
+<Steps>
+
+<Step title="Register and sign in">
+
+Click **Register** in the top-right corner of the website and enter an email and a password (at least 8 characters). You are signed in automatically after registering; email verification is not required at the moment.
+
+</Step>
+
+<Step title="Create an API key in the personal center">
+
+Open **Personal center** → **API keys**, click create, and give the key a recognizable name.
+
+The full key (starting with `sk-uft-`) is **shown only once, in the creation dialog**. It cannot be viewed again after you close the dialog, so copy it right away. Afterwards the list only shows its prefix, e.g. `sk-uft-a1B2c3`.
+
+</Step>
+
+<Step title="Put the key in an environment variable">
+
+Every example in these docs reads the key from an environment variable. Keep keys out of your source code:
+
+```bash
+export UFREETOKENS_API_KEY="paste-your-key-here"
+```
+
+</Step>
+
+<Step title="Send your first request">
+
+Replace the model ID below with one your key can use (list them with `GET /v1/models`, see [Models](/docs/en/models)):
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "messages": [{"role": "user", "content": "Introduce yourself in one sentence."}]
+  }'
+```
+
+```python title="Python"
+# pip install openai
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+)
+
+resp = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "Introduce yourself in one sentence."}],
+)
+print(resp.choices[0].message.content)
+```
+
+```ts title="Node.js"
+// npm install openai
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{BASE_URL}}/v1",
+  apiKey: process.env.UFREETOKENS_API_KEY,
+});
+
+const resp = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "Introduce yourself in one sentence." }],
+});
+console.log(resp.choices[0].message.content);
+```
+
+</CodeTabs>
+
+</Step>
+
+</Steps>
+
+## A successful response
+
+The response uses the standard OpenAI Chat Completions format. The `usage` field reports the tokens consumed by this request:
+
+```json
+{
+  "id": "...",
+  "object": "chat.completion",
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "..."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 14, "completion_tokens": 32, "total_tokens": 46}
+}
+```
+
+Every response carries an `X-Request-Id` header. Include it when you report a problem (see [Request IDs](/docs/en/request-id)).
+
+## Common problems
+
+<Callout type="warning" title="402 insufficient_balance">
+
+Your available balance does not cover the pre-authorized amount for this request. New accounts start with a balance of 0, and online top-up is not available on the website yet. See [Billing](/docs/en/billing) for how charges work.
+
+</Callout>
+
+| Status | Error code | Cause |
+|---|---|---|
+| 401 | `invalid_api_key` | Missing or malformed `Authorization` header, or the key has been revoked |
+| 404 | `model_not_found` | The model ID does not exist or is not visible to your account |
+| 402 | `insufficient_balance` | Not enough balance |
+| 429 | `rate_limit_exceeded` | The key's rate limit was hit; wait for the `Retry-After` header and retry |
+
+See [Errors](/docs/en/errors) for the full list of error codes.
+
+## Next steps
+
+- [Streaming](/docs/en/streaming): get tokens as they are generated with `stream: true`.
+- [OpenAI SDK integration](/docs/en/integrations/openai-sdk): complete examples for streaming, embeddings and error handling.
+- [API reference](/docs/en/api): parameters and responses for every endpoint.

@@ -1,0 +1,124 @@
+---
+title: Request ID
+description: Every response carries X-Request-Id for correlating your client logs with platform records; learn how it is generated, how to set your own, and how to use it when troubleshooting.
+section: guides
+order: 80
+translatedFrom: f845917bc399
+---
+
+The gateway assigns every request a Request ID that ties your client-side logs to the platform's call logs and billing records. When you troubleshoot or contact support, the Request ID is the fastest way to locate a request.
+
+## Where to find it
+
+| Location | Description |
+| --- | --- |
+| `X-Request-Id` response header | Present on **every** response — successful, failed and streaming |
+| `error.request_id` in error bodies | Present on every error response, same value as the header |
+| `id` in the response body | In successful responses from `/v1/chat/completions` (including every stream chunk), `/v1/embeddings` and `/v1/messages`, the `id` field is rewritten to the Request ID |
+
+## How it is generated
+
+- If the request carries a valid `X-Request-Id` header, the gateway **reuses** it and echoes it back in the response header.
+- Otherwise the gateway generates a [ULID](https://github.com/ulid/spec) (26 characters, time-ordered, e.g. `01J9Z3K5V8Q2M4N6P8R0S2T4V6`).
+
+A custom Request ID is valid only if it meets both rules:
+
+| Rule | Requirement |
+| --- | --- |
+| Length | 1 to 64 characters |
+| Characters | Only ASCII letters `A-Z` `a-z`, digits `0-9`, hyphen `-` and underscore `_` |
+
+Values that break these rules (too long, containing spaces, `.` or `:`, etc.) do **not** cause an error; they are silently replaced with a gateway-generated ULID. Always rely on **the value returned in the response header**, not the one you sent.
+
+<Callout type="warning" title="Use a unique value for every request">
+
+Internally the Request ID also identifies the request's billing pre-authorization and call log entry. If you set your own, make sure **every request (including retries) uses a new, globally unique value**, such as a UUID v4 or ULID. Reusing a value makes those requests indistinguishable in logs and billing, and the gateway does not guarantee how such requests are processed. If you don't need correlation, just omit the header and let the gateway generate one.
+
+</Callout>
+
+## Examples
+
+### Reading the Request ID
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -sS -D - {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "Hello"}]}' \
+  -o /dev/null | grep -i x-request-id
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+raw = client.chat.completions.with_raw_response.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print("request_id:", raw.headers.get("X-Request-Id"))
+completion = raw.parse()
+print(completion.choices[0].message.content)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const { data, response } = await client.chat.completions
+  .create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    messages: [{ role: "user", content: "Hello" }],
+  })
+  .withResponse();
+
+console.log("request_id:", response.headers.get("X-Request-Id"));
+console.log(data.choices[0].message.content);
+```
+
+</CodeTabs>
+
+### Sending a custom Request ID
+
+```bash title="cURL"
+curl -i {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: order-42-$(date +%s%N)" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+With the SDKs, pass it as an extra header — e.g. `extra_headers={"X-Request-Id": str(uuid.uuid4())}` in Python, or `{ headers: { "X-Request-Id": crypto.randomUUID() } }` as the second argument in Node.
+
+## Logging tips
+
+- Log the Request ID on every call, together with your own business ID (order number, session ID, ...), the HTTP status and `error.code`.
+- On errors, prefer `error.request_id`; fall back to the `X-Request-Id` response header when there is no error body (e.g. a network failure mid-response).
+- For cross-origin browser calls, the `X-Request-Id` response header is readable only if the platform has enabled CORS for your origin (the gateway exposes this header in CORS responses).
+
+## Contacting support
+
+When reporting an issue, please include:
+
+1. The Request ID;
+2. Approximately when the request happened (with timezone);
+3. The model ID and endpoint path;
+4. The HTTP status and `error.code` you received.
+
+You can also view your call log for the last 30 days (time, model, tokens, cost, status) in the website's **personal center** and match requests by time. Note that requests rejected before reaching an upstream — authentication failures, rate limits, insufficient balance, and so on — do not appear in the call log, which makes the Request ID especially important for those.
+
+## Related
+
+- [Error handling](/docs/en/errors)
+- [Rate limits](/docs/en/rate-limits)

@@ -1,0 +1,73 @@
+---
+title: Authentication
+description: How to create, use, store and revoke sk-uft- API keys.
+section: getting-started
+order: 20
+translatedFrom: 9c04b890de2b
+---
+
+## Bearer authentication
+
+Every `/v1` endpoint except the public model catalog `GET /v1/catalog` authenticates through the `Authorization` header:
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+- The scheme must be `Bearer ` (with the space), and the key must start with `sk-uft-`.
+- The gateway **only** accepts `Authorization: Bearer`. Headers such as `x-api-key` are ignored. The Anthropic SDK therefore needs a specific setting — see [Anthropic SDK integration](/docs/en/integrations/anthropic-sdk).
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/models \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+## Creating a key
+
+API keys are self-service on the website:
+
+1. Register and sign in.
+2. Open **Personal center** → **API keys**, click create, and enter a name.
+3. Copy the full key from the creation dialog.
+
+<Callout type="warning" title="The key is shown only once">
+
+The platform stores only a digest of the key plus its first 13 characters (e.g. `sk-uft-a1B2c3`, so you can tell keys apart in the list). **The plaintext is never stored.** Once you close the creation dialog, nobody — including the platform — can recover the full key. If you lose it, revoke it and create a new one.
+
+</Callout>
+
+An account can have multiple keys. All keys share the same account balance, but rate limits are counted per key (see [Rate limits](/docs/en/rate-limits)).
+
+## Revoking a key
+
+Revoke keys from the list under **Personal center** → **API keys**. Revocation takes effect **immediately**: the gateway checks key status on every request, so subsequent requests with that key get `401 invalid_api_key`. Revocation cannot be undone.
+
+## Keeping keys safe
+
+- Store keys in environment variables or a secret manager (the examples here use `UFREETOKENS_API_KEY`). Never hard-code them or commit them to Git.
+- Use a separate key per application and environment, so a leak only requires revoking one key.
+- Never embed a key in code you ship to users, such as web front-ends or mobile app bundles. If you need to call the API from a browser, proxy the request through your own backend.
+- Revoke and replace a key as soon as you suspect it has leaked. The fixed `sk-uft-` prefix makes keys easy for repository secret scanners to detect.
+
+## The website's "Connect API key" mode
+
+Website features such as the Playground call the `/v1` endpoints with an API key. There are two ways to give the website a key:
+
+- tick **Use in this browser for the Playground** when creating a key, or
+- click **Connect API key** in the top-right corner and paste an existing key.
+
+Either way, the key is stored in plaintext in **this browser's localStorage** and sent directly to the gateway as the `Authorization: Bearer` header. It is not uploaded or stored server-side anywhere else. On a shared computer, use **Disconnect and clear** in the same dialog when you are done.
+
+<Callout type="info">
+
+The cookie session used to sign in to the website only serves the website's own personal-center pages; it is not a developer API. Your programs should always call `/v1` with an API key.
+
+</Callout>
+
+## Authentication errors
+
+| Status | Error code | Cause |
+|---|---|---|
+| 401 | `invalid_api_key` | Missing `Authorization` header, not a `Bearer` token, key does not start with `sk-uft-`, or the key is unknown, revoked or expired |
+| 403 | `account_suspended` | The account that owns the key has been suspended |
+| 403 | `model_not_allowed` | The key is restricted to certain models and the requested model is not one of them |

@@ -113,6 +113,7 @@ func buildConsoleGateway(t *testing.T) (gwURL string, consoleSvc *console.Servic
 
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	sessions := console.NewSessionStore(rdb)
 	rl := ratelimit.New(rdb, logger)
 	consoleSvc = console.New(pool, adminSvc, sessions, rl, logger, console.Config{CookieSecure: false})

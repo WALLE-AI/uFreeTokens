@@ -16,3 +16,4 @@ export * from './SecretReveal';
 export * from './CommandPalette';
 export * from './Detail';
 export * from './Controls';
+export * from './RemoteSelect';

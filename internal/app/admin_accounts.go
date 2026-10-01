@@ -16,7 +16,8 @@ import (
 func (h *adminHandlers) listAccounts(w http.ResponseWriter, r *http.Request) {
 	q := &queryParser{r: r}
 	in := admin.ListAccountsInput{
-		Q: q.str("q"), Status: q.str("status"), Tier: q.str("tier"), Type: q.str("type"), Sort: q.str("sort"), PageRequest: q.page(),
+		Q: q.str("q"), Status: q.enum("status", admin.EnumValues().AccountStatuses...), Tier: q.enum("tier", admin.EnumValues().Tiers...),
+		Type: q.enum("type", admin.EnumValues().AccountTypes...), Sort: q.str("sort"), PageRequest: q.page(),
 	}
 	if !q.ok(w) {
 		return
@@ -35,7 +36,7 @@ func (h *adminHandlers) listLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := &queryParser{r: r}
-	in := admin.ListLedgerInput{AccountID: id, Type: q.str("type"), BalanceKind: q.str("balance_kind"), Before: q.str("before"), Limit: q.int("limit")}
+	in := admin.ListLedgerInput{AccountID: id, Type: q.enum("type", admin.EnumValues().LedgerTypes...), BalanceKind: q.enum("balance_kind", admin.EnumValues().LedgerBalanceKinds...), Before: q.str("before"), Limit: q.int("limit")}
 	if !q.ok(w) {
 		return
 	}
@@ -62,17 +63,21 @@ func (h *adminHandlers) listCreditGrants(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	q := &queryParser{r: r}
-	grants, err := h.svc.ListCreditGrants(r.Context(), id, q.boolean("active"))
+	active := q.boolean("active")
+	if !q.ok(w) {
+		return
+	}
+	grants, truncated, err := h.svc.ListCreditGrants(r.Context(), id, active)
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": grants})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": grants, "truncated": truncated})
 }
 
 func (h *adminHandlers) searchAPIKeys(w http.ResponseWriter, r *http.Request) {
 	q := &queryParser{r: r}
-	in := admin.ListAPIKeysInput{Q: q.str("q"), AccountID: q.int64("account_id"), Status: q.str("status"), PageRequest: q.page()}
+	in := admin.ListAPIKeysInput{Q: q.str("q"), AccountID: q.int64("account_id"), Status: q.enum("status", admin.EnumValues().APIKeyStatuses...), PageRequest: q.page()}
 	if !q.ok(w) {
 		return
 	}

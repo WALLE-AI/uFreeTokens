@@ -1,0 +1,99 @@
+---
+title: API reference overview
+description: Base URL, authentication, request and response conventions, error format, money units, and the full list of endpoints.
+section: api
+order: 0
+translatedFrom: a9cd4bd3ecdb
+---
+
+## Base URL
+
+```text
+{{BASE_URL}}/v1
+```
+
+The API is OpenAI-compatible: with the OpenAI SDK, set `base_url` to the address above.
+
+## Authentication
+
+Every endpoint except `GET /v1/catalog` requires an API key:
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+Only `Authorization: Bearer` is accepted; `x-api-key` is not. See [Authentication](/docs/en/authentication) for creating and revoking keys.
+
+## Request and response conventions
+
+- Request bodies are JSON; sending `Content-Type: application/json` is recommended.
+- Successful responses are JSON; streaming requests (`stream: true`) return `text/event-stream`.
+- Field names and semantics follow OpenAI (Anthropic for `/v1/messages`). The gateway forwards your parameters to the upstream model, so support for optional parameters can vary between models.
+
+## Request IDs
+
+Every response has an `X-Request-Id` header, and error bodies carry the same value as `request_id`.
+
+You may also send your own `X-Request-Id` header: if it is 1–64 characters of letters, digits, `-` or `_`, the gateway reuses it; otherwise it generates a new one. If you supply your own, make sure **every request gets a unique value** — the gateway uses it to identify the request's billing record. See [Request IDs](/docs/en/request-id).
+
+## Error format
+
+All errors use the OpenAI-compatible shape (including on `/v1/messages`):
+
+```json
+{
+  "error": {
+    "message": "Insufficient balance.",
+    "type": "insufficient_quota",
+    "code": "insufficient_balance",
+    "request_id": "01J9ZK8X5W3Q7M2N4P6R8T0V1A"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `code` | Stable error code — **branch on this in your code** |
+| `type` | Error category, derived from the HTTP status (see below) |
+| `message` | Human-readable English text; may change, do not parse it |
+| `request_id` | The request ID, identical to the `X-Request-Id` header |
+
+| HTTP status | `type` |
+|---|---|
+| 400, 404, etc. | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 402 | `insufficient_quota` |
+| 403 | `permission_error` |
+| 429 | `rate_limit_error` |
+| 500, 502, 503, 504 | `api_error` |
+
+A 429 response includes a `Retry-After` header (seconds) whenever the wait time is known. See [Errors](/docs/en/errors) for the full error-code table and retry advice.
+
+## Money units
+
+- Balance and charge fields are `int64` integers in **micro-yuan**: 1,000,000 = 1 CNY. Their names end in `_micro`.
+- Catalog unit prices (`unit_price`) are decimal strings in yuan.
+
+See [Billing](/docs/en/billing).
+
+## Endpoints
+
+| Method | Path | Description | Auth |
+|---|---|---|---|
+| GET | [`/v1/catalog`](/docs/en/api/getCatalog) | Public model catalog, with prices | None |
+| GET | [`/v1/models`](/docs/en/api/listModels) | Model IDs available to the current key | API key |
+| GET | [`/v1/usage`](/docs/en/api/getUsage) | Account balance and cumulative usage | API key |
+| POST | [`/v1/chat/completions`](/docs/en/api/createChatCompletion) | Chat completions, with streaming and tool calling | API key |
+| POST | [`/v1/embeddings`](/docs/en/api/createEmbedding) | Text embeddings | API key |
+| POST | [`/v1/messages`](/docs/en/api/createMessage) | Anthropic Messages-compatible entry point | API key |
+
+### Not implemented yet
+
+These paths are reserved and currently return `503` with error code `not_implemented`:
+
+| Method | Path | Description |
+|---|---|---|
+| POST | [`/v1/completions`](/docs/en/api/createCompletion) | Legacy text completions |
+| POST | [`/v1/images/generations`](/docs/en/api/createImage) | Image generation |
+| POST | [`/v1/audio/transcriptions`](/docs/en/api/createTranscription) | Speech-to-text |
+| POST | [`/v1/audio/speech`](/docs/en/api/createSpeech) | Text-to-speech |

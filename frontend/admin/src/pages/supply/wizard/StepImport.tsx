@@ -2,25 +2,50 @@ import { describeError } from '../../../api/errors';
 import { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
-import { createChannel, createVirtualModel, findChannel, findVirtualModelByName, listLatestFXRates, setCostPrice, setSellPrice } from '../../../api/catalog';
+import { importModels } from '../../../api/catalog';
 import { Button } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
-import { computeRow, resolvedAccountId, resolvedMultiplier, round4, type ImportResult, type RowConfig } from './state';
+import type { ImportModelItemInput, ImportModelRow } from '../../../types';
+import { resolvedAccountId, type ImportResult, type RowConfig, type WizardState } from './state';
 import { StepFooter, type StepProps } from './ui';
 
-function priceString(n: number): string {
-  return String(round4(n));
+// 每批提交的模型数：服务端逐个模型各自一个事务导入，分批只是为了进度可见、可中途停止。
+const IMPORT_BATCH = 10;
+
+// importItem 把向导的一行配置转成批量导入接口的条目。售价没有手工覆盖时只传加价率，
+// 由服务端用 decimal 计算（不再在浏览器里用浮点数算售价并提交）。
+function importItem(id: string, row: RowConfig, s: WizardState): ImportModelItemInput {
+  const opt = (v: string | null) => (v !== null && v.trim() !== '' ? v.trim() : undefined);
+  return {
+    upstream_model: id,
+    name: row.name.trim(),
+    family: row.family.trim(),
+    type: 'chat',
+    context_window: Number(row.contextWindow),
+    max_output: Number(row.maxOutput),
+    capabilities: ['stream'],
+    cost_input: opt(row.costIn),
+    cost_output: opt(row.costOut),
+    markup_percent: opt(row.markup) ?? opt(s.globalMarkup),
+    sell_input: opt(row.sellIn),
+    sell_output: opt(row.sellOut),
+    keep_existing_sell: row.keepSell,
+  };
 }
 
-// ⑤ 确认导入：逐行"先查后建"（与 test_web 已验证的幂等逻辑一致），逐行显示结果，
-// 部分失败时只重试失败项。
+function toResult(r: ImportModelRow): ImportResult {
+  if (r.ok && r.result) {
+    return { state: 'ok', vmId: r.result.virtual_model_id, channelId: r.result.channel_id, createdVm: r.result.created_vm, createdChannel: r.result.created_channel };
+  }
+  return { state: 'error', error: r.error?.message ?? (r.errors.join('、') || '导入失败') };
+}
+
+// ⑤ 确认导入：先调用 import-models?dry_run 让服务端核算售价与毛利、确认平台现状，
+// 再分批正式导入（每个模型在服务端各自一个事务：建/复用虚拟模型 → 建/复用渠道 →
+// 成本价 → 售价，失败不留半成品），逐行显示结果，部分失败时只重试失败项。
 export function StepImport({ state, update, goto, onRestart }: StepProps & { onRestart: () => void }) {
   const navigate = useNavigate();
   const accountId = resolvedAccountId(state);
-  const multiplier = resolvedMultiplier(state);
-  const fxRates = useAsync((signal) => listLatestFXRates(signal), []);
-  const usd = fxRates.data?.data.find((r) => r.base === 'USD' && r.quote === 'CNY');
-  const fx = usd ? Number(usd.rate) : null;
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
 
@@ -29,43 +54,18 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
   const createChannelCount = ids.filter((id) => state.platformStatus[id] !== 'listed').length;
   const sellCount = ids.filter((id) => !state.rows[id].keepSell).length;
 
-  const setResult = (id: string, r: ImportResult) => update((s) => ({ ...s, results: { ...s.results, [id]: r } }));
+  const setResults = (rs: Record<string, ImportResult>) => update((s) => ({ ...s, results: { ...s.results, ...rs } }));
 
-  const importOne = async (id: string, row: RowConfig): Promise<ImportResult> => {
-    const p = computeRow(row, fx, multiplier, state.globalMarkup, state.refPrices[id]);
-    if (p.errors.length > 0) return { state: 'error', error: p.errors.join('、') };
-    const name = row.name.trim();
-    let createdVm = false;
-    let createdChannel = false;
-    let vm = await findVirtualModelByName(name);
-    if (!vm) {
-      vm = await createVirtualModel({
-        name,
-        family: row.family.trim(),
-        type: 'chat',
-        context_window: Number(row.contextWindow),
-        max_output: Number(row.maxOutput),
-        capabilities: ['stream'],
-      });
-      createdVm = true;
-    }
-    let ch = await findChannel(vm.id, accountId!, id);
-    if (!ch) {
-      ch = await createChannel({ virtual_model_id: vm.id, provider_account_id: accountId!, upstream_model: id });
-      createdChannel = true;
-    }
-    await setCostPrice(ch.id, 'USD', [
-      { meter: 'input', unit: 'per_1m_tokens', unit_price: row.costIn.trim() },
-      { meter: 'output', unit: 'per_1m_tokens', unit_price: row.costOut.trim() },
-    ]);
-    if (!row.keepSell) {
-      await setSellPrice(vm.id, [
-        { meter: 'input', unit: 'per_1m_tokens', unit_price: priceString(p.sellIn!) },
-        { meter: 'output', unit: 'per_1m_tokens', unit_price: priceString(p.sellOut!) },
-      ]);
-    }
-    return { state: 'ok', vmId: vm.id, channelId: ch.id, createdVm, createdChannel };
-  };
+  // 服务端核算（dry_run）：售价、毛利、平台现状与逐行错误，全部以服务端 decimal 结果为准
+  const plan = useAsync(
+    (signal) =>
+      accountId === null || ids.length === 0
+        ? Promise.resolve(null)
+        : importModels(accountId, { dry_run: true, currency: state.costCurrency, markup_percent: state.globalMarkup, items: ids.map((id) => importItem(id, state.rows[id], state)) }, signal),
+    [accountId, ids.join('\n'), state.costCurrency],
+  );
+  const planById = new Map((plan.data?.items ?? []).map((r) => [r.upstream_model, r]));
+  const fxMissing = plan.data?.fx_missing ?? false;
 
   const run = async (onlyFailed: boolean) => {
     if (accountId === null) return;
@@ -75,13 +75,19 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
       const r = state.results[id];
       return onlyFailed ? r?.state === 'error' : r?.state !== 'ok';
     });
-    for (const id of targets) {
-      if (cancelRef.current) break;
-      setResult(id, { state: 'running' });
+    for (let i = 0; i < targets.length && !cancelRef.current; i += IMPORT_BATCH) {
+      const batch = targets.slice(i, i + IMPORT_BATCH);
+      setResults(Object.fromEntries(batch.map((id) => [id, { state: 'running' } as ImportResult])));
       try {
-        setResult(id, await importOne(id, state.rows[id]));
+        const res = await importModels(accountId, {
+          dry_run: false,
+          currency: state.costCurrency,
+          markup_percent: state.globalMarkup,
+          items: batch.map((id) => importItem(id, state.rows[id], state)),
+        });
+        setResults(Object.fromEntries(res.items.map((r) => [r.upstream_model, toResult(r)])));
       } catch (err) {
-        setResult(id, { state: 'error', error: describeError(err) });
+        setResults(Object.fromEntries(batch.map((id) => [id, { state: 'error', error: describeError(err) } as ImportResult])));
       }
     }
     setRunning(false);
@@ -103,9 +109,8 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
         <Summary label="进度" value={`${okCount}/${ids.length}`} sub={errCount > 0 ? `${errCount} 项失败` : undefined} warn={errCount > 0} />
       </div>
 
-      {fx === null && !fxRates.loading && (
-        <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-xs">缺少 USD→CNY 汇率，请回到上一步设置。</div>
-      )}
+      {fxMissing && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-xs">缺少 {state.costCurrency}→CNY 汇率，请回到上一步设置。</div>}
+      {plan.error ? <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-xs">服务端核算失败：{describeError(plan.error)}</div> : null}
 
       <div className="bg-white border border-gray-200 rounded-xl shadow-xs divide-y divide-gray-100 max-h-[28rem] overflow-y-auto">
         {ids.map((id) => {
@@ -128,6 +133,7 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
                 <div className="font-mono text-gray-900 truncate">{row.name}</div>
                 <div className="text-[11px] text-gray-400 font-mono truncate">← {id}</div>
                 {r.state === 'error' && <div className="text-[11px] text-rose-600 mt-0.5 break-all">{r.error}</div>}
+                {r.state === 'pending' && planById.get(id) && <PlanLine row={planById.get(id)!} />}
               </div>
               {r.state === 'ok' && (
                 <div className="text-[11px] text-gray-500 text-right shrink-0">
@@ -172,18 +178,29 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
                 </Button>
               )}
               {!running && errCount > 0 && (
-                <Button onClick={() => void run(true)} disabled={fx === null}>
+                <Button onClick={() => void run(true)} disabled={fxMissing}>
                   仅重试失败项（{errCount}）
                 </Button>
               )}
             </>
           }
           onNext={() => void run(false)}
-          nextDisabled={running || fx === null || accountId === null}
+          nextDisabled={running || fxMissing || plan.loading || accountId === null}
           nextLoading={running}
           nextLabel={started ? '继续导入未完成项' : `开始导入 ${ids.length} 个模型`}
         />
       )}
+    </div>
+  );
+}
+
+// PlanLine 显示服务端核算的售价、毛利与错误（dry_run 结果）。
+function PlanLine({ row }: { row: ImportModelRow }) {
+  if (row.errors.length > 0) return <div className="text-[11px] text-rose-600 mt-0.5">{row.errors.join('、')}</div>;
+  const margin = row.margin_ratio !== null ? `${(Number(row.margin_ratio) * 100).toFixed(2)}%` : '—';
+  return (
+    <div className="text-[11px] text-gray-500 mt-0.5 font-mono">
+      {row.publish_sell_price ? `售价 ¥${row.sell_input} / ¥${row.sell_output} · 毛利 ${margin}` : '保留现有售价'}
     </div>
   );
 }

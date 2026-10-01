@@ -3,11 +3,24 @@ import { Switch } from '../../components/ui/index';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { BarChart3, KeyRound, Wallet } from 'lucide-react';
-import { listAccountApiKeys, listCreditGrants, listLedger, revokeApiKey } from '../../api/accounts';
+import {
+  addAccountMember,
+  listAccountApiKeys,
+  listCreditGrants,
+  listLedger,
+  removeAccountMember,
+  revokeApiKey,
+  updateAccountMember,
+  updateApiKey,
+} from '../../api/accounts';
+import { useCan } from '../../api/auth';
 import { getAccountUsage } from '../../api/stats';
 import {
+  Button,
   ConfirmDialog,
   DataState,
+  Input,
+  Select,
   DataTable,
   EmptyState,
   Money,
@@ -23,31 +36,107 @@ import { useAsync } from '../../hooks/useAsync';
 import { cn } from '../../lib/cn';
 import { formatCompact, formatMicroCompact } from '../../lib/money';
 import { formatDateTime, formatRelative } from '../../lib/time';
-import type { AccountMember, ApiKey, LedgerEntry, Metrics } from '../../types';
+import type { AccountMember, ApiKeyListItem, LedgerEntry, Metrics } from '../../types';
+import { zonedDate } from '../../lib/tz';
 import { LEDGER_TYPE_LABELS, ROLE_LABELS, keyLimitsText } from './shared';
 
 const card = 'bg-white border border-gray-200 rounded-xl shadow-xs';
 
 // ---------- 成员 ----------
 
-export function MembersTable({ members }: { members: AccountMember[] }) {
-  if (members.length === 0) {
-    return <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center text-xs text-gray-400">该账户没有关联的控制台用户（由运营直接创建）</div>;
-  }
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
+
+// MembersTable：成员列表。有 account:write 权限时可以修改角色、移除成员、按邮箱添加
+// 已注册的控制台用户；账户至少要保留一个所有者（后端 409）。
+export function MembersTable({ accountId, members, onChanged }: { accountId: number; members: AccountMember[]; onChanged: () => void }) {
+  const toast = useToast();
+  const editable = useCan('account:write');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('developer');
+  const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<AccountMember | null>(null);
+
+  const run = async (fn: () => Promise<unknown>, ok: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast.success(ok);
+      onChanged();
+      return true;
+    } catch (err) {
+      toast.error('操作失败', describeError(err));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div className={cn(card, 'divide-y divide-gray-100')}>
-      {members.map((m) => (
-        <div key={m.user_id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
-          <span className="font-mono text-gray-900">{m.email ?? `用户 #${m.user_id}`}</span>
-          {m.email_verified ? (
-            <span className="text-[11px] text-emerald-700">已验证</span>
-          ) : (
-            <span className="text-[11px] text-amber-700">邮箱未验证</span>
-          )}
-          <span className="ml-auto px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-[11px]">{ROLE_LABELS[m.role] ?? m.role}</span>
-          <span className="text-[11px] text-gray-400 w-24 text-right">{formatRelative(m.created_at)}加入</span>
+    <div className="space-y-2">
+      {members.length === 0 ? (
+        <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-6 text-center text-xs text-gray-400">该账户没有关联的控制台用户（由运营直接创建）</div>
+      ) : (
+        <div className={cn(card, 'divide-y divide-gray-100')}>
+          {members.map((m) => (
+            <div key={m.user_id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
+              <span className="font-mono text-gray-900">{m.email ?? `用户 #${m.user_id}`}</span>
+              {m.email_verified ? (
+                <span className="text-[11px] text-emerald-700">已验证</span>
+              ) : (
+                <span className="text-[11px] text-amber-700">邮箱未验证</span>
+              )}
+              {editable ? (
+                <Select
+                  className="ml-auto w-24"
+                  value={m.role}
+                  disabled={busy}
+                  options={ROLE_OPTIONS}
+                  onChange={(e) => void run(() => updateAccountMember(accountId, m.user_id, e.target.value), '角色已更新')}
+                />
+              ) : (
+                <span className="ml-auto px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-[11px]">{ROLE_LABELS[m.role] ?? m.role}</span>
+              )}
+              <span className="text-[11px] text-gray-400 w-24 text-right">{formatRelative(m.created_at)}加入</span>
+              {editable && (
+                <button type="button" className="text-[11px] text-rose-600 hover:text-rose-700 cursor-pointer" onClick={() => setRemoving(m)}>
+                  移除
+                </button>
+              )}
+            </div>
+          ))}
         </div>
-      ))}
+      )}
+      {editable && (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!email.trim()) return;
+            void run(() => addAccountMember(accountId, email.trim(), role), '已添加成员').then((ok) => ok && setEmail(''));
+          }}
+        >
+          <Input className="flex-1" type="email" placeholder="已注册用户的邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Select className="w-24" value={role} options={ROLE_OPTIONS} onChange={(e) => setRole(e.target.value)} />
+          <Button type="submit" size="sm" loading={busy} disabled={!email.trim()}>
+            添加成员
+          </Button>
+        </form>
+      )}
+      <ConfirmDialog
+        open={!!removing}
+        onClose={() => setRemoving(null)}
+        loading={busy}
+        level="danger"
+        confirmLabel="移除"
+        title="移除成员"
+        onConfirm={() =>
+          void run(() => removeAccountMember(accountId, removing!.user_id), '已移除成员').then(() => setRemoving(null))
+        }
+      >
+        <p className="text-xs">
+          移除后 <span className="font-mono">{removing?.email}</span> 将无法再访问该账户的控制台（账户与余额不受影响）。
+        </p>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -71,11 +160,9 @@ const METRIC_FORMAT: Record<UsageMetric, (v: number) => string> = {
 // 最近 30 天的日期桶（后端只返回有数据的桶，这里补齐 0，柱子才能对齐日期）
 function last30Days(): string[] {
   const out: string[] = [];
-  const now = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
-    out.push(d.toISOString().slice(0, 10));
-  }
+  // 按运营时区（ADMIN_TZ）取日期，与后端 ?tz= 分桶一致
+  const now = Date.now();
+  for (let i = 29; i >= 0; i--) out.push(zonedDate(now - i * 86400_000));
   return out;
 }
 
@@ -176,8 +263,21 @@ export function UsageSection({ accountId }: { accountId: number }) {
 
 export function ApiKeysSection({ accountId, reloadKey, onChanged }: { accountId: number; reloadKey: unknown; onChanged: () => void }) {
   const toast = useToast();
-  const keys = useAsync((signal) => listAccountApiKeys(accountId, signal), [accountId, reloadKey]);
-  const [revoking, setRevoking] = useState<ApiKey | null>(null);
+  const keys = useAsync((signal) => listAccountApiKeys(accountId, { page_size: 100 }, signal), [accountId, reloadKey]);
+  const [revoking, setRevoking] = useState<ApiKeyListItem | null>(null);
+  const editable = useCan('account:write');
+
+  const toggle = async (k: ApiKeyListItem) => {
+    const next = k.status === 'active' ? 'disabled' : 'active';
+    try {
+      await updateApiKey(k.id, { status: next });
+      toast.success(next === 'disabled' ? `已停用 ${k.name}` : `已启用 ${k.name}`);
+      keys.reload();
+      onChanged();
+    } catch (err) {
+      toast.error('操作失败', describeError(err));
+    }
+  };
   const [busy, setBusy] = useState(false);
 
   const doRevoke = async () => {
@@ -196,7 +296,7 @@ export function ApiKeysSection({ accountId, reloadKey, onChanged }: { accountId:
     }
   };
 
-  const columns: Column<ApiKey>[] = [
+  const columns: Column<ApiKeyListItem>[] = [
     { key: 'name', header: '名称', render: (k) => <span className="text-gray-900">{k.name}</span> },
     { key: 'prefix', header: '前缀', render: (k) => <span className="font-mono text-gray-600">{k.display_prefix}…</span> },
     { key: 'status', header: '状态', render: (k) => <StatusBadge kind="api_key" value={k.status} /> },
@@ -224,11 +324,27 @@ export function ApiKeysSection({ accountId, reloadKey, onChanged }: { accountId:
             columns={columns}
             rows={keys.data.data ?? []}
             rowKey={(k) => k.id}
-            rowActions={[{ label: '吊销', danger: true, hidden: (k) => k.status === 'revoked', onClick: setRevoking }]}
+            rowActions={
+              editable
+                ? [
+                    { label: '停用', hidden: (k) => k.status !== 'active', onClick: (k) => void toggle(k) },
+                    { label: '启用', hidden: (k) => k.status !== 'disabled', onClick: (k) => void toggle(k) },
+                    { label: '吊销', danger: true, hidden: (k) => k.status === 'revoked', onClick: setRevoking },
+                  ]
+                : []
+            }
             empty={
               <EmptyState icon={<KeyRound className="w-8 h-8" />} title="还没有 API Key" description="用户可在控制台自助创建，或由运营在这里代开" />
             }
           />
+        )}
+        {keys.data && keys.data.total > keys.data.data.length && (
+          <p className="mt-2 text-[11px] text-gray-500">
+            仅显示最近 {keys.data.data.length} 个，共 {keys.data.total} 个：
+            <Link to={`/api-keys?account_id=${accountId}`} className="text-purple-600 hover:text-purple-700">
+              查看全部
+            </Link>
+          </p>
         )}
       </DataState>
       <ConfirmDialog

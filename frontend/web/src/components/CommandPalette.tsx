@@ -53,7 +53,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     { name: 'Harness', label: 'Ori Harness (CLI & Coding Agent)', desc: 'ori claude, ori codex, ori eval 智能体集成套件', keywords: ['harness', 'ori', 'cli', 'code', 'eval', 'agent'] },
     { name: '基准测试', label: '基准跑分评估 (Benchmarks)', desc: '综合智能指数与前沿基准评测矩阵', keywords: ['基准', '跑分', 'benchmark', 'eval'] },
     { name: '排行榜', label: '用量与热度排行榜 (Rankings)', desc: '真实开发者实时调用与 Token 吞吐分析', keywords: ['排行', '榜单', 'ranking', 'top'] },
-    { name: '文档', label: 'API 文档与规范 (Docs & Reference)', desc: 'REST API 端点、生成元数据、SDK 与实时更新日志', keywords: ['文档', 'api', 'docs', 'reference', 'sdk', 'curl', 'changelog'] },
+    { name: '文档', label: '开发文档与 API 参考 (Docs & Reference)', desc: '快速开始、接入指南、接口参考与在线调试', keywords: ['文档', 'api', 'docs', 'reference', 'curl', 'changelog', 'quickstart'] },
   ].filter((p) => {
     if (!query.trim()) return false;
     const q = query.toLowerCase();

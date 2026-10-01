@@ -1,6 +1,11 @@
 import { request } from './client';
 import { ApiError } from './errors';
+import type * as G from './generated';
 import type {
+  CatalogCounts,
+  PricingPreviewResult,
+  ImportModelItemInput,
+  ImportModelsResult,
   ActiveStatus,
   Channel,
   ChannelDetail,
@@ -124,7 +129,7 @@ export function listVirtualModels(q: ListVirtualModelsQuery = {}, signal?: Abort
 // 按名称精确查找；不存在返回 null（接口 404）
 export async function findVirtualModelByName(name: string, signal?: AbortSignal): Promise<VirtualModel | null> {
   try {
-    return await request<VirtualModel>('/virtual-models', { query: { name }, signal });
+    return await request<VirtualModel>('/virtual-models/lookup', { query: { name }, signal });
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null;
     throw err;
@@ -207,7 +212,7 @@ export async function findChannel(
   signal?: AbortSignal,
 ): Promise<Channel | null> {
   try {
-    return await request<Channel>('/channels', {
+    return await request<Channel>('/channels/lookup', {
       query: { virtual_model_id: virtualModelId, provider_account_id: providerAccountId, upstream_model: upstreamModel },
       signal,
     });
@@ -272,4 +277,40 @@ export function listLatestFXRates(signal?: AbortSignal) {
 
 export function setFXRate(body: { base: string; quote?: string; rate: string; source?: string; effective_date?: string }) {
   return request<{ status: string }>('/fx-rates', { method: 'POST', body });
+}
+
+// ---------- 计数 / 价格预览 / 批量导入（B7） ----------
+
+// 模型库与渠道列表顶部 KPI，一次请求算完
+export function getCatalogCounts(signal?: AbortSignal) {
+  return request<CatalogCounts>('/catalog/counts', { signal });
+}
+
+// 服务端 decimal 计算售价与毛利（替代前端浮点计算）
+export function previewPricing(
+  body: {
+    currency: string;
+    cost_multiplier?: string;
+    markup_percent: string;
+    items: Array<{ key: string; cost_input?: string; cost_output?: string; sell_input?: string; sell_output?: string; markup_percent?: string }>;
+  },
+  signal?: AbortSignal,
+) {
+  return request<PricingPreviewResult>('/pricing/preview', { method: 'POST', body, signal });
+}
+
+// 批量导入上游模型：dry_run=true 只返回计划（平台现状、人民币成本、售价、毛利、错误），
+// 否则逐个模型各自一个事务导入，逐条返回结果。
+export function importModels(
+  providerAccountId: number,
+  body: { dry_run: boolean; currency: string; markup_percent: string; items: ImportModelItemInput[] },
+  signal?: AbortSignal,
+) {
+  return request<ImportModelsResult>(`/provider-accounts/${providerAccountId}/import-models`, { method: 'POST', body, signal, timeoutMs: 120_000 });
+}
+
+// 渠道健康（后端 G9）：最近 window_minutes 分钟的请求量/错误率/P95，加上网关熔断、
+// 上游 Key 冷却状态与最近的健康事件；判定阈值由服务端给出。类型直接用后端生成的定义。
+export function getChannelHealth(windowMinutes = 15, signal?: AbortSignal) {
+  return request<G.ChannelHealthReport>('/channels/health', { query: { window_minutes: windowMinutes }, signal });
 }

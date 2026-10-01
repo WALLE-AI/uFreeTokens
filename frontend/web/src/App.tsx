@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, lazy, Suspense } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router';
 import {
   Columns,
   ChevronDown,
@@ -34,7 +35,6 @@ import { ModelDetailPage } from './components/ModelDetailPage';
 import { BenchmarksPage } from './components/BenchmarksPage';
 import { RankingsPage } from './components/RankingsPage';
 import { HarnessPage } from './components/HarnessPage';
-import { DocsPage } from './components/DocsPage';
 import { PersonalDashboardPage } from './components/PersonalDashboardPage';
 import { ModelCompareModal } from './components/ModelCompareModal';
 import { PlaygroundModal } from './components/PlaygroundModal';
@@ -76,7 +76,56 @@ const DEFAULT_FILTERS: FilterState = {
   minDesignArenaSVG: 0,
 };
 
+// 文档站单独分包，不进首屏（src/docs）。
+const DocsRoutes = lazy(() => import('./docs/DocsLayout'));
+
+// 顶栏导航名 ↔ 路由路径。Header / CommandPalette 仍然以导航名（中文）通信，
+// 在 App 这一层统一换算成 URL，页面刷新、分享链接、浏览器前进后退都能还原。
+const NAV_PATHS: Record<string, string> = {
+  首页: '/models',
+  模型: '/models',
+  基准测试: '/benchmarks',
+  排行榜: '/rankings',
+  Harness: '/harness',
+  文档: '/docs',
+  个人中心: '/dashboard',
+};
+
+function navFromPathname(pathname: string): string {
+  const seg = pathname.split('/')[1] ?? '';
+  switch (seg) {
+    case 'benchmarks':
+      return '基准测试';
+    case 'rankings':
+      return '排行榜';
+    case 'harness':
+      return 'Harness';
+    case 'docs':
+      return '文档';
+    case 'dashboard':
+      return '个人中心';
+    default:
+      return '模型';
+  }
+}
+
+// 模型 ID 形如 "deepseek/deepseek-pro"，逐段编码后直接拼进 /models/* 路径，
+// 保持 URL 可读；路由侧用 splat 参数（params['*']）取回，react-router 会自动解码。
+function modelPath(id: string): string {
+  return `/models/${id.split('/').map(encodeURIComponent).join('/')}`;
+}
+
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeNav = navFromPathname(location.pathname);
+
+  // 路由切换时回到顶部（个人中心内切 tab 不算，避免跳动）
+  const routeKey = activeNav === '个人中心' ? '/dashboard' : location.pathname;
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [routeKey]);
+
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [sortOption, setSortOption] = useState<SortOption>('newest');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -89,7 +138,6 @@ export default function App() {
   const [filterPreset, setFilterPreset] = useState<'全部' | '免费模型' | '多模态' | '旗舰大模型' | '降价折扣'>('全部');
 
   // Modals & Panels
-  const [activeModelForDetail, setActiveModelForDetail] = useState<Model | null>(null);
   const [activeModelForPlayground, setActiveModelForPlayground] = useState<Model | null>(null);
   const [compareModels, setCompareModels] = useState<Model[]>([
     INITIAL_MODELS[0],
@@ -98,14 +146,14 @@ export default function App() {
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [activeNav, setActiveNav] = useState('模型');
-  const [personalDashboardTab, setPersonalDashboardTab] = useState<string>('api-keys');
 
   // 模型库以 GET /v1/catalog（免鉴权公开目录）为主数据源（技术方案迭代6），
   // 匿名访客也能看到真实数据；INITIAL_MODELS 只在目录接口暂不可用时兜底，
   // 以及给运营还没录入元数据的模型补展示层字段（描述、系列……），见
   // data/models.ts 的 modelFromCatalog。
   const [catalogModels, setCatalogModels] = useState<CatalogModel[] | null>(null);
+  // 目录请求是否已结束（成功或失败）——/models/:id 直达时用来区分"还在加载"和"模型不存在"。
+  const [catalogSettled, setCatalogSettled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +163,9 @@ export default function App() {
       })
       .catch(() => {
         if (!cancelled) setCatalogModels(null);
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogSettled(true);
       });
     return () => {
       cancelled = true;
@@ -410,6 +461,494 @@ export default function App() {
     });
   }, [baseModels, filters, sortOption, showPinnedOnly, filterPreset]);
 
+  const openModel = (m: Model) => navigate(modelPath(m.id));
+
+  const goToNav = (nav: string) => navigate(NAV_PATHS[nav] ?? '/models');
+
+  // 模型库列表视图（/models）
+  const modelListView = (
+    <div className="flex flex-1 relative overflow-hidden">
+    {/* 2. 左侧边栏 - 桌面端 */}
+    <div className="hidden md:block">
+      <Sidebar
+        filters={filters}
+        onFilterChange={handleUpdateFilters}
+        onResetFilters={handleResetFilters}
+        totalFilteredCount={filteredModels.length}
+        availableProviders={availableProviders}
+        availableAuthors={availableAuthors}
+      />
+    </div>
+
+    {/* 移动端抽屉边栏 */}
+    {isMobileSidebarOpen && (
+      <div className="fixed inset-0 z-50 md:hidden flex">
+        <div
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs"
+          onClick={() => setIsMobileSidebarOpen(false)}
+        />
+        <div className="relative w-72 max-w-[85vw] bg-white h-full z-10 shadow-2xl flex flex-col">
+          <div className="p-3 border-b border-gray-200 flex items-center justify-between">
+            <span className="font-bold text-xs">筛选选项</span>
+            <button
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="p-1 rounded text-gray-400 hover:text-gray-700"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <Sidebar
+              filters={filters}
+              onFilterChange={handleUpdateFilters}
+              onResetFilters={handleResetFilters}
+              totalFilteredCount={filteredModels.length}
+              availableProviders={availableProviders}
+              availableAuthors={availableAuthors}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* 3. 主内容区 - 模型列表与控制台 */}
+    <main
+      className={`flex-1 px-4 sm:px-6 py-4 overflow-y-auto h-[calc(100vh-3rem)] ${
+        viewMode === 'grid' ? '' : 'max-w-5xl'
+      }`}
+    >
+      {/* 页面主标题 + 右上角操作 */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center space-x-2">
+          <h1 className="text-lg font-bold text-gray-900 tracking-tight">
+            模型库 (Models)
+          </h1>
+          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-[11px] font-mono">
+            {filteredModels.length} 款
+          </span>
+        </div>
+
+        <div className="flex items-center space-x-3 text-xs text-gray-500">
+          <button
+            onClick={() => setIsCompareModalOpen(true)}
+            className={`flex items-center space-x-1 transition-colors px-2 py-1 rounded cursor-pointer ${
+              compareModels.length > 0
+                ? 'text-purple-700 bg-purple-50 font-medium hover:bg-purple-100'
+                : 'hover:text-black'
+            }`}
+          >
+            <Columns className="w-3.5 h-3.5 text-purple-600" />
+            <span>模型对比</span>
+            {compareModels.length > 0 && (
+              <span className="bg-purple-600 text-white rounded-full px-1 text-[10px] leading-tight">
+                {compareModels.length}
+              </span>
+            )}
+          </button>
+
+          <div className="relative group">
+            <button className="flex items-center space-x-1 hover:text-black cursor-pointer">
+              <span>发现推荐</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            <div className="absolute right-0 top-6 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-30 hidden group-hover:block text-xs">
+              <button
+                onClick={() => setFilterPreset('免费模型')}
+                className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
+              >
+                全部免额度模型 (Free)
+              </button>
+              <button
+                onClick={() => setFilterPreset('多模态')}
+                className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
+              >
+                前沿视觉/多模态模型
+              </button>
+              <button
+                onClick={() => setFilterPreset('旗舰大模型')}
+                className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
+              >
+                行业顶尖推理与代码
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 次级控制工具栏（搜索框、排序、变体选择菜单） */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 mb-3 border-b border-gray-100 pb-2.5">
+        {/* 列表专属实时搜索输入框 */}
+        <div className="relative w-full sm:w-64">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            value={filters.searchQuery}
+            onChange={(e) => handleUpdateFilters({ searchQuery: e.target.value })}
+            placeholder="搜索模型..."
+            className="w-full bg-white border border-gray-200 rounded pl-8 pr-7 py-1 text-xs focus:outline-none focus:border-purple-400"
+          />
+          {filters.searchQuery && (
+            <button
+              onClick={() => handleUpdateFilters({ searchQuery: '' })}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center space-x-2 sm:space-x-3 text-xs text-gray-500">
+          {/* 排序 Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowSortMenu(!showSortMenu);
+                setShowFilterPresetMenu(false);
+                setShowVariantsMenu(false);
+              }}
+              className="flex items-center space-x-1 hover:text-black py-1 px-1.5 rounded hover:bg-gray-100 transition-colors"
+            >
+              <ArrowUpDown className="w-3 h-3 text-gray-500" />
+              <span>
+                {sortOption === 'newest' && '最新发布'}
+                {sortOption === 'price-asc' && '价格从低到高'}
+                {sortOption === 'price-desc' && '价格从高到低'}
+                {sortOption === 'context-desc' && '上下文容量'}
+                {sortOption === 'intelligence-desc' && '智能评测'}
+              </span>
+              <ChevronDown className="w-3 h-3 text-gray-400" />
+            </button>
+
+            {showSortMenu && (
+              <div className="absolute right-0 top-7 w-36 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50 text-xs">
+                {[
+                  { id: 'newest', label: '最新发布' },
+                  { id: 'price-asc', label: '价格从低到高' },
+                  { id: 'price-desc', label: '价格从高到低' },
+                  { id: 'context-desc', label: '上下文容量' },
+                  { id: 'intelligence-desc', label: '智能指数优先' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => {
+                      setSortOption(opt.id as SortOption);
+                      setShowSortMenu(false);
+                    }}
+                    className="w-full text-left flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 text-gray-700"
+                  >
+                    <span>{opt.label}</span>
+                    {sortOption === opt.id && (
+                      <Check className="w-3 h-3 text-purple-600" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 快捷过滤 Preset */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowFilterPresetMenu(!showFilterPresetMenu);
+                setShowSortMenu(false);
+                setShowVariantsMenu(false);
+              }}
+              className="flex items-center space-x-1 hover:text-black py-1 px-1.5 rounded hover:bg-gray-100 transition-colors"
+            >
+              <Filter className="w-3 h-3 text-gray-500" />
+              <span>{filterPreset}</span>
+              <ChevronDown className="w-3 h-3 text-gray-400" />
+            </button>
+
+            {showFilterPresetMenu && (
+              <div className="absolute right-0 top-7 w-32 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50 text-xs">
+                {(['全部', '免费模型', '多模态', '旗舰大模型', '降价折扣'] as const).map(
+                  (preset) => (
+                    <button
+                      key={preset}
+                      onClick={() => {
+                        setFilterPreset(preset);
+                        setShowFilterPresetMenu(false);
+                      }}
+                      className="w-full text-left flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 text-gray-700"
+                    >
+                      <span>{preset}</span>
+                      {filterPreset === preset && (
+                        <Check className="w-3 h-3 text-purple-600" />
+                      )}
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 固定过滤按钮 */}
+          <button
+            onClick={() => setShowPinnedOnly(!showPinnedOnly)}
+            className={`flex items-center space-x-1 py-1 px-1.5 rounded transition-colors ${
+              showPinnedOnly
+                ? 'text-purple-700 bg-purple-50 font-medium'
+                : 'hover:text-black'
+            }`}
+          >
+            <Pin className="w-3 h-3" />
+            <span>已固定</span>
+            {filters.pinnedModelIds.length > 0 && (
+              <span className="text-[10px] text-gray-400 font-mono">
+                ({filters.pinnedModelIds.length})
+              </span>
+            )}
+          </button>
+
+          {/* 变体 Dropdown 下拉组件 */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowVariantsMenu(!showVariantsMenu);
+                setShowSortMenu(false);
+                setShowFilterPresetMenu(false);
+              }}
+              className="flex items-center space-x-1 text-purple-600 bg-purple-50 px-2 py-0.5 rounded font-medium border border-purple-200 hover:bg-purple-100"
+            >
+              <Check className="w-3 h-3" />
+              <span>{filters.selectedVariant}</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+
+            {showVariantsMenu && (
+              <div className="absolute right-0 top-7 w-36 bg-white border border-gray-200 rounded shadow-lg py-1 z-50 text-xs">
+                {[
+                  '全部变体',
+                  '标准版 (Standard)',
+                  '免费版 (Free)',
+                  '扩展版 (Extended)',
+                  '深度思考 (Thinking)',
+                  '批处理 (Batch)',
+                ].map((name) => {
+                  const isActive = filters.selectedVariant === name;
+                  return (
+                    <div
+                      key={name}
+                      onClick={() => {
+                        handleUpdateFilters({ selectedVariant: name });
+                        setShowVariantsMenu(false);
+                      }}
+                      className="flex items-center space-x-1.5 px-2.5 py-1 hover:bg-gray-50 cursor-pointer text-gray-700"
+                    >
+                      <span className="w-3">
+                        {isActive && <Check className="w-3 h-3 text-purple-600" />}
+                      </span>
+                      <span>{name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 视图切换 (网格 / 列表 / 表格) */}
+          <div className="flex items-center border border-gray-200 rounded bg-white overflow-hidden">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 transition-colors border-r border-gray-200 ${
+                viewMode === 'grid' ? 'bg-gray-100 text-black' : 'text-gray-400 hover:text-black'
+              }`}
+              title="网格视图"
+            >
+              <LayoutGrid className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-gray-100 text-black border-r border-gray-200'
+                  : 'text-gray-400 hover:text-black border-r border-gray-200'
+              }`}
+              title="列表视图"
+            >
+              <List className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setViewMode('table')}
+              className={`p-1.5 transition-colors ${
+                viewMode === 'table' ? 'bg-gray-100 text-black' : 'text-gray-400 hover:text-black'
+              }`}
+              title="表格视图"
+            >
+              <TableIcon className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 模态过滤 Tag 栏 */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-4 text-xs select-none">
+        {PRIMARY_TAGS.map((tag) => {
+          const isSelected = filters.selectedPrimaryTag === tag.id;
+          const count = primaryTagCounts.get(tag.id) ?? 0;
+          return (
+            <button
+              key={tag.id}
+              onClick={() => handleUpdateFilters({ selectedPrimaryTag: tag.id })}
+              className={`px-2 py-0.5 rounded text-xxs font-medium transition-colors cursor-pointer ${
+                isSelected
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              <span>{tag.title}</span>
+              <span className={`ml-1 ${isSelected ? 'text-purple-200' : 'text-gray-400'}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Active Filter Chips bar (if any filter is applied) */}
+      {(filters.searchQuery ||
+        filters.selectedModalities.length > 0 ||
+        filters.hasDiscountOnly ||
+        filters.minContextLength > 0 ||
+        filters.maxPromptPrice < 15 ||
+        filters.selectedSeries.length > 0 ||
+        filters.selectedCategories.length > 0 ||
+        filters.selectedProviders.length > 0 ||
+        showPinnedOnly ||
+        filterPreset !== '全部') && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3.5 bg-gray-50 p-2 rounded-lg border border-gray-100 text-[11px]">
+          <span className="text-gray-400 text-xxs">生效中筛选:</span>
+
+          {filters.searchQuery && (
+            <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
+              <span>搜索: {filters.searchQuery}</span>
+              <button onClick={() => handleUpdateFilters({ searchQuery: '' })}>
+                <X className="w-2.5 h-2.5 text-gray-400 hover:text-gray-700" />
+              </button>
+            </span>
+          )}
+
+          {showPinnedOnly && (
+            <span className="bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded text-purple-700 flex items-center space-x-1">
+              <span>仅看已固定</span>
+              <button onClick={() => setShowPinnedOnly(false)}>
+                <X className="w-2.5 h-2.5 text-purple-400 hover:text-purple-700" />
+              </button>
+            </span>
+          )}
+
+          {filterPreset !== '全部' && (
+            <span className="bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded text-purple-700 flex items-center space-x-1">
+              <span>{filterPreset}</span>
+              <button onClick={() => setFilterPreset('全部')}>
+                <X className="w-2.5 h-2.5 text-purple-400 hover:text-purple-700" />
+              </button>
+            </span>
+          )}
+
+          {filters.minContextLength > 0 && (
+            <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
+              <span>上下文 ≥ {filters.minContextLength}K</span>
+              <button onClick={() => handleUpdateFilters({ minContextLength: 0 })}>
+                <X className="w-2.5 h-2.5 text-gray-400" />
+              </button>
+            </span>
+          )}
+
+          {filters.maxPromptPrice < 15 && (
+            <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
+              <span>输入单价 ≤ ${filters.maxPromptPrice}/M</span>
+              <button onClick={() => handleUpdateFilters({ maxPromptPrice: 15 })}>
+                <X className="w-2.5 h-2.5 text-gray-400" />
+              </button>
+            </span>
+          )}
+
+          {filters.selectedModalities.map((m) => (
+            <span key={m} className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1 uppercase font-mono">
+              <span>{m}</span>
+              <button onClick={() => handleUpdateFilters({ selectedModalities: filters.selectedModalities.filter((x) => x !== m) })}>
+                <X className="w-2.5 h-2.5 text-gray-400" />
+              </button>
+            </span>
+          ))}
+
+          <button
+            onClick={handleResetFilters}
+            className="text-purple-600 hover:text-purple-800 ml-auto font-medium text-xxs flex items-center space-x-1"
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            <span>清空全部条件</span>
+          </button>
+        </div>
+      )}
+
+      {/* 模型列表 / 表格渲染 */}
+      {filteredModels.length === 0 ? (
+        <div className="py-20 text-center text-gray-400 border border-dashed border-gray-200 rounded-lg">
+          <Search className="w-8 h-8 mx-auto text-gray-300 stroke-1 mb-2" />
+          <div className="text-xs font-medium text-gray-700">没有找到符合条件的模型</div>
+          <div className="text-xxs text-gray-400 mt-1">请尝试放宽价格区间、模态或清除搜索关键字</div>
+          <button
+            onClick={handleResetFilters}
+            className="mt-3 px-3 py-1 text-xs bg-purple-50 text-purple-700 rounded-md hover:bg-purple-100 font-medium transition-colors"
+          >
+            恢复默认筛选
+          </button>
+        </div>
+      ) : viewMode === 'grid' ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3.5">
+          {filteredModels.map((m) => (
+            <ModelGridCard
+              key={m.id}
+              model={m}
+              isPinned={filters.pinnedModelIds.includes(m.id)}
+              isInCompare={compareModels.some((item) => item.id === m.id)}
+              onTogglePin={handleTogglePin}
+              onToggleCompare={handleToggleCompare}
+              onSelectModel={openModel}
+              onOpenPlayground={(model) => setActiveModelForPlayground(model)}
+              onSelectProvider={(prov) =>
+                handleUpdateFilters({ selectedProviders: [prov] })
+              }
+            />
+          ))}
+        </div>
+      ) : viewMode === 'list' ? (
+        <div className="divide-y divide-gray-100">
+          {filteredModels.map((m) => (
+            <ModelCard
+              key={m.id}
+              model={m}
+              isPinned={filters.pinnedModelIds.includes(m.id)}
+              isInCompare={compareModels.some((item) => item.id === m.id)}
+              onTogglePin={handleTogglePin}
+              onToggleCompare={handleToggleCompare}
+              onSelectModel={openModel}
+              onOpenPlayground={(model) => setActiveModelForPlayground(model)}
+              onSelectProvider={(prov) =>
+                handleUpdateFilters({ selectedProviders: [prov] })
+              }
+            />
+          ))}
+        </div>
+      ) : (
+        <ModelTable
+          models={filteredModels}
+          pinnedModelIds={filters.pinnedModelIds}
+          compareModels={compareModels}
+          onTogglePin={handleTogglePin}
+          onToggleCompare={handleToggleCompare}
+          onSelectModel={openModel}
+          onOpenPlayground={(model) => setActiveModelForPlayground(model)}
+        />
+      )}
+    </main>
+  </div>
+  );
+
   return (
     <div className="min-h-screen flex flex-col bg-white text-gray-800 antialiased font-sans">
       {/* 1. 顶栏 Header */}
@@ -419,581 +958,73 @@ export default function App() {
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         onToggleMobileSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
         activeNav={activeNav}
-        onSelectNav={(n) => {
-          setActiveNav(n);
-          setActiveModelForDetail(null);
-        }}
-        onOpenPersonalDashboard={(tab = 'api-keys') => {
-          setPersonalDashboardTab(tab);
-          setActiveNav('个人中心');
-          setActiveModelForDetail(null);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        onSelectNav={goToNav}
+        onOpenPersonalDashboard={(tab = 'api-keys') => navigate(`/dashboard/${tab}`)}
       />
 
-      {activeNav === '个人中心' ? (
-        <PersonalDashboardPage
-          initialTab={personalDashboardTab}
-          onBackToModels={() => {
-            setActiveNav('模型');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : activeNav === '基准测试' ? (
-        <BenchmarksPage
-          allModels={INITIAL_MODELS}
-          onSelectModel={(m) => {
-            setActiveModelForDetail(m);
-            setActiveNav('模型');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onNavigateToModels={() => {
-            setActiveNav('模型');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : activeNav === '排行榜' ? (
-        <RankingsPage
-          allModels={INITIAL_MODELS}
-          onSelectModel={(m) => {
-            setActiveModelForDetail(m);
-            setActiveNav('模型');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onNavigateToBenchmarks={() => {
-            setActiveNav('基准测试');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onNavigateToModels={() => {
-            setActiveNav('模型');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : activeNav === 'Harness' ? (
-        <HarnessPage
-          onNavigateToModels={() => {
-            setActiveNav('模型');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onNavigateToBenchmarks={() => {
-            setActiveNav('基准测试');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : activeNav === '文档' ? (
-        <DocsPage
-          onBackToMarketplace={() => {
-            setActiveNav('模型');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : activeModelForDetail ? (
-        <ModelDetailPage
-          model={activeModelForDetail}
-          allModels={baseModels}
-          onBack={() => setActiveModelForDetail(null)}
-          onOpenPlayground={(m) => setActiveModelForPlayground(m)}
-          onToggleCompare={handleToggleCompare}
-          isInCompare={compareModels.some((item) => item.id === activeModelForDetail.id)}
-          onSelectOtherModel={(m) => {
-            setActiveModelForDetail(m);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onNavigateToBenchmarks={() => {
-            setActiveNav('基准测试');
-            setActiveModelForDetail(null);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-        />
-      ) : (
-        /* Main Container */
-        <div className="flex flex-1 relative overflow-hidden">
-        {/* 2. 左侧边栏 - 桌面端 */}
-        <div className="hidden md:block">
-          <Sidebar
-            filters={filters}
-            onFilterChange={handleUpdateFilters}
-            onResetFilters={handleResetFilters}
-            totalFilteredCount={filteredModels.length}
-            availableProviders={availableProviders}
-            availableAuthors={availableAuthors}
-          />
-        </div>
-
-        {/* 移动端抽屉边栏 */}
-        {isMobileSidebarOpen && (
-          <div className="fixed inset-0 z-50 md:hidden flex">
-            <div
-              className="fixed inset-0 bg-black/40 backdrop-blur-xs"
-              onClick={() => setIsMobileSidebarOpen(false)}
-            />
-            <div className="relative w-72 max-w-[85vw] bg-white h-full z-10 shadow-2xl flex flex-col">
-              <div className="p-3 border-b border-gray-200 flex items-center justify-between">
-                <span className="font-bold text-xs">筛选选项</span>
-                <button
-                  onClick={() => setIsMobileSidebarOpen(false)}
-                  className="p-1 rounded text-gray-400 hover:text-gray-700"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <Sidebar
-                  filters={filters}
-                  onFilterChange={handleUpdateFilters}
-                  onResetFilters={handleResetFilters}
-                  totalFilteredCount={filteredModels.length}
-                  availableProviders={availableProviders}
-                  availableAuthors={availableAuthors}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 3. 主内容区 - 模型列表与控制台 */}
-        <main
-          className={`flex-1 px-4 sm:px-6 py-4 overflow-y-auto h-[calc(100vh-3rem)] ${
-            viewMode === 'grid' ? '' : 'max-w-5xl'
-          }`}
-        >
-          {/* 页面主标题 + 右上角操作 */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-2">
-              <h1 className="text-lg font-bold text-gray-900 tracking-tight">
-                模型库 (Models)
-              </h1>
-              <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-[11px] font-mono">
-                {filteredModels.length} 款
-              </span>
-            </div>
-
-            <div className="flex items-center space-x-3 text-xs text-gray-500">
-              <button
-                onClick={() => setIsCompareModalOpen(true)}
-                className={`flex items-center space-x-1 transition-colors px-2 py-1 rounded cursor-pointer ${
-                  compareModels.length > 0
-                    ? 'text-purple-700 bg-purple-50 font-medium hover:bg-purple-100'
-                    : 'hover:text-black'
-                }`}
-              >
-                <Columns className="w-3.5 h-3.5 text-purple-600" />
-                <span>模型对比</span>
-                {compareModels.length > 0 && (
-                  <span className="bg-purple-600 text-white rounded-full px-1 text-[10px] leading-tight">
-                    {compareModels.length}
-                  </span>
-                )}
-              </button>
-
-              <div className="relative group">
-                <button className="flex items-center space-x-1 hover:text-black cursor-pointer">
-                  <span>发现推荐</span>
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-                <div className="absolute right-0 top-6 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-30 hidden group-hover:block text-xs">
-                  <button
-                    onClick={() => setFilterPreset('免费模型')}
-                    className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
-                  >
-                    全部免额度模型 (Free)
-                  </button>
-                  <button
-                    onClick={() => setFilterPreset('多模态')}
-                    className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
-                  >
-                    前沿视觉/多模态模型
-                  </button>
-                  <button
-                    onClick={() => setFilterPreset('旗舰大模型')}
-                    className="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700"
-                  >
-                    行业顶尖推理与代码
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* 次级控制工具栏（搜索框、排序、变体选择菜单） */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-3 border-b border-gray-100 pb-2.5">
-            {/* 列表专属实时搜索输入框 */}
-            <div className="relative w-full sm:w-64">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                value={filters.searchQuery}
-                onChange={(e) => handleUpdateFilters({ searchQuery: e.target.value })}
-                placeholder="搜索模型..."
-                className="w-full bg-white border border-gray-200 rounded pl-8 pr-7 py-1 text-xs focus:outline-none focus:border-purple-400"
-              />
-              {filters.searchQuery && (
-                <button
-                  onClick={() => handleUpdateFilters({ searchQuery: '' })}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center space-x-2 sm:space-x-3 text-xs text-gray-500">
-              {/* 排序 Dropdown */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setShowSortMenu(!showSortMenu);
-                    setShowFilterPresetMenu(false);
-                    setShowVariantsMenu(false);
-                  }}
-                  className="flex items-center space-x-1 hover:text-black py-1 px-1.5 rounded hover:bg-gray-100 transition-colors"
-                >
-                  <ArrowUpDown className="w-3 h-3 text-gray-500" />
-                  <span>
-                    {sortOption === 'newest' && '最新发布'}
-                    {sortOption === 'price-asc' && '价格从低到高'}
-                    {sortOption === 'price-desc' && '价格从高到低'}
-                    {sortOption === 'context-desc' && '上下文容量'}
-                    {sortOption === 'intelligence-desc' && '智能评测'}
-                  </span>
-                  <ChevronDown className="w-3 h-3 text-gray-400" />
-                </button>
-
-                {showSortMenu && (
-                  <div className="absolute right-0 top-7 w-36 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50 text-xs">
-                    {[
-                      { id: 'newest', label: '最新发布' },
-                      { id: 'price-asc', label: '价格从低到高' },
-                      { id: 'price-desc', label: '价格从高到低' },
-                      { id: 'context-desc', label: '上下文容量' },
-                      { id: 'intelligence-desc', label: '智能指数优先' },
-                    ].map((opt) => (
-                      <button
-                        key={opt.id}
-                        onClick={() => {
-                          setSortOption(opt.id as SortOption);
-                          setShowSortMenu(false);
-                        }}
-                        className="w-full text-left flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 text-gray-700"
-                      >
-                        <span>{opt.label}</span>
-                        {sortOption === opt.id && (
-                          <Check className="w-3 h-3 text-purple-600" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* 快捷过滤 Preset */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setShowFilterPresetMenu(!showFilterPresetMenu);
-                    setShowSortMenu(false);
-                    setShowVariantsMenu(false);
-                  }}
-                  className="flex items-center space-x-1 hover:text-black py-1 px-1.5 rounded hover:bg-gray-100 transition-colors"
-                >
-                  <Filter className="w-3 h-3 text-gray-500" />
-                  <span>{filterPreset}</span>
-                  <ChevronDown className="w-3 h-3 text-gray-400" />
-                </button>
-
-                {showFilterPresetMenu && (
-                  <div className="absolute right-0 top-7 w-32 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50 text-xs">
-                    {(['全部', '免费模型', '多模态', '旗舰大模型', '降价折扣'] as const).map(
-                      (preset) => (
-                        <button
-                          key={preset}
-                          onClick={() => {
-                            setFilterPreset(preset);
-                            setShowFilterPresetMenu(false);
-                          }}
-                          className="w-full text-left flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 text-gray-700"
-                        >
-                          <span>{preset}</span>
-                          {filterPreset === preset && (
-                            <Check className="w-3 h-3 text-purple-600" />
-                          )}
-                        </button>
-                      )
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* 固定过滤按钮 */}
-              <button
-                onClick={() => setShowPinnedOnly(!showPinnedOnly)}
-                className={`flex items-center space-x-1 py-1 px-1.5 rounded transition-colors ${
-                  showPinnedOnly
-                    ? 'text-purple-700 bg-purple-50 font-medium'
-                    : 'hover:text-black'
-                }`}
-              >
-                <Pin className="w-3 h-3" />
-                <span>已固定</span>
-                {filters.pinnedModelIds.length > 0 && (
-                  <span className="text-[10px] text-gray-400 font-mono">
-                    ({filters.pinnedModelIds.length})
-                  </span>
-                )}
-              </button>
-
-              {/* 变体 Dropdown 下拉组件 */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setShowVariantsMenu(!showVariantsMenu);
-                    setShowSortMenu(false);
-                    setShowFilterPresetMenu(false);
-                  }}
-                  className="flex items-center space-x-1 text-purple-600 bg-purple-50 px-2 py-0.5 rounded font-medium border border-purple-200 hover:bg-purple-100"
-                >
-                  <Check className="w-3 h-3" />
-                  <span>{filters.selectedVariant}</span>
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-
-                {showVariantsMenu && (
-                  <div className="absolute right-0 top-7 w-36 bg-white border border-gray-200 rounded shadow-lg py-1 z-50 text-xs">
-                    {[
-                      '全部变体',
-                      '标准版 (Standard)',
-                      '免费版 (Free)',
-                      '扩展版 (Extended)',
-                      '深度思考 (Thinking)',
-                      '批处理 (Batch)',
-                    ].map((name) => {
-                      const isActive = filters.selectedVariant === name;
-                      return (
-                        <div
-                          key={name}
-                          onClick={() => {
-                            handleUpdateFilters({ selectedVariant: name });
-                            setShowVariantsMenu(false);
-                          }}
-                          className="flex items-center space-x-1.5 px-2.5 py-1 hover:bg-gray-50 cursor-pointer text-gray-700"
-                        >
-                          <span className="w-3">
-                            {isActive && <Check className="w-3 h-3 text-purple-600" />}
-                          </span>
-                          <span>{name}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* 视图切换 (网格 / 列表 / 表格) */}
-              <div className="flex items-center border border-gray-200 rounded bg-white overflow-hidden">
-                <button
-                  onClick={() => setViewMode('grid')}
-                  className={`p-1.5 transition-colors border-r border-gray-200 ${
-                    viewMode === 'grid' ? 'bg-gray-100 text-black' : 'text-gray-400 hover:text-black'
-                  }`}
-                  title="网格视图"
-                >
-                  <LayoutGrid className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={() => setViewMode('list')}
-                  className={`p-1.5 transition-colors ${
-                    viewMode === 'list'
-                      ? 'bg-gray-100 text-black border-r border-gray-200'
-                      : 'text-gray-400 hover:text-black border-r border-gray-200'
-                  }`}
-                  title="列表视图"
-                >
-                  <List className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={() => setViewMode('table')}
-                  className={`p-1.5 transition-colors ${
-                    viewMode === 'table' ? 'bg-gray-100 text-black' : 'text-gray-400 hover:text-black'
-                  }`}
-                  title="表格视图"
-                >
-                  <TableIcon className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* 模态过滤 Tag 栏 */}
-          <div className="flex flex-wrap items-center gap-1.5 mb-4 text-xs select-none">
-            {PRIMARY_TAGS.map((tag) => {
-              const isSelected = filters.selectedPrimaryTag === tag.id;
-              const count = primaryTagCounts.get(tag.id) ?? 0;
-              return (
-                <button
-                  key={tag.id}
-                  onClick={() => handleUpdateFilters({ selectedPrimaryTag: tag.id })}
-                  className={`px-2 py-0.5 rounded text-xxs font-medium transition-colors cursor-pointer ${
-                    isSelected
-                      ? 'bg-purple-600 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
-                  <span>{tag.title}</span>
-                  <span className={`ml-1 ${isSelected ? 'text-purple-200' : 'text-gray-400'}`}>
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Active Filter Chips bar (if any filter is applied) */}
-          {(filters.searchQuery ||
-            filters.selectedModalities.length > 0 ||
-            filters.hasDiscountOnly ||
-            filters.minContextLength > 0 ||
-            filters.maxPromptPrice < 15 ||
-            filters.selectedSeries.length > 0 ||
-            filters.selectedCategories.length > 0 ||
-            filters.selectedProviders.length > 0 ||
-            showPinnedOnly ||
-            filterPreset !== '全部') && (
-            <div className="flex flex-wrap items-center gap-1.5 mb-3.5 bg-gray-50 p-2 rounded-lg border border-gray-100 text-[11px]">
-              <span className="text-gray-400 text-xxs">生效中筛选:</span>
-
-              {filters.searchQuery && (
-                <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
-                  <span>搜索: {filters.searchQuery}</span>
-                  <button onClick={() => handleUpdateFilters({ searchQuery: '' })}>
-                    <X className="w-2.5 h-2.5 text-gray-400 hover:text-gray-700" />
-                  </button>
-                </span>
-              )}
-
-              {showPinnedOnly && (
-                <span className="bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded text-purple-700 flex items-center space-x-1">
-                  <span>仅看已固定</span>
-                  <button onClick={() => setShowPinnedOnly(false)}>
-                    <X className="w-2.5 h-2.5 text-purple-400 hover:text-purple-700" />
-                  </button>
-                </span>
-              )}
-
-              {filterPreset !== '全部' && (
-                <span className="bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded text-purple-700 flex items-center space-x-1">
-                  <span>{filterPreset}</span>
-                  <button onClick={() => setFilterPreset('全部')}>
-                    <X className="w-2.5 h-2.5 text-purple-400 hover:text-purple-700" />
-                  </button>
-                </span>
-              )}
-
-              {filters.minContextLength > 0 && (
-                <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
-                  <span>上下文 ≥ {filters.minContextLength}K</span>
-                  <button onClick={() => handleUpdateFilters({ minContextLength: 0 })}>
-                    <X className="w-2.5 h-2.5 text-gray-400" />
-                  </button>
-                </span>
-              )}
-
-              {filters.maxPromptPrice < 15 && (
-                <span className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1">
-                  <span>输入单价 ≤ ${filters.maxPromptPrice}/M</span>
-                  <button onClick={() => handleUpdateFilters({ maxPromptPrice: 15 })}>
-                    <X className="w-2.5 h-2.5 text-gray-400" />
-                  </button>
-                </span>
-              )}
-
-              {filters.selectedModalities.map((m) => (
-                <span key={m} className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-gray-700 flex items-center space-x-1 uppercase font-mono">
-                  <span>{m}</span>
-                  <button onClick={() => handleUpdateFilters({ selectedModalities: filters.selectedModalities.filter((x) => x !== m) })}>
-                    <X className="w-2.5 h-2.5 text-gray-400" />
-                  </button>
-                </span>
-              ))}
-
-              <button
-                onClick={handleResetFilters}
-                className="text-purple-600 hover:text-purple-800 ml-auto font-medium text-xxs flex items-center space-x-1"
-              >
-                <RotateCcw className="w-2.5 h-2.5" />
-                <span>清空全部条件</span>
-              </button>
-            </div>
-          )}
-
-          {/* 模型列表 / 表格渲染 */}
-          {filteredModels.length === 0 ? (
-            <div className="py-20 text-center text-gray-400 border border-dashed border-gray-200 rounded-lg">
-              <Search className="w-8 h-8 mx-auto text-gray-300 stroke-1 mb-2" />
-              <div className="text-xs font-medium text-gray-700">没有找到符合条件的模型</div>
-              <div className="text-xxs text-gray-400 mt-1">请尝试放宽价格区间、模态或清除搜索关键字</div>
-              <button
-                onClick={handleResetFilters}
-                className="mt-3 px-3 py-1 text-xs bg-purple-50 text-purple-700 rounded-md hover:bg-purple-100 font-medium transition-colors"
-              >
-                恢复默认筛选
-              </button>
-            </div>
-          ) : viewMode === 'grid' ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3.5">
-              {filteredModels.map((m) => (
-                <ModelGridCard
-                  key={m.id}
-                  model={m}
-                  isPinned={filters.pinnedModelIds.includes(m.id)}
-                  isInCompare={compareModels.some((item) => item.id === m.id)}
-                  onTogglePin={handleTogglePin}
-                  onToggleCompare={handleToggleCompare}
-                  onSelectModel={(model) => setActiveModelForDetail(model)}
-                  onOpenPlayground={(model) => setActiveModelForPlayground(model)}
-                  onSelectProvider={(prov) =>
-                    handleUpdateFilters({ selectedProviders: [prov] })
-                  }
-                />
-              ))}
-            </div>
-          ) : viewMode === 'list' ? (
-            <div className="divide-y divide-gray-100">
-              {filteredModels.map((m) => (
-                <ModelCard
-                  key={m.id}
-                  model={m}
-                  isPinned={filters.pinnedModelIds.includes(m.id)}
-                  isInCompare={compareModels.some((item) => item.id === m.id)}
-                  onTogglePin={handleTogglePin}
-                  onToggleCompare={handleToggleCompare}
-                  onSelectModel={(model) => setActiveModelForDetail(model)}
-                  onOpenPlayground={(model) => setActiveModelForPlayground(model)}
-                  onSelectProvider={(prov) =>
-                    handleUpdateFilters({ selectedProviders: [prov] })
-                  }
-                />
-              ))}
-            </div>
-          ) : (
-            <ModelTable
-              models={filteredModels}
-              pinnedModelIds={filters.pinnedModelIds}
+      <Routes>
+        <Route path="/" element={<Navigate to="/models" replace />} />
+        <Route path="/models" element={modelListView} />
+        <Route
+          path="/models/*"
+          element={
+            <ModelDetailRoute
+              allModels={baseModels}
+              catalogSettled={catalogSettled}
               compareModels={compareModels}
-              onTogglePin={handleTogglePin}
+              onBack={() => navigate('/models')}
+              onOpenPlayground={(m) => setActiveModelForPlayground(m)}
               onToggleCompare={handleToggleCompare}
-              onSelectModel={(model) => setActiveModelForDetail(model)}
-              onOpenPlayground={(model) => setActiveModelForPlayground(model)}
+              onSelectOtherModel={openModel}
+              onNavigateToBenchmarks={() => navigate('/benchmarks')}
             />
-          )}
-        </main>
-      </div>
-      )}
+          }
+        />
+        <Route
+          path="/benchmarks"
+          element={
+            <BenchmarksPage
+              allModels={INITIAL_MODELS}
+              onSelectModel={openModel}
+              onNavigateToModels={() => navigate('/models')}
+            />
+          }
+        />
+        <Route
+          path="/rankings"
+          element={
+            <RankingsPage
+              allModels={INITIAL_MODELS}
+              onSelectModel={openModel}
+              onNavigateToBenchmarks={() => navigate('/benchmarks')}
+              onNavigateToModels={() => navigate('/models')}
+            />
+          }
+        />
+        <Route
+          path="/harness"
+          element={
+            <HarnessPage
+              onNavigateToModels={() => navigate('/models')}
+              onNavigateToBenchmarks={() => navigate('/benchmarks')}
+            />
+          }
+        />
+        <Route
+          path="/docs/*"
+          element={
+            <Suspense fallback={<div className="flex-1" />}>
+              <DocsRoutes />
+            </Suspense>
+          }
+        />
+        <Route path="/dashboard" element={<Navigate to="/dashboard/api-keys" replace />} />
+        <Route
+          path="/dashboard/:tab"
+          element={<DashboardRoute onBackToModels={() => navigate('/models')} />}
+        />
+        <Route path="*" element={<Navigate to="/models" replace />} />
+      </Routes>
 
       {/* Floating Compare Tray (bottom right) if models selected */}
       {compareModels.length > 0 && !isCompareModalOpen && (
@@ -1053,13 +1084,83 @@ export default function App() {
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         models={baseModels}
-        onSelectModel={(m) => setActiveModelForDetail(m)}
-        onNavigate={(nav) => {
-          setActiveNav(nav);
-          setActiveModelForDetail(null);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        onSelectModel={openModel}
+        onNavigate={goToNav}
       />
     </div>
+  );
+}
+
+interface ModelDetailRouteProps {
+  allModels: Model[];
+  catalogSettled: boolean;
+  compareModels: Model[];
+  onBack: () => void;
+  onOpenPlayground: (m: Model) => void;
+  onToggleCompare: (m: Model) => void;
+  onSelectOtherModel: (m: Model) => void;
+  onNavigateToBenchmarks: () => void;
+}
+
+// /models/<id>：按 URL 里的模型 ID 查找模型。先查真实目录，再回落到
+// INITIAL_MODELS（基准测试 / 排行榜页目前仍用 mock 数据，点进来的模型不一定在目录里）。
+function ModelDetailRoute({
+  allModels,
+  catalogSettled,
+  compareModels,
+  onBack,
+  onOpenPlayground,
+  onToggleCompare,
+  onSelectOtherModel,
+  onNavigateToBenchmarks,
+}: ModelDetailRouteProps) {
+  const id = useParams()['*'] ?? '';
+  const model =
+    allModels.find((m) => m.id === id) ?? INITIAL_MODELS.find((m) => m.id === id);
+
+  if (!model) {
+    return (
+      <div className="py-20 text-center text-gray-400">
+        {catalogSettled ? (
+          <>
+            <div className="text-xs font-medium text-gray-700">未找到模型 {id}</div>
+            <button
+              onClick={onBack}
+              className="mt-3 px-3 py-1 text-xs bg-purple-50 text-purple-700 rounded-md hover:bg-purple-100 font-medium transition-colors"
+            >
+              返回模型库
+            </button>
+          </>
+        ) : (
+          <div className="text-xs">加载中...</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <ModelDetailPage
+      model={model}
+      allModels={allModels}
+      onBack={onBack}
+      onOpenPlayground={onOpenPlayground}
+      onToggleCompare={onToggleCompare}
+      isInCompare={compareModels.some((item) => item.id === model.id)}
+      onSelectOtherModel={onSelectOtherModel}
+      onNavigateToBenchmarks={onNavigateToBenchmarks}
+    />
+  );
+}
+
+// /dashboard/:tab：个人中心的 tab 由 URL 驱动，切 tab 即切路由。
+function DashboardRoute({ onBackToModels }: { onBackToModels: () => void }) {
+  const { tab = 'api-keys' } = useParams();
+  const navigate = useNavigate();
+  return (
+    <PersonalDashboardPage
+      initialTab={tab}
+      onNavigateTab={(t) => navigate(`/dashboard/${t}`)}
+      onBackToModels={onBackToModels}
+    />
   );
 }

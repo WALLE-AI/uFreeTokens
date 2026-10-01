@@ -1,6 +1,6 @@
 import { ChipToggleGroup } from '../../components/ui/index';
 import { useNavigate } from 'react-router';
-import { listVirtualModels } from '../../api/catalog';
+import { getCatalogCounts, listVirtualModels } from '../../api/catalog';
 import { DataState, DataTable, FilterBar, KpiStrip, PageHeader, Pagination, Select, StatCard, StatusBadge, type ActiveFilter, type Column } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
@@ -41,15 +41,10 @@ export default function ModelsPage() {
     [qp.q, qp.status, qp.type, qp.tier, qp.missing, qp.margin, qp.sort, page, pageSize],
   );
 
-  // KPI：各项都用对应过滤条件的 total（page_size=1 只取计数）
+  // KPI：一次请求取全部计数（GET /catalog/counts）
   const kpi = useAsync(async (signal) => {
-    const [noSell, noMeta, noChannel, negative] = await Promise.all([
-      listVirtualModels({ missing: 'sell_price', page_size: 1 }, signal),
-      listVirtualModels({ missing: 'metadata', page_size: 1 }, signal),
-      listVirtualModels({ missing: 'channel', page_size: 1 }, signal),
-      listVirtualModels({ margin: 'negative', page_size: 1 }, signal),
-    ]);
-    return { noSell: noSell.total, noMeta: noMeta.total, noChannel: noChannel.total, negative: negative.total };
+    const c = (await getCatalogCounts(signal)).models;
+    return { noSell: c.missing_sell_price, noMeta: c.missing_metadata, noChannel: c.no_active_channel, negative: c.negative_margin };
   }, []);
 
   const active: ActiveFilter[] = [];

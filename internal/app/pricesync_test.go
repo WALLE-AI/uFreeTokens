@@ -29,6 +29,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	engine := pricesync.NewEngine(pool, adminSvc)
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
@@ -91,7 +92,8 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 			ID int64 `json:"id"`
 		} `json:"data"`
 	}
-	ac.get("/price-change-requests", &list)
+	// 按本测试的渠道过滤：共享测试库里其它测试累积的待审请求可能超过一页
+	ac.get(fmt.Sprintf("/price-change-requests?channel_id=%d", channel.ID), &list)
 	var found bool
 	for _, cr := range list.ChangeRequests {
 		if cr.ID == *pendingResult.ChangeRequestID {
@@ -131,7 +133,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	var rejectResp struct {
 		Status string `json:"status"`
 	}
-	ac.post(fmt.Sprintf("/price-change-requests/%d/reject", *pending2.ChangeRequestID), map[string]any{"decided_by": 1}, &rejectResp)
+	ac.post(fmt.Sprintf("/price-change-requests/%d/reject", *pending2.ChangeRequestID), map[string]any{"decided_by": 1, "reason": "涨价幅度未经确认"}, &rejectResp)
 	if rejectResp.Status != "rejected" {
 		t.Errorf("status = %q, want rejected", rejectResp.Status)
 	}
@@ -139,7 +141,7 @@ func TestPriceSyncHTTP_IngestApproveReject(t *testing.T) {
 	// 拒绝之后重复操作应该报错（409），验证 writeAdminError 把
 	// pricesync.ErrChangeRequestNotPending 映射对了状态码。
 	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/price-change-requests/%d/reject", adminSrv.URL, *pending2.ChangeRequestID),
-		bytes.NewReader([]byte(`{}`)))
+		bytes.NewReader([]byte(`{"reason":"重复驳回"}`)))
 	if err != nil {
 		t.Fatalf("build second reject request: %v", err)
 	}
@@ -161,6 +163,7 @@ func TestPriceSyncHTTP_NewModelDiscoveryAndPublish(t *testing.T) {
 
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	engine := pricesync.NewEngine(pool, adminSvc)
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: engine, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
@@ -241,6 +244,7 @@ func TestPriceSyncHTTP_NotConfiguredReturns503(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	// PriceSync 故意留空——验证接口在没装配的情况下不会 panic，而是干净地返回 503
 	// （鉴权本身是通过的，这条测的是鉴权通过之后 handler 自己的兜底检查）。
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))

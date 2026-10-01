@@ -15,6 +15,7 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
 )
 
 // CostPricePublisher 是 Engine 发布一条自动通过/审批通过的成本价变更所需的
@@ -63,7 +64,7 @@ func (e *Engine) CreateSource(ctx context.Context, in CreateSourceInput) (int64,
 		return 0, errors.New("pricesync: fetcher name is required")
 	}
 	var id int64
-	if err := e.pool.QueryRow(ctx,
+	if err := e.db(ctx).QueryRow(ctx,
 		`INSERT INTO price_sources (provider_id, level, kind, fetcher, url) VALUES ($1, $2, $3, $4, NULLIF($5, '')) RETURNING id`,
 		in.ProviderID, string(in.Level), in.Kind, in.Fetcher, in.URL,
 	).Scan(&id); err != nil {
@@ -103,7 +104,7 @@ func (e *Engine) Ingest(ctx context.Context, in IngestInput) (*IngestResult, err
 	hash := sha256.Sum256(specJSON)
 
 	var obsID int64
-	if err := e.pool.QueryRow(ctx,
+	if err := e.db(ctx).QueryRow(ctx,
 		`INSERT INTO price_observations (source_id, upstream_model, spec, spec_hash, raw_object)
 		 VALUES ($1, $2, $3, $4, NULLIF($5, '')) RETURNING id`,
 		in.SourceID, in.UpstreamModel, specJSON, hash[:], in.RawObject,
@@ -153,7 +154,7 @@ func (e *Engine) Ingest(ctx context.Context, in IngestInput) (*IngestResult, err
 	}
 
 	var crID int64
-	if err := e.pool.QueryRow(ctx,
+	if err := e.db(ctx).QueryRow(ctx,
 		`INSERT INTO price_change_requests
 		    (channel_id, current_book_id, proposed_spec, diff, max_change_ratio, direction, evidence, effective_from, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
@@ -190,8 +191,8 @@ var (
 	ErrBlockedNeedsConfirm = errors.New("pricesync: change request is blocked, approving it requires confirm_blocked=true")
 )
 
-// DecisionMeta 是人工审批时记录的"谁、为什么"。By 是管理员 ID（目前来自
-// X-Actor-ID，RBAC 之前可能为 0），ByName 来自 X-Actor-Name。
+// DecisionMeta 是人工审批时记录的"谁、为什么"。By/ByName 是已认证管理员的
+// ID 与名称（internal/adminauth），0 表示 system。
 type DecisionMeta struct {
 	By             int64
 	ByName         string
@@ -202,87 +203,105 @@ type DecisionMeta struct {
 // Approve 人工批准一条 pending 或 blocked 状态的变更提案并立即发布
 // （技术方案 §7.16.10）。blocked 状态也允许批准——拦截是让人去看一眼、不是
 // 永久禁止，人工确认过"这真的是厂商在这么调价，不是解析错误"之后应该能放行。
+//
+// 整个审批在一个事务里完成，并先对变更请求行加 FOR UPDATE 锁：两个运营同时
+// 点"批准"时，第二个会等第一个提交后看到 status=applied 而返回
+// ErrChangeRequestNotPending，不会发布两本成本价。
 func (e *Engine) Approve(ctx context.Context, changeRequestID int64, meta DecisionMeta) (int64, error) {
-	var channelID int64
-	var specJSON []byte
-	var effectiveFrom time.Time
-	var status string
-	err := e.pool.QueryRow(ctx,
-		`SELECT channel_id, proposed_spec, effective_from, status FROM price_change_requests WHERE id = $1`,
-		changeRequestID,
-	).Scan(&channelID, &specJSON, &effectiveFrom, &status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, ErrChangeRequestNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("pricesync: load change request: %w", err)
-	}
-	if status != string(DecisionPending) && status != string(DecisionBlocked) {
-		return 0, ErrChangeRequestNotPending
-	}
-	if status == string(DecisionBlocked) && !meta.ConfirmBlocked {
-		return 0, ErrBlockedNeedsConfirm
-	}
+	var bookID int64
+	err := store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		var channelID int64
+		var specJSON []byte
+		var effectiveFrom time.Time
+		var status string
+		err := e.db(ctx).QueryRow(ctx,
+			`SELECT channel_id, proposed_spec, effective_from, status FROM price_change_requests WHERE id = $1 FOR UPDATE`,
+			changeRequestID,
+		).Scan(&channelID, &specJSON, &effectiveFrom, &status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrChangeRequestNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("pricesync: load change request: %w", err)
+		}
+		if status != string(DecisionPending) && status != string(DecisionBlocked) {
+			return ErrChangeRequestNotPending
+		}
+		if status == string(DecisionBlocked) && !meta.ConfirmBlocked {
+			return ErrBlockedNeedsConfirm
+		}
 
-	var spec PriceSpec
-	if err := json.Unmarshal(specJSON, &spec); err != nil {
-		return 0, fmt.Errorf("pricesync: unmarshal proposed_spec: %w", err)
-	}
+		var spec PriceSpec
+		if err := json.Unmarshal(specJSON, &spec); err != nil {
+			return fmt.Errorf("pricesync: unmarshal proposed_spec: %w", err)
+		}
 
-	bookID, err := e.apply(ctx, changeRequestID, channelID, spec, effectiveFrom)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := e.pool.Exec(ctx,
-		`UPDATE price_change_requests SET decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
-		changeRequestID, meta.By, meta.ByName, meta.Reason,
-	); err != nil {
-		return 0, fmt.Errorf("pricesync: record decision: %w", err)
-	}
-	return bookID, nil
+		if bookID, err = e.apply(ctx, changeRequestID, channelID, spec, effectiveFrom); err != nil {
+			return err
+		}
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE price_change_requests SET decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
+			changeRequestID, meta.By, meta.ByName, meta.Reason,
+		); err != nil {
+			return fmt.Errorf("pricesync: record decision: %w", err)
+		}
+		return nil
+	})
+	return bookID, err
 }
 
 // Reject 驳回一条 pending 或 blocked 状态的变更提案，不发布任何新价格。
+// 与 Approve 一样先锁行再判断状态，避免与并发的批准交错。
 func (e *Engine) Reject(ctx context.Context, changeRequestID int64, meta DecisionMeta) error {
-	var status string
-	err := e.pool.QueryRow(ctx, `SELECT status FROM price_change_requests WHERE id = $1`, changeRequestID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrChangeRequestNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("pricesync: load change request: %w", err)
-	}
-	if status != string(DecisionPending) && status != string(DecisionBlocked) {
-		return ErrChangeRequestNotPending
-	}
-	if _, err := e.pool.Exec(ctx,
-		`UPDATE price_change_requests SET status = 'rejected', decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
-		changeRequestID, meta.By, meta.ByName, meta.Reason,
-	); err != nil {
-		return fmt.Errorf("pricesync: reject change request: %w", err)
-	}
-	return nil
+	return store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		var status string
+		err := e.db(ctx).QueryRow(ctx, `SELECT status FROM price_change_requests WHERE id = $1 FOR UPDATE`, changeRequestID).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrChangeRequestNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("pricesync: load change request: %w", err)
+		}
+		if status != string(DecisionPending) && status != string(DecisionBlocked) {
+			return ErrChangeRequestNotPending
+		}
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE price_change_requests SET status = 'rejected', decided_by = $2, decided_by_name = NULLIF($3, ''), decision_reason = NULLIF($4, ''), decided_at = now() WHERE id = $1`,
+			changeRequestID, meta.By, meta.ByName, meta.Reason,
+		); err != nil {
+			return fmt.Errorf("pricesync: reject change request: %w", err)
+		}
+		return nil
+	})
 }
 
 // apply 是 Ingest（auto_approved）和 Approve 共用的"真正发布"步骤：把 PriceSpec
 // 转换成 admin.SetCostPriceInput 发布一个新的 cost price_book 版本，再把这条
 // change request 标记为 applied。
+//
+// 发布价格与标记 applied 在同一个事务里：不会出现"价格已发布但请求仍是 pending"
+// 的中间态（否则可能被再批准一次）。
 func (e *Engine) apply(ctx context.Context, changeRequestID, channelID int64, spec PriceSpec, effectiveFrom time.Time) (int64, error) {
-	components := toAdminComponents(spec.Components)
-	ef := effectiveFrom
-	bookID, err := e.publisher.SetCostPrice(ctx, admin.SetCostPriceInput{
-		ChannelID: channelID, Currency: spec.Currency, EffectiveFrom: &ef, Components: components,
+	var bookID int64
+	err := store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		components := toAdminComponents(spec.Components)
+		ef := effectiveFrom
+		var err error
+		bookID, err = e.publisher.SetCostPrice(ctx, admin.SetCostPriceInput{
+			ChannelID: channelID, Currency: spec.Currency, EffectiveFrom: &ef, Components: components,
+		})
+		if err != nil {
+			return fmt.Errorf("pricesync: publish cost price: %w", err)
+		}
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE price_change_requests SET status = 'applied', applied_book_id = $2 WHERE id = $1`,
+			changeRequestID, bookID,
+		); err != nil {
+			return fmt.Errorf("pricesync: mark change request applied: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return 0, fmt.Errorf("pricesync: publish cost price: %w", err)
-	}
-	if _, err := e.pool.Exec(ctx,
-		`UPDATE price_change_requests SET status = 'applied', applied_book_id = $2 WHERE id = $1`,
-		changeRequestID, bookID,
-	); err != nil {
-		return 0, fmt.Errorf("pricesync: mark change request applied: %w", err)
-	}
-	return bookID, nil
+	return bookID, err
 }
 
 // ChangeRequestSummary 是 ListPending 的返回行，只包含审批界面列表视图需要的
@@ -301,7 +320,7 @@ type ChangeRequestSummary struct {
 // ListPending 列出所有等待人工处理的变更提案（pending 和 blocked 都算，两者都
 // 需要人看一眼才能继续，见 Approve 的注释）。
 func (e *Engine) ListPending(ctx context.Context) ([]ChangeRequestSummary, error) {
-	rows, err := e.pool.Query(ctx,
+	rows, err := e.db(ctx).Query(ctx,
 		`SELECT id, channel_id, direction, max_change_ratio, status, effective_from, created_at
 		 FROM price_change_requests WHERE status IN ('pending','blocked') ORDER BY created_at`)
 	if err != nil {
@@ -327,7 +346,7 @@ func (e *Engine) ListPending(ctx context.Context) ([]ChangeRequestSummary, error
 // "new"（技术方案里的"新模型"场景）。
 func (e *Engine) loadCurrentCostComponents(ctx context.Context, channelID int64) ([]Component, *int64, error) {
 	var bookID int64
-	err := e.pool.QueryRow(ctx,
+	err := e.db(ctx).QueryRow(ctx,
 		`SELECT id FROM price_books
 		 WHERE kind = 'cost' AND channel_id = $1 AND effective_from <= now()
 		   AND (effective_to IS NULL OR effective_to > now())
@@ -341,7 +360,7 @@ func (e *Engine) loadCurrentCostComponents(ctx context.Context, channelID int64)
 		return nil, nil, fmt.Errorf("pricesync: load current cost price_book: %w", err)
 	}
 
-	rows, err := e.pool.Query(ctx,
+	rows, err := e.db(ctx).Query(ctx,
 		`SELECT meter, unit, service_tier, tier_min_input, tier_max_input, window_start_min, window_end_min, unit_price
 		 FROM price_components WHERE price_book_id = $1`, bookID)
 	if err != nil {
@@ -373,7 +392,7 @@ func (e *Engine) loadCurrentCostComponents(ctx context.Context, channelID int64)
 // 比较 spec_hash 是否相同。第一次观测（没有"上一条"）视为未确认。
 func (e *Engine) hasMatchingPriorObservation(ctx context.Context, sourceID int64, upstreamModel string, hash []byte, excludeID int64) (bool, error) {
 	var priorHash []byte
-	err := e.pool.QueryRow(ctx,
+	err := e.db(ctx).QueryRow(ctx,
 		`SELECT spec_hash FROM price_observations
 		 WHERE source_id = $1 AND upstream_model = $2 AND id != $3
 		 ORDER BY observed_at DESC LIMIT 1`,
@@ -393,7 +412,7 @@ func (e *Engine) hasMatchingPriorObservation(ctx context.Context, sourceID int64
 // 任意其它来源的最新观测，只要有任一共同计量项差异 > 5%"就强制人工审批
 // （不区分具体是哪两个级别在冲突——级别判断留给审批人看 diff 里的说明）。
 func (e *Engine) checkCrossSourceConflict(ctx context.Context, sourceID int64, upstreamModel string, proposed PriceSpec) ([]ValidationIssue, error) {
-	rows, err := e.pool.Query(ctx,
+	rows, err := e.db(ctx).Query(ctx,
 		`SELECT DISTINCT ON (source_id) source_id, spec
 		 FROM price_observations
 		 WHERE upstream_model = $1 AND source_id != $2 AND observed_at > now() - interval '24 hours'
@@ -436,3 +455,6 @@ func (e *Engine) checkCrossSourceConflict(ctx context.Context, sourceID int64, u
 	}
 	return issues, rows.Err()
 }
+
+// db 返回 ctx 里的环境事务，没有时返回连接池（见 store.RunInTx）。
+func (e *Engine) db(ctx context.Context) store.Querier { return store.Q(ctx, e.pool) }

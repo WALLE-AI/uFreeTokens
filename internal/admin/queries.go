@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -54,18 +53,46 @@ type Page[T any] struct {
 	PageSize int `json:"page_size"`
 }
 
-// paginate 在内存里分页——只用于"需要先算出毛利才能过滤/排序"的列表（虚拟模型、
-// 渠道）。这两类配置在运营后台的量级是百到千，全量加载再切片比把毛利口径塞进
-// SQL 更简单、也和 internal/catalog 共用同一套 Go 口径。
-func paginate[T any](all []T, p PageRequest) Page[T] {
-	p = p.normalize()
-	start := min(p.offset(), len(all))
-	end := min(start+p.PageSize, len(all))
-	data := all[start:end]
-	if data == nil {
-		data = []T{}
+// reorderByIDs 按 ids 的顺序排列 rows（SQL 已经决定了顺序与分页，明细查询按 id 取回后恢复顺序）。
+func reorderByIDs[T any](ids []int64, rows []T, id func(T) int64) []T {
+	pos := make(map[int64]int, len(ids))
+	for i, v := range ids {
+		pos[v] = i
 	}
-	return Page[T]{Data: data, Total: len(all), Page: p.Page, PageSize: p.PageSize}
+	out := make([]T, len(ids))
+	n := 0
+	for _, r := range rows {
+		if i, ok := pos[id(r)]; ok {
+			out[i] = r
+			n++
+		}
+	}
+	return out[:n]
+}
+
+// pageIDs 执行"只取 id 的分页查询"并返回 id 列表与总数。
+func (s *Service) pageIDs(ctx context.Context, idCol, fromWhere, order string, p PageRequest, args ...any) ([]int64, int, error) {
+	p = p.normalize()
+	var total int
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) `+fromWhere, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("admin: count: %w", err)
+	}
+	n := len(args)
+	rows, err := s.db(ctx).Query(ctx, fmt.Sprintf(`SELECT %s %s ORDER BY %s LIMIT $%d OFFSET $%d`, idCol, fromWhere, order, n+1, n+2),
+		append(args, p.PageSize, p.offset())...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("admin: page ids: %w", err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, 0, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, total, rows.Err()
 }
 
 // likePattern 把用户输入转义成 ILIKE 的"包含"模式。
@@ -104,6 +131,8 @@ type ProviderSummary struct {
 	ActiveKeyCount      int    `json:"active_key_count"`
 	ChannelCount        int    `json:"channel_count"`
 	PendingListingCount int    `json:"pending_listing_count"`
+	// AllowedHosts 是上游 base_url 的域名白名单；空表示不限域名（仍拦截内网地址）。
+	AllowedHosts []string `json:"allowed_hosts"`
 }
 
 type ListProvidersInput struct {
@@ -116,13 +145,14 @@ const providerSummarySelect = `SELECT p.id, p.code, p.name, p.protocol, p.curren
 	(SELECT count(*) FROM provider_keys k JOIN provider_accounts pa ON pa.id = k.provider_account_id
 	   WHERE pa.provider_id = p.id AND k.status = 'active'),
 	(SELECT count(*) FROM channels c JOIN provider_accounts pa ON pa.id = c.provider_account_id WHERE pa.provider_id = p.id),
-	(SELECT count(*) FROM pending_model_listings l WHERE l.provider_id = p.id AND l.status = 'pending')
+	(SELECT count(*) FROM pending_model_listings l WHERE l.provider_id = p.id AND l.status = 'pending'),
+	p.allowed_hosts
 	FROM providers p`
 
 func scanProviderSummary(row pgx.Row) (ProviderSummary, error) {
 	var p ProviderSummary
 	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.Protocol, &p.Currency, &p.Status,
-		&p.AccountCount, &p.ActiveKeyCount, &p.ChannelCount, &p.PendingListingCount)
+		&p.AccountCount, &p.ActiveKeyCount, &p.ChannelCount, &p.PendingListingCount, &p.AllowedHosts)
 	return p, err
 }
 
@@ -139,10 +169,10 @@ func (s *Service) ListProviders(ctx context.Context, in ListProvidersInput) (*Pa
 
 	pr := in.PageRequest.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM providers p `+where, args...).Scan(&total); err != nil {
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM providers p `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count providers: %w", err)
 	}
-	rows, err := s.pool.Query(ctx, providerSummarySelect+" "+where+" ORDER BY "+order+", p.id LIMIT $5 OFFSET $6",
+	rows, err := s.db(ctx).Query(ctx, providerSummarySelect+" "+where+" ORDER BY "+order+", p.id LIMIT $5 OFFSET $6",
 		append(args, pr.PageSize, pr.offset())...)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query providers: %w", err)
@@ -161,12 +191,15 @@ func (s *Service) ListProviders(ctx context.Context, in ListProvidersInput) (*Pa
 
 type ProviderDetail struct {
 	ProviderSummary
-	Accounts     []ProviderAccountSummary `json:"accounts"`
-	PriceSources []PriceSourceInfo        `json:"price_sources"`
+	Accounts []ProviderAccountSummary `json:"accounts"`
+	// AccountsTruncated 为 true 表示账号超过 100 个、这里只返回了前 100 个；
+	// 完整列表用 GET /provider-accounts?provider_id= 分页查询。
+	AccountsTruncated bool              `json:"accounts_truncated"`
+	PriceSources      []PriceSourceInfo `json:"price_sources"`
 }
 
 func (s *Service) GetProvider(ctx context.Context, id int64) (*ProviderDetail, error) {
-	p, err := scanProviderSummary(s.pool.QueryRow(ctx, providerSummarySelect+" WHERE p.id = $1", id))
+	p, err := scanProviderSummary(s.db(ctx).QueryRow(ctx, providerSummarySelect+" WHERE p.id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProviderNotFound
 	}
@@ -181,7 +214,7 @@ func (s *Service) GetProvider(ctx context.Context, id int64) (*ProviderDetail, e
 	if err != nil {
 		return nil, err
 	}
-	return &ProviderDetail{ProviderSummary: p, Accounts: accounts.Data, PriceSources: sources}, nil
+	return &ProviderDetail{ProviderSummary: p, Accounts: accounts.Data, AccountsTruncated: accounts.Total > len(accounts.Data), PriceSources: sources}, nil
 }
 
 // ---------- provider accounts & keys ----------
@@ -224,10 +257,10 @@ func (s *Service) ListProviderAccounts(ctx context.Context, in ListProviderAccou
 	args := []any{in.ProviderID, strings.TrimSpace(in.Q), likePattern(in.Q), in.Status}
 	pr := in.PageRequest.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM provider_accounts pa `+where, args...).Scan(&total); err != nil {
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM provider_accounts pa `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count provider_accounts: %w", err)
 	}
-	rows, err := s.pool.Query(ctx, providerAccountSelect+" "+where+" ORDER BY pa.id LIMIT $5 OFFSET $6", append(args, pr.PageSize, pr.offset())...)
+	rows, err := s.db(ctx).Query(ctx, providerAccountSelect+" "+where+" ORDER BY pa.id LIMIT $5 OFFSET $6", append(args, pr.PageSize, pr.offset())...)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query provider_accounts: %w", err)
 	}
@@ -261,14 +294,14 @@ type ProviderAccountDetail struct {
 }
 
 func (s *Service) GetProviderAccount(ctx context.Context, id int64) (*ProviderAccountDetail, error) {
-	a, err := scanProviderAccount(s.pool.QueryRow(ctx, providerAccountSelect+" WHERE pa.id = $1", id))
+	a, err := scanProviderAccount(s.db(ctx).QueryRow(ctx, providerAccountSelect+" WHERE pa.id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProviderAccountNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("admin: query provider_account: %w", err)
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT id, secret_last4, weight, status, disabled_reason, rpm_limit, tpm_limit, concurrency_limit, created_at
 		 FROM provider_keys WHERE provider_account_id = $1 ORDER BY id`, id)
 	if err != nil {
@@ -317,7 +350,7 @@ type ListVirtualModelsInput struct {
 }
 
 func (s *Service) queryVirtualModels(ctx context.Context, where string, args ...any) ([]VirtualModelSummary, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT vm.id, vm.name, vm.family, vm.type, vm.status, vm.context_window, vm.max_output, vm.capabilities, vm.visible_tiers, vm.aliases,
 		   md.display_name, md.virtual_model_id IS NOT NULL,
 		   (SELECT count(*) FROM channels c WHERE c.virtual_model_id = vm.id),
@@ -355,7 +388,7 @@ func (s *Service) fillVirtualModelPrices(ctx context.Context, vms []VirtualModel
 		id, vmID   int64
 		multiplier decimal.Decimal
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT c.id, c.virtual_model_id, pa.cost_multiplier FROM channels c JOIN provider_accounts pa ON pa.id = c.provider_account_id
 		 WHERE c.virtual_model_id = ANY($1) AND c.status = 'active'`, vmIDs)
 	if err != nil {
@@ -393,39 +426,46 @@ func (s *Service) fillVirtualModelPrices(ctx context.Context, vms []VirtualModel
 	return nil
 }
 
+// ListVirtualModels 的过滤（含缺售价/缺元数据/无活跃渠道/负毛利这些派生条件）、排序、
+// 分页与总数都在 SQL 里完成（视图 v_admin_model_summary，迁移 00023）；只有当前页的
+// 行再由 queryVirtualModels 填充价格明细。
 func (s *Service) ListVirtualModels(ctx context.Context, in ListVirtualModelsInput) (*Page[VirtualModelSummary], error) {
-	where := `WHERE ($1 = '' OR vm.name ILIKE $2 OR md.display_name ILIKE $2 OR EXISTS (SELECT 1 FROM unnest(vm.aliases) a WHERE a ILIKE $2))
-	  AND (cardinality($3::text[]) = 0 OR vm.status = ANY($3))
-	  AND ($4 = '' OR vm.type = $4) AND ($5 = '' OR vm.family = $5) AND ($6 = '' OR $6 = ANY(vm.visible_tiers))`
-	all, err := s.queryVirtualModels(ctx, where, strings.TrimSpace(in.Q), likePattern(in.Q), nonNilStrings(in.Statuses), in.Type, in.Family, in.Tier)
-	if err != nil {
-		return nil, err
-	}
+	var missing string
 	switch in.Missing {
 	case "":
 	case "sell_price":
-		all = filter(all, func(v VirtualModelSummary) bool { return v.SellPrice == nil })
+		missing = "AND NOT ms.has_sell_price"
 	case "metadata":
-		all = filter(all, func(v VirtualModelSummary) bool { return !v.HasMetadata })
+		missing = "AND NOT ms.has_metadata"
 	case "channel":
-		all = filter(all, func(v VirtualModelSummary) bool { return v.ActiveChannelCount == 0 })
+		missing = "AND ms.active_channel_count = 0"
 	default:
 		return nil, fmt.Errorf("%w: missing=%q", ErrInvalidFilterOrValue, in.Missing)
 	}
-	if in.NegativeMargin {
-		all = filter(all, func(v VirtualModelSummary) bool { return v.MinMarginRatio != nil && v.MinMarginRatio.IsNegative() })
-	}
-	less := map[string]func(a, b VirtualModelSummary) bool{
-		"name":             func(a, b VirtualModelSummary) bool { return a.Name < b.Name },
-		"id":               func(a, b VirtualModelSummary) bool { return a.ID < b.ID },
-		"channel_count":    func(a, b VirtualModelSummary) bool { return a.ChannelCount < b.ChannelCount },
-		"min_margin_ratio": func(a, b VirtualModelSummary) bool { return decLess(a.MinMarginRatio, b.MinMarginRatio) },
-	}
-	if err := sortSlice(all, in.Sort, "name", less); err != nil {
+	order, err := orderBy(in.Sort, "name", map[string]string{
+		"name": "vm.name", "id": "vm.id", "channel_count": "ms.channel_count", "min_margin_ratio": "ms.min_margin_ratio",
+	})
+	if err != nil {
 		return nil, err
 	}
-	p := paginate(all, in.PageRequest)
-	return &p, nil
+	fromWhere := `FROM virtual_models vm
+	  JOIN v_admin_model_summary ms ON ms.virtual_model_id = vm.id
+	  LEFT JOIN virtual_model_metadata md ON md.virtual_model_id = vm.id
+	  WHERE ($1 = '' OR vm.name ILIKE $2 OR md.display_name ILIKE $2 OR EXISTS (SELECT 1 FROM unnest(vm.aliases) a WHERE a ILIKE $2))
+	  AND (cardinality($3::text[]) = 0 OR vm.status = ANY($3))
+	  AND ($4 = '' OR vm.type = $4) AND ($5 = '' OR vm.family = $5) AND ($6 = '' OR $6 = ANY(vm.visible_tiers))
+	  AND (NOT $7 OR ms.min_margin_ratio < 0) ` + missing
+	ids, total, err := s.pageIDs(ctx, "vm.id", fromWhere, order+", vm.id", in.PageRequest,
+		strings.TrimSpace(in.Q), likePattern(in.Q), nonNilStrings(in.Statuses), in.Type, in.Family, in.Tier, in.NegativeMargin)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queryVirtualModels(ctx, "WHERE vm.id = ANY($1)", ids)
+	if err != nil {
+		return nil, err
+	}
+	pr := in.PageRequest.normalize()
+	return &Page[VirtualModelSummary]{Data: reorderByIDs(ids, rows, func(v VirtualModelSummary) int64 { return v.ID }), Total: total, Page: pr.Page, PageSize: pr.PageSize}, nil
 }
 
 type VirtualModelMetadata struct {
@@ -442,6 +482,9 @@ type VirtualModelDetail struct {
 	Metadata *VirtualModelMetadata `json:"metadata"`
 	SellBook *PriceBookInfo        `json:"sell_price_book"`
 	Channels []ChannelSummary      `json:"channels"`
+	// ChannelsTruncated 为 true 表示渠道超过 100 个、这里只返回了前 100 个；
+	// 完整列表用 GET /channels?virtual_model_id= 分页查询。
+	ChannelsTruncated bool `json:"channels_truncated"`
 }
 
 func (s *Service) GetVirtualModel(ctx context.Context, id int64) (*VirtualModelDetail, error) {
@@ -455,7 +498,7 @@ func (s *Service) GetVirtualModel(ctx context.Context, id int64) (*VirtualModelD
 	d := &VirtualModelDetail{VirtualModelSummary: list[0]}
 
 	var md VirtualModelMetadata
-	err = s.pool.QueryRow(ctx,
+	err = s.db(ctx).QueryRow(ctx,
 		`SELECT display_name, description, provider_display, tags, scores, updated_at FROM virtual_model_metadata WHERE virtual_model_id = $1`, id,
 	).Scan(&md.DisplayName, &md.Description, &md.ProviderDisplay, &md.Tags, &md.Scores, &md.UpdatedAt)
 	switch {
@@ -477,6 +520,7 @@ func (s *Service) GetVirtualModel(ctx context.Context, id int64) (*VirtualModelD
 		return nil, err
 	}
 	d.Channels = chs.Data
+	d.ChannelsTruncated = chs.Total > len(chs.Data)
 	return d, nil
 }
 
@@ -515,7 +559,7 @@ func (s *Service) ListPriceBooks(ctx context.Context, in ListPriceBooksInput) ([
 	if in.Kind == "cost" {
 		keyCol, key = "channel_id", in.ChannelID
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(
+	rows, err := s.db(ctx).Query(ctx, fmt.Sprintf(
 		`WITH cur AS (
 		   SELECT id FROM price_books WHERE kind = $1 AND %[1]s = $2 AND effective_from <= now()
 		     AND (effective_to IS NULL OR effective_to > now()) ORDER BY effective_from DESC LIMIT 1
@@ -541,31 +585,44 @@ func (s *Service) ListPriceBooks(ctx context.Context, in ListPriceBooksInput) ([
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	ids := make([]int64, len(books))
 	for i := range books {
-		comps, err := s.loadComponents(ctx, books[i].ID)
-		if err != nil {
-			return nil, err
+		ids[i] = books[i].ID
+	}
+	comps, err := s.loadComponents(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range books {
+		books[i].Components = comps[books[i].ID]
+		if books[i].Components == nil {
+			books[i].Components = []PriceComponentInput{}
 		}
-		books[i].Components = comps
 	}
 	return books, nil
 }
 
-func (s *Service) loadComponents(ctx context.Context, bookID int64) ([]PriceComponentInput, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT meter, unit, service_tier, tier_min_input, tier_max_input, window_start_min, window_end_min, unit_price
-		 FROM price_components WHERE price_book_id = $1 ORDER BY meter, service_tier, tier_min_input, window_start_min NULLS FIRST`, bookID)
+// loadComponents 一次查出一批价格版本的全部分量（此前每本一条查询，N+1）。
+func (s *Service) loadComponents(ctx context.Context, bookIDs []int64) (map[int64][]PriceComponentInput, error) {
+	out := map[int64][]PriceComponentInput{}
+	if len(bookIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db(ctx).Query(ctx,
+		`SELECT price_book_id, meter, unit, service_tier, tier_min_input, tier_max_input, window_start_min, window_end_min, unit_price
+		 FROM price_components WHERE price_book_id = ANY($1)
+		 ORDER BY price_book_id, meter, service_tier, tier_min_input, window_start_min NULLS FIRST`, bookIDs)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query price_components: %w", err)
 	}
 	defer rows.Close()
-	out := []PriceComponentInput{}
 	for rows.Next() {
+		var id int64
 		var c PriceComponentInput
-		if err := rows.Scan(&c.Meter, &c.Unit, &c.ServiceTier, &c.TierMinInput, &c.TierMaxInput, &c.WindowStartMin, &c.WindowEndMin, &c.UnitPrice); err != nil {
+		if err := rows.Scan(&id, &c.Meter, &c.Unit, &c.ServiceTier, &c.TierMinInput, &c.TierMaxInput, &c.WindowStartMin, &c.WindowEndMin, &c.UnitPrice); err != nil {
 			return nil, fmt.Errorf("admin: scan price_component: %w", err)
 		}
-		out = append(out, c)
+		out[id] = append(out[id], c)
 	}
 	return out, rows.Err()
 }
@@ -606,7 +663,7 @@ type ListChannelsInput struct {
 }
 
 func (s *Service) queryChannels(ctx context.Context, where string, args ...any) ([]ChannelSummary, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT c.id, c.status, c.virtual_model_id, vm.name, c.provider_account_id, pa.name, p.id, p.code, c.upstream_model,
 		   c.priority, c.weight, c.allowed_tiers, c.allowed_account_ids, c.experiment_key, c.variant_label, pa.cost_multiplier, c.param_overrides,
 		   (SELECT cr.id FROM price_change_requests cr WHERE cr.channel_id = c.id AND cr.status IN ('pending','blocked') ORDER BY cr.created_at DESC LIMIT 1)
@@ -658,32 +715,35 @@ func (s *Service) queryChannels(ctx context.Context, where string, args ...any) 
 	return out, nil
 }
 
+// ListChannels 同 ListVirtualModels：过滤（含负毛利/缺成本价）、排序、分页在 SQL 里完成
+// （视图 v_admin_channel_margin，迁移 00023），当前页再填价格明细。
 func (s *Service) ListChannels(ctx context.Context, in ListChannelsInput) (*Page[ChannelSummary], error) {
-	where := `WHERE ($1 = 0 OR c.virtual_model_id = $1) AND ($2 = 0 OR c.provider_account_id = $2) AND ($3 = 0 OR p.id = $3)
-	  AND ($4 = '' OR c.status = $4) AND ($5 = '' OR vm.name ILIKE $6 OR c.upstream_model ILIKE $6)
-	  AND (NOT $7 OR cardinality(c.allowed_account_ids) > 0)`
-	all, err := s.queryChannels(ctx, where, in.VirtualModelID, in.ProviderAccountID, in.ProviderID, in.Status,
-		strings.TrimSpace(in.Q), likePattern(in.Q), in.Dedicated)
+	order, err := orderBy(in.Sort, "id", map[string]string{
+		"id": "c.id", "priority": "c.priority", "weight": "c.weight", "margin_ratio": "m.margin_ratio",
+	})
 	if err != nil {
 		return nil, err
 	}
-	if in.NegativeMargin {
-		all = filter(all, func(c ChannelSummary) bool { return c.MarginRatio != nil && c.MarginRatio.IsNegative() })
-	}
-	if in.MissingCost {
-		all = filter(all, func(c ChannelSummary) bool { return c.CostPrice == nil })
-	}
-	less := map[string]func(a, b ChannelSummary) bool{
-		"id":           func(a, b ChannelSummary) bool { return a.ID < b.ID },
-		"priority":     func(a, b ChannelSummary) bool { return a.Priority < b.Priority },
-		"weight":       func(a, b ChannelSummary) bool { return a.Weight < b.Weight },
-		"margin_ratio": func(a, b ChannelSummary) bool { return decLess(a.MarginRatio, b.MarginRatio) },
-	}
-	if err := sortSlice(all, in.Sort, "id", less); err != nil {
+	fromWhere := `FROM channels c
+	  JOIN virtual_models vm ON vm.id = c.virtual_model_id
+	  JOIN provider_accounts pa ON pa.id = c.provider_account_id
+	  JOIN v_admin_channel_margin m ON m.channel_id = c.id
+	  WHERE ($1 = 0 OR c.virtual_model_id = $1) AND ($2 = 0 OR c.provider_account_id = $2) AND ($3 = 0 OR pa.provider_id = $3)
+	  AND ($4 = '' OR c.status = $4) AND ($5 = '' OR vm.name ILIKE $6 OR c.upstream_model ILIKE $6)
+	  AND (NOT $7 OR cardinality(c.allowed_account_ids) > 0)
+	  AND (NOT $8 OR m.margin_ratio < 0) AND (NOT $9 OR m.cost_book_id IS NULL)`
+	ids, total, err := s.pageIDs(ctx, "c.id", fromWhere, order+", c.id", in.PageRequest,
+		in.VirtualModelID, in.ProviderAccountID, in.ProviderID, in.Status, strings.TrimSpace(in.Q), likePattern(in.Q), in.Dedicated,
+		in.NegativeMargin, in.MissingCost)
+	if err != nil {
 		return nil, err
 	}
-	p := paginate(all, in.PageRequest)
-	return &p, nil
+	rows, err := s.queryChannels(ctx, "WHERE c.id = ANY($1)", ids)
+	if err != nil {
+		return nil, err
+	}
+	pr := in.PageRequest.normalize()
+	return &Page[ChannelSummary]{Data: reorderByIDs(ids, rows, func(c ChannelSummary) int64 { return c.ID }), Total: total, Page: pr.Page, PageSize: pr.PageSize}, nil
 }
 
 type PriceObservationInfo struct {
@@ -699,6 +759,8 @@ type ChannelDetail struct {
 	ChannelSummary
 	CostPriceHistory   []PriceBookInfo        `json:"cost_price_history"`
 	RecentObservations []PriceObservationInfo `json:"recent_observations"`
+	// ChangeRequests 是这个渠道最近 20 条调价请求（任意状态），接口方案 §1.4。
+	ChangeRequests []ChangeRequestSummary `json:"change_requests"`
 }
 
 func (s *Service) GetChannel(ctx context.Context, id int64) (*ChannelDetail, error) {
@@ -715,7 +777,7 @@ func (s *Service) GetChannel(ctx context.Context, id int64) (*ChannelDetail, err
 	}
 	// 观测按 (来源, upstream_model) 记录，不直接挂在渠道上：取同一供应商下的来源
 	// 对这个 upstream_model 的最近观测。spec 是 pricesync.PriceSpec 的原始 JSON。
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT o.id, o.source_id, ps.level, ps.kind, o.observed_at, o.spec
 		 FROM price_observations o JOIN price_sources ps ON ps.id = o.source_id
 		 WHERE o.upstream_model = $1 AND (ps.provider_id = $2 OR ps.provider_id IS NULL)
@@ -732,7 +794,16 @@ func (s *Service) GetChannel(ctx context.Context, id int64) (*ChannelDetail, err
 		}
 		d.RecentObservations = append(d.RecentObservations, o)
 	}
-	return d, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	crs, err := s.ListChangeRequests(ctx, ListChangeRequestsInput{Statuses: []string{"all"}, ChannelID: id, PageRequest: PageRequest{PageSize: 20}})
+	if err != nil {
+		return nil, err
+	}
+	d.ChangeRequests = crs.Data
+	return d, nil
 }
 
 // ---------- fx rates & price sources ----------
@@ -757,7 +828,7 @@ func (s *Service) ListFXRates(ctx context.Context, base, quote string, latest bo
 		     WHERE ($1 = '' OR base = $1) AND ($2 = '' OR quote = $2) AND effective_date <= CURRENT_DATE AND $3 > 0
 		     ORDER BY base, quote, effective_date DESC`
 	}
-	rows, err := s.pool.Query(ctx, q, base, quote, limit)
+	rows, err := s.db(ctx).Query(ctx, q, base, quote, limit)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query fx_rates: %w", err)
 	}
@@ -801,7 +872,7 @@ func (s *Service) ListPriceSources(ctx context.Context, in ListPriceSourcesInput
 }
 
 func (s *Service) queryPriceSources(ctx context.Context, where string, args ...any) ([]PriceSourceInfo, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT ps.id, ps.provider_id, p.code, ps.level, ps.kind, ps.fetcher, ps.url, ps.schedule, ps.config, ps.enabled, ps.last_success_at,
 		   (SELECT count(*) FROM price_observations o WHERE o.source_id = ps.id AND o.observed_at > now() - interval '7 days'),
 		   ps.created_at
@@ -824,50 +895,40 @@ func (s *Service) queryPriceSources(ctx context.Context, where string, args ...a
 
 // ---------- 小工具 ----------
 
-func filter[T any](in []T, keep func(T) bool) []T {
-	out := in[:0]
-	for _, v := range in {
-		if keep(v) {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-// sortSlice 按白名单里的比较函数稳定排序；"-field" 表示降序。
-func sortSlice[T any](all []T, sortParam, def string, less map[string]func(a, b T) bool) error {
-	if sortParam == "" {
-		sortParam = def
-	}
-	desc := strings.HasPrefix(sortParam, "-")
-	fn, ok := less[strings.TrimPrefix(sortParam, "-")]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrInvalidSort, sortParam)
-	}
-	sort.SliceStable(all, func(i, j int) bool {
-		if desc {
-			return fn(all[j], all[i])
-		}
-		return fn(all[i], all[j])
-	})
-	return nil
-}
-
-// decLess 把 nil（无法计算）排在最后。
-func decLess(a, b *decimal.Decimal) bool {
-	switch {
-	case a == nil:
-		return false
-	case b == nil:
-		return true
-	default:
-		return a.LessThan(*b)
-	}
-}
-
 func nonNilStrings(s []string) []string {
 	if s == nil {
 		return []string{}
 	}
 	return s
+}
+
+// CurrentPriceBook 返回当前生效的售价（kind=sell，targetID 是虚拟模型）或成本价
+// （kind=cost，targetID 是渠道）版本；没有时返回 nil。用于改价审计的 before 快照。
+func (s *Service) CurrentPriceBook(ctx context.Context, kind string, targetID int64) (*PriceBookInfo, error) {
+	in := ListPriceBooksInput{Kind: kind, Limit: 1, CurrentOnly: true}
+	if kind == "sell" {
+		in.VirtualModelID = targetID
+	} else {
+		in.ChannelID = targetID
+	}
+	books, err := s.ListPriceBooks(ctx, in)
+	if err != nil || len(books) == 0 {
+		return nil, err
+	}
+	return &books[0], nil
+}
+
+// GetVirtualModelMetadata 返回虚拟模型的展示元数据；没有录入过时返回 nil。
+func (s *Service) GetVirtualModelMetadata(ctx context.Context, vmID int64) (*VirtualModelMetadata, error) {
+	var md VirtualModelMetadata
+	err := s.db(ctx).QueryRow(ctx,
+		`SELECT display_name, description, provider_display, tags, scores, updated_at FROM virtual_model_metadata WHERE virtual_model_id = $1`, vmID,
+	).Scan(&md.DisplayName, &md.Description, &md.ProviderDisplay, &md.Tags, &md.Scores, &md.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("admin: query virtual_model_metadata: %w", err)
+	}
+	return &md, nil
 }

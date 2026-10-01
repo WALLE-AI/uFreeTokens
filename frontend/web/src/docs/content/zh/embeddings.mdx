@@ -1,0 +1,128 @@
+---
+title: 向量嵌入 (Embeddings)
+description: 通过 POST /v1/embeddings 把文本转换为向量，支持单条或批量输入，只按输入 token 计费。
+section: guides
+order: 40
+---
+
+`POST /v1/embeddings` 与 OpenAI Embeddings API 兼容，把文本转换为向量，常用于语义检索、RAG、聚类与相似度计算。它和对话补全共用同一套鉴权、限流、预扣与结算流程。
+
+## 选择嵌入模型
+
+只有目录中 `type` 为 `embedding` 的模型可以用于此接口；用对话模型调用会返回 `404 model_not_found`。可以在[模型列表](/docs/zh/models)中查看，或这样筛选：
+
+```bash title="列出嵌入模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "embedding") | .name'
+```
+
+下文示例从环境变量 `EMBEDDING_MODEL` 读取模型 ID：
+
+```bash
+export EMBEDDING_MODEL="<上面列出的某个模型 ID>"
+```
+
+## 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `model` | string | 是 | 嵌入模型 ID |
+| `input` | string 或 string[] | 是 | 要向量化的文本；传数组可一次处理多条 |
+| 其它字段 | — | 否 | 如 `encoding_format`、`dimensions`，网关原样透传给上游，是否支持取决于模型 |
+
+## 响应
+
+```json
+{
+  "object": "list",
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<你请求的模型 ID>",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, 0.0789]},
+    {"object": "embedding", "index": 1, "embedding": [0.0321, 0.0654, -0.0987]}
+  ],
+  "usage": {"prompt_tokens": 14, "total_tokens": 14}
+}
+```
+
+- `data[i].index` 与输入数组的下标一一对应；向量长度由模型决定（示例中做了截断）。
+- 响应的 `id` 被改写为本次请求的 Request ID，`model` 被改写为你请求的模型 ID，其余字段来自上游。
+
+## 计费
+
+嵌入请求只有**输入**用量，没有输出 token：
+
+- 按上游返回的 `usage.prompt_tokens` 和模型的输入单价结算。
+- 请求前按请求体大小估算输入 token 进行预扣，结算时多退少补。
+- 失败的请求不扣费。
+
+价格可在[模型列表](/docs/zh/models)中查看，计费细节见[计费说明](/docs/zh/billing)。
+
+## 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/embeddings \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"$EMBEDDING_MODEL\",
+    \"input\": [\"今天天气很好\", \"API 网关负责路由与计费\"]
+  }"
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+resp = client.embeddings.create(
+    model=os.environ["EMBEDDING_MODEL"],
+    input=["今天天气很好", "API 网关负责路由与计费"],
+)
+
+for item in resp.data:
+    print(item.index, len(item.embedding))
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const resp = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: ["今天天气很好", "API 网关负责路由与计费"],
+});
+
+for (const item of resp.data) console.log(item.index, item.embedding.length);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+<Callout type="tip" title="批量输入">
+
+需要向量化大量文本时，把多条文本放进一个 `input` 数组比逐条请求更省请求次数（也更不容易触发 RPM 限制）。单个请求体大小和单批条数仍受上游模型的限制。
+
+</Callout>
+
+<Callout type="info">
+
+官方 Python SDK 在未指定 `encoding_format` 时会默认请求 `base64` 编码并在本地自动解码，这一参数同样会被透传给上游。如果遇到上游不支持 `base64` 的情况，可显式传入 `encoding_format="float"`。
+
+</Callout>
+
+## 相关
+
+- [Embeddings API 参考](/docs/zh/api/createEmbedding)
+- [计费说明](/docs/zh/billing)
+- [速率限制](/docs/zh/rate-limits)

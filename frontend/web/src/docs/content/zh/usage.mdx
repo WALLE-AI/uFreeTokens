@@ -1,0 +1,156 @@
+---
+title: 用量查询
+description: 用 GET /v1/usage 查询账户余额与累计用量，并了解如何读取每次调用响应中的 usage 字段。
+section: guides
+order: 50
+---
+
+有两种方式了解自己的用量：
+
+- **单次请求**：每次调用的响应里都带有 `usage` 字段，记录这次请求消耗的 token。
+- **账户累计**：`GET /v1/usage` 用 API Key 查询账户的钱包余额和累计用量，适合在脚本或监控里使用。
+
+## GET /v1/usage
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/usage \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+### 查询参数
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `since` | string | 否 | RFC3339 格式的时间，如 `2026-10-01T00:00:00Z` 或 `2026-10-01T00:00:00+08:00`。只统计该时间点之后的请求；不传则统计全部历史。格式不合法返回 `400 invalid_request` |
+
+<Callout type="warning" title="记得 URL 编码">
+
+带时区偏移的时间里有 `+` 号，直接拼进 URL 会被解析成空格。请对参数做 URL 编码（如 cURL 的 `-G --data-urlencode`），或使用 `Z` 结尾的 UTC 时间。
+
+</Callout>
+
+### 响应
+
+```json
+{
+  "wallet": {
+    "cash_balance_micro": 5000000,
+    "bonus_balance_micro": 0,
+    "frozen_micro": 0
+  },
+  "usage": {
+    "total_requests": 12,
+    "total_input_tokens": 3400,
+    "total_output_tokens": 1800,
+    "total_charged_amount_micro": 15000
+  }
+}
+```
+
+所有金额字段的单位都是**微元**（人民币）：`1,000,000` 微元 = 1 元。上例中现金余额为 5 元，累计消费 0.015 元。
+
+| 字段 | 说明 |
+| --- | --- |
+| `wallet.cash_balance_micro` | 现金余额 |
+| `wallet.bonus_balance_micro` | 赠送余额 |
+| `wallet.frozen_micro` | 正在进行中的请求所预扣（冻结）的金额，请求结束后结算或释放 |
+| `usage.total_requests` | 成功请求数 |
+| `usage.total_input_tokens` | 成功请求的输入 token 合计 |
+| `usage.total_output_tokens` | 成功请求的输出 token 合计 |
+| `usage.total_charged_amount_micro` | 成功请求的实际扣费合计（微元） |
+
+需要注意：
+
+- `wallet` 始终是**当前**余额，不受 `since` 影响；`since` 只作用于 `usage`。
+- `usage` **只统计成功的请求**。失败的请求不扣费，也不计入这里。
+- 返回的是**累计值**，不是时间序列。如果需要按时间拆分的用量，请登录网站的**个人中心**查看，那里提供本月按天的消费趋势，以及最近 30 天的逐条调用日志（含模型、token、费用）。
+
+### 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -G {{BASE_URL}}/v1/usage \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  --data-urlencode "since=2026-10-01T00:00:00+08:00"
+```
+
+```python title="Python"
+import os
+import requests
+
+resp = requests.get(
+    "{{BASE_URL}}/v1/usage",
+    headers={"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"},
+    params={"since": "2026-10-01T00:00:00+08:00"},  # requests 会自动 URL 编码
+    timeout=10,
+)
+resp.raise_for_status()
+data = resp.json()
+
+wallet, usage = data["wallet"], data["usage"]
+print(f"现金余额: {wallet['cash_balance_micro'] / 1_000_000:.2f} 元")
+print(f"本期消费: {usage['total_charged_amount_micro'] / 1_000_000:.4f} 元，共 {usage['total_requests']} 次请求")
+```
+
+```ts title="TypeScript"
+const url = new URL("{{BASE_URL}}/v1/usage");
+url.searchParams.set("since", "2026-10-01T00:00:00+08:00"); // 自动 URL 编码
+
+const res = await fetch(url, {
+  headers: { Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}` },
+});
+if (!res.ok) throw new Error(`HTTP ${res.status}`);
+const { wallet, usage } = await res.json();
+
+console.log(`现金余额: ${(wallet.cash_balance_micro / 1_000_000).toFixed(2)} 元`);
+console.log(`本期消费: ${(usage.total_charged_amount_micro / 1_000_000).toFixed(4)} 元，共 ${usage.total_requests} 次请求`);
+```
+
+</CodeTabs>
+
+<Callout type="tip">
+
+金额以整数微元返回，是为了避免浮点误差。做累加、比较时请保持整数运算，只在展示时再换算成"元"。
+
+</Callout>
+
+## 读取响应中的 usage
+
+### 对话补全（非流式）
+
+`/v1/chat/completions` 的响应包含上游返回的 `usage` 对象，网关原样透传：
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 48,
+    "total_tokens": 168
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `prompt_tokens` | 输入 token 数 |
+| `completion_tokens` | 输出 token 数 |
+| `total_tokens` | 合计 |
+| `prompt_tokens_details.cached_tokens` | 部分模型返回，命中缓存的输入 token 数 |
+| `completion_tokens_details.reasoning_tokens` | 部分模型返回，推理（思考）token 数 |
+
+`usage` 中具体包含哪些子字段取决于模型和上游。计费以上游返回的用量为准；命中缓存的 token 如何计价见[计费说明](/docs/zh/billing)。
+
+### 流式输出
+
+流式请求默认不会把用量返回给你。在请求中加上 `"stream_options": {"include_usage": true}`，流的最后会多一个 `choices` 为空、带 `usage` 的 chunk，详见[流式输出](/docs/zh/streaming)。
+
+### 其它接口
+
+- `/v1/embeddings`：`usage.prompt_tokens`，只有输入用量。
+- `/v1/messages`：`usage.input_tokens` 与 `usage.output_tokens`（Anthropic 格式）。
+
+## 相关
+
+- [Usage API 参考](/docs/zh/api/getUsage)
+- [计费说明](/docs/zh/billing)

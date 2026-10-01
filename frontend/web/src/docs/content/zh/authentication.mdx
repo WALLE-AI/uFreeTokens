@@ -1,0 +1,72 @@
+---
+title: 鉴权与 API Key
+description: 如何创建、使用、保管和吊销 sk-uft- 开头的 API Key。
+section: getting-started
+order: 20
+---
+
+## 使用 Bearer 鉴权
+
+除公开模型目录 `GET /v1/catalog` 外，所有 `/v1` 接口都通过 `Authorization` 请求头鉴权：
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+- 前缀必须是 `Bearer `（注意空格），Key 必须以 `sk-uft-` 开头。
+- 网关**只认** `Authorization: Bearer`，不识别 `x-api-key` 等其它请求头。使用 Anthropic SDK 时需要特别配置，见 [Anthropic SDK 集成](/docs/zh/integrations/anthropic-sdk)。
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/models \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+## 创建 Key
+
+API Key 在网站上自助创建：
+
+1. 注册并登录网站。
+2. 打开「个人中心」→「API 密钥」，点击创建，填写名称。
+3. 在创建成功的弹窗里复制完整的 Key。
+
+<Callout type="warning" title="Key 只显示一次">
+
+平台只保存 Key 的摘要和前 13 个字符（例如 `sk-uft-a1B2c3`，用于在列表中辨认），**不保存明文**。关闭创建弹窗后，任何人（包括平台）都无法再找回完整的 Key。丢失后只能吊销旧 Key 并新建一把。
+
+</Callout>
+
+一个账户可以创建多把 Key。所有 Key 共享同一个账户余额，但限流是按 Key 分别计算的（见[限流与并发](/docs/zh/rate-limits)）。
+
+## 吊销 Key
+
+在「个人中心」→「API 密钥」列表中吊销。吊销**立即生效**：网关每次请求都会实时校验 Key 状态，之后使用该 Key 的请求会返回 `401 invalid_api_key`。吊销不可撤销。
+
+## 安全保管建议
+
+- 把 Key 放在环境变量或密钥管理服务中（本文档示例统一使用 `UFREETOKENS_API_KEY`），不要写进代码或提交到 Git。
+- 不同的应用、环境使用不同的 Key，泄露时可以只吊销其中一把。
+- 不要在前端页面、移动端安装包等会分发给用户的代码里内嵌 Key。需要在浏览器中调用时，应由你自己的后端转发请求。
+- 怀疑泄露时立即吊销并新建。Key 的固定前缀 `sk-uft-` 便于代码仓库的密钥扫描工具识别。
+
+## 网站的「连接 API Key」模式
+
+网站的 Playground 等功能通过一把 API Key 调用 `/v1` 接口，有两种方式把 Key 交给网站：
+
+- 创建 Key 时勾选「在本浏览器用于 Playground」；
+- 或者在页面右上角点击「连接 API Key」，粘贴一把已有的 Key。
+
+这两种方式都会把 Key 以明文保存在**当前浏览器的 localStorage** 中，调用时作为 `Authorization: Bearer` 请求头直接发送给网关，不会另外上传或保存在服务器上。在共用电脑上用完后，请在同一个弹窗里点击「断开并清除」。
+
+<Callout type="info">
+
+网站登录使用的 Cookie 会话只用于网站自身的个人中心页面，不是开发者 API。你的程序调用 `/v1` 接口时，请始终使用 API Key。
+
+</Callout>
+
+## 鉴权相关错误
+
+| 状态码 | 错误码 | 原因 |
+|---|---|---|
+| 401 | `invalid_api_key` | 缺少 `Authorization` 头、不是 `Bearer` 格式、Key 不以 `sk-uft-` 开头、Key 不存在、已吊销或已过期 |
+| 403 | `account_suspended` | Key 所属账户已被停用 |
+| 403 | `model_not_allowed` | 这把 Key 被限制为只能调用部分模型，请求的模型不在其中 |

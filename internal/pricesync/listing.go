@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
 )
 
 // ListingPublisher 是 PublishListing 需要的发布能力，在 CostPricePublisher
@@ -75,7 +76,7 @@ func (e *Engine) IngestUnmapped(ctx context.Context, in UnmappedObservationInput
 		return nil, fmt.Errorf("pricesync: marshal spec: %w", err)
 	}
 	var listingID int64
-	if err := e.pool.QueryRow(ctx,
+	if err := e.db(ctx).QueryRow(ctx,
 		`INSERT INTO pending_model_listings (provider_id, upstream_model, source_id, observed_spec)
 		 VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (provider_id, upstream_model) DO UPDATE
@@ -91,7 +92,7 @@ func (e *Engine) IngestUnmapped(ctx context.Context, in UnmappedObservationInput
 // resolveChannels 查找某个 provider 下、以 upstream_model 命名的所有活跃渠道
 // （可能不止一个——同一个模型可以通过不同的 provider_account 接入多次）。
 func (e *Engine) resolveChannels(ctx context.Context, providerID int64, upstreamModel string) ([]int64, error) {
-	rows, err := e.pool.Query(ctx,
+	rows, err := e.db(ctx).Query(ctx,
 		`SELECT c.id FROM channels c
 		 JOIN provider_accounts pa ON pa.id = c.provider_account_id
 		 WHERE pa.provider_id = $1 AND c.upstream_model = $2 AND c.status = 'active'`,
@@ -125,7 +126,7 @@ type PendingListingSummary struct {
 
 // ListPendingListings 列出所有还没决定（既没发布也没驳回）的候选模型。
 func (e *Engine) ListPendingListings(ctx context.Context) ([]PendingListingSummary, error) {
-	rows, err := e.pool.Query(ctx,
+	rows, err := e.db(ctx).Query(ctx,
 		`SELECT id, provider_id, upstream_model, observed_spec, first_observed_at, last_observed_at
 		 FROM pending_model_listings WHERE status = 'pending' ORDER BY first_observed_at`)
 	if err != nil {
@@ -158,23 +159,25 @@ var (
 // observed_spec，不会把已经 dismissed 的记录重新变回 pending，避免一个已经
 // 明确拒绝过的模型反复出现在待办列表里）。
 func (e *Engine) DismissListing(ctx context.Context, listingID int64) error {
-	var status string
-	err := e.pool.QueryRow(ctx, `SELECT status FROM pending_model_listings WHERE id = $1`, listingID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrListingNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("pricesync: load pending_model_listing: %w", err)
-	}
-	if status != "pending" {
-		return ErrListingNotPending
-	}
-	if _, err := e.pool.Exec(ctx,
-		`UPDATE pending_model_listings SET status = 'dismissed', decided_at = now() WHERE id = $1`, listingID,
-	); err != nil {
-		return fmt.Errorf("pricesync: dismiss pending_model_listing: %w", err)
-	}
-	return nil
+	return store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		var status string
+		err := e.db(ctx).QueryRow(ctx, `SELECT status FROM pending_model_listings WHERE id = $1 FOR UPDATE`, listingID).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrListingNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("pricesync: load pending_model_listing: %w", err)
+		}
+		if status != "pending" {
+			return ErrListingNotPending
+		}
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE pending_model_listings SET status = 'dismissed', decided_at = now() WHERE id = $1`, listingID,
+		); err != nil {
+			return fmt.Errorf("pricesync: dismiss pending_model_listing: %w", err)
+		}
+		return nil
+	})
 }
 
 // PublishListingInput 是运营"一键上架"时必须补齐的部分——这些字段没法从价格
@@ -197,21 +200,33 @@ type PublishListingResult struct {
 
 // PublishListing 把一条待上架候选变成真实可用的配置：新建虚拟模型 -> 新建渠道
 // （挂到运营指定的 provider_account）-> 用观测到的价格发布成本价 -> 按
-// (1+SellMarkup) 算出售价并发布。几步分别调用 admin 的既有方法，不是一个
-// 跨包的数据库事务——任何一步失败，已经创建的部分保留在数据库里（比如
-// 虚拟模型建成功了，渠道创建失败），运营需要看错误信息、手动清理或重试，
-// 这和 admin 包自己现有的所有写操作的原子性粒度一致（一次 HTTP 调用对应
-// admin 内部的一个事务，不是"一次上架"作为一个更大的事务）。
+// (1+SellMarkup) 算出售价并发布 -> 标记候选为 published。
+//
+// 全部步骤在一个数据库事务里（store.RunInTx，admin 的各个方法会加入这个事务），
+// 并先锁住候选行：任何一步失败整体回滚，不会留下"虚拟模型建好了、渠道没建"
+// 的半成品；两个运营同时上架同一候选，第二个会看到 status 已不是 pending。
 func (e *Engine) PublishListing(ctx context.Context, listingID int64, in PublishListingInput) (*PublishListingResult, error) {
 	if !in.SellMarkup.IsPositive() && !in.SellMarkup.IsZero() {
 		return nil, errors.New("pricesync: sell_markup must not be negative")
 	}
+	if in.SellMarkup.GreaterThan(decimal.NewFromInt(10)) {
+		return nil, errors.New("pricesync: sell_markup must not exceed 10 (i.e. +1000%)")
+	}
+	var result *PublishListingResult
+	err := store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		var err error
+		result, err = e.publishListingTx(ctx, listingID, in)
+		return err
+	})
+	return result, err
+}
 
+func (e *Engine) publishListingTx(ctx context.Context, listingID int64, in PublishListingInput) (*PublishListingResult, error) {
 	var status string
 	var upstreamModel string
 	var specJSON []byte
-	err := e.pool.QueryRow(ctx,
-		`SELECT status, upstream_model, observed_spec FROM pending_model_listings WHERE id = $1`, listingID,
+	err := e.db(ctx).QueryRow(ctx,
+		`SELECT status, upstream_model, observed_spec FROM pending_model_listings WHERE id = $1 FOR UPDATE`, listingID,
 	).Scan(&status, &upstreamModel, &specJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrListingNotFound
@@ -267,7 +282,7 @@ func (e *Engine) PublishListing(ctx context.Context, listingID int64, in Publish
 		return nil, fmt.Errorf("pricesync: publish sell price: %w", err)
 	}
 
-	if _, err := e.pool.Exec(ctx,
+	if _, err := e.db(ctx).Exec(ctx,
 		`UPDATE pending_model_listings
 		 SET status = 'published', published_virtual_model_id = $2, published_channel_id = $3, decided_at = now()
 		 WHERE id = $1`,
@@ -287,7 +302,7 @@ var ErrMissingFXRate = errors.New("pricesync: no CNY exchange rate for the listi
 // cost_multiplier。
 func (e *Engine) costToCNYFactor(ctx context.Context, currency string, providerAccountID int64) (decimal.Decimal, error) {
 	var multiplier decimal.Decimal
-	err := e.pool.QueryRow(ctx, `SELECT cost_multiplier FROM provider_accounts WHERE id = $1`, providerAccountID).Scan(&multiplier)
+	err := e.db(ctx).QueryRow(ctx, `SELECT cost_multiplier FROM provider_accounts WHERE id = $1`, providerAccountID).Scan(&multiplier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return decimal.Zero, admin.ErrProviderAccountNotFound
 	}
@@ -298,7 +313,7 @@ func (e *Engine) costToCNYFactor(ctx context.Context, currency string, providerA
 		return multiplier, nil
 	}
 	var rate decimal.Decimal
-	err = e.pool.QueryRow(ctx,
+	err = e.db(ctx).QueryRow(ctx,
 		`SELECT rate FROM fx_rates WHERE base = $1 AND quote = 'CNY' AND effective_date <= CURRENT_DATE
 		 ORDER BY effective_date DESC LIMIT 1`, currency).Scan(&rate)
 	if errors.Is(err, pgx.ErrNoRows) {

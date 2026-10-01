@@ -623,7 +623,12 @@ export interface Metrics {
   active_accounts: number;
 }
 
+// source：raw = 直接统计请求日志；rollup = 读小时汇总表（时间窗 > 48 小时，边界按整点对齐，
+// 最近约 5 分钟可能尚未汇总，P50/P95 为直方图近似）
+export type StatsSource = 'raw' | 'rollup';
+
 export interface StatsOverview {
+  source: StatsSource;
   from: ISODateTime;
   to: ISODateTime;
   current: Metrics;
@@ -646,6 +651,7 @@ export interface UsagePoint extends Metrics {
 }
 
 export interface UsageResult {
+  source: StatsSource;
   interval: UsageInterval;
   group_by: UsageGroupBy;
   totals: Metrics;
@@ -706,4 +712,166 @@ export interface AttemptTraceEntry {
   // success / rate_limited / key_exhausted / key_invalid / upstream_unavailable / bad_request / content_filtered / connection_error
   status: string;
   latency_ms: number;
+}
+
+// ---------- 管理员身份与权限（B5，internal/adminauth） ----------
+
+export type Permission =
+  | '*'
+  | 'account:read'
+  | 'account:write'
+  | 'wallet:adjust'
+  | 'catalog:read'
+  | 'catalog:write'
+  | 'provider_key:write'
+  | 'pricing:read'
+  | 'pricing:write'
+  | 'price_change:approve'
+  | 'observe:read'
+  | 'audit:read'
+  | 'admin_user:manage';
+
+// GET /me（app.meResponse）
+export interface AdminMe {
+  id: number;
+  name: string;
+  email: string;
+  roles: string[];
+  permissions: Permission[];
+  break_glass: boolean;
+  totp_enabled: boolean;
+}
+
+// adminauth.AdminUser
+export interface AdminUser {
+  id: number;
+  email: string;
+  name: string;
+  status: 'active' | 'disabled';
+  roles: string[];
+  permissions: Permission[];
+  totp_enabled: boolean;
+  last_login_at: ISODateTime | null;
+  created_at: ISODateTime;
+}
+
+// adminauth.Role
+export interface AdminRole {
+  code: string;
+  name: string;
+  permissions: Permission[];
+}
+
+// ---------- 字典 / 计数 / 价格预览 / 批量导入（B7） ----------
+
+// GET /meta/enums（admin.Enums + permissions）
+export interface MetaEnums {
+  tiers: string[];
+  protocols: string[];
+  model_types: string[];
+  model_statuses: string[];
+  capabilities: string[];
+  meters: string[];
+  units: string[];
+  currencies: string[];
+  account_types: string[];
+  account_statuses: string[];
+  api_key_statuses: string[];
+  provider_statuses: string[];
+  provider_key_statuses: string[];
+  channel_statuses: string[];
+  change_statuses: string[];
+  change_directions: string[];
+  ledger_types: string[];
+  ledger_balance_kinds: string[];
+  grant_sources: string[];
+  source_levels: string[];
+  source_kinds: string[];
+  fetchers: string[];
+  listing_statuses: string[];
+  member_roles: string[];
+  permissions: Permission[];
+}
+
+// GET /catalog/counts（admin.CatalogCounts）
+export interface CatalogCounts {
+  models: { total: number; missing_sell_price: number; missing_metadata: number; no_active_channel: number; negative_margin: number };
+  channels: { total: number; active: number; negative_margin: number; missing_cost: number; dedicated: number };
+}
+
+// POST /pricing/preview（admin.PricingPreviewResult）
+export interface PricingPreviewItem {
+  key: string;
+  cost_input_cny: DecimalString | null;
+  cost_output_cny: DecimalString | null;
+  sell_input: DecimalString | null;
+  sell_output: DecimalString | null;
+  margin_ratio: DecimalString | null;
+  negative_margin: boolean;
+}
+
+export interface PricingPreviewResult {
+  currency: string;
+  fx_rate: DecimalString | null;
+  fx_date: ISODateTime | null;
+  fx_missing: boolean;
+  items: PricingPreviewItem[];
+}
+
+// POST /provider-accounts/{id}/import-models（admin.ImportModelPlan / ImportModelResult）
+export interface ImportModelItemInput {
+  upstream_model: string;
+  name?: string;
+  family?: string;
+  type?: string;
+  context_window?: number;
+  max_output?: number;
+  capabilities?: string[];
+  visible_tiers?: string[];
+  cost_input?: DecimalString;
+  cost_output?: DecimalString;
+  markup_percent?: DecimalString;
+  sell_input?: DecimalString;
+  sell_output?: DecimalString;
+  keep_existing_sell?: boolean;
+}
+
+export interface ImportModelRow {
+  upstream_model: string;
+  name: string;
+  status: 'new' | 'vm_exists' | 'listed';
+  virtual_model_id: number | null;
+  channel_id: number | null;
+  cost_input_cny: DecimalString | null;
+  cost_output_cny: DecimalString | null;
+  sell_input: DecimalString | null;
+  sell_output: DecimalString | null;
+  margin_ratio: DecimalString | null;
+  publish_sell_price: boolean;
+  errors: string[];
+  ok: boolean;
+  result?: {
+    virtual_model_id: number;
+    channel_id: number;
+    created_vm: boolean;
+    created_channel: boolean;
+    cost_book_id: number;
+    sell_book_id: number | null;
+  };
+  error?: { code: string; message: string };
+}
+
+export interface ImportModelsResult {
+  dry_run: boolean;
+  currency: string;
+  fx_rate: DecimalString | null;
+  fx_date: ISODateTime | null;
+  fx_missing: boolean;
+  items: ImportModelRow[];
+}
+
+export interface BatchItemResult {
+  id: number;
+  ok: boolean;
+  error?: { code: string; message: string };
 }

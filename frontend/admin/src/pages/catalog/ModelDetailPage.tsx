@@ -15,6 +15,7 @@ import { ModelChannelsSection } from './ModelChannelsSection';
 import { ModelMetadataSection } from './ModelMetadataSection';
 import { PriceBookHistory, PriceComponentsTable } from './PriceBookViews';
 import { MarginText, TIER_OPTIONS, TagInput, formatContext, formatPrice } from './shared';
+import { Can } from '../../components/ui/Can';
 
 // 虚拟模型详情（UI_DESIGN.md §3.2 详情模板 + §5.4）。
 
@@ -98,10 +99,10 @@ export default function ModelDetailPage() {
             }
             actions={
               <>
-                <Button onClick={() => setEditingBasic(true)}>编辑基本信息</Button>
-                <Button variant="primary" onClick={() => setEditingPrice(true)}>
+                <Can perm="catalog:write"><Button onClick={() => setEditingBasic(true)}>编辑基本信息</Button></Can>
+                <Can perm="pricing:write"><Button variant="primary" onClick={() => setEditingPrice(true)}>
                   调整售价
-                </Button>
+                </Button></Can>
                 <ActionMenu
                   items={(['active', 'hidden', 'deprecated'] as ModelStatus[]).map((s) => ({
                     label: `设为「${STATUS_LABEL[s]}」`,
@@ -137,7 +138,7 @@ export default function ModelDetailPage() {
           <div className="flex gap-8">
             <AnchorNav items={ANCHORS} />
             <div className="flex-1 min-w-0 space-y-10">
-              <Section id="basic" title="基本信息" actions={<Button size="sm" onClick={() => setEditingBasic(true)}>编辑</Button>}>
+              <Section id="basic" title="基本信息" actions={<Can perm="catalog:write"><Button size="sm" onClick={() => setEditingBasic(true)}>编辑</Button></Can>}>
                 <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-xs">
                   <InfoGrid
                     items={[
@@ -158,7 +159,7 @@ export default function ModelDetailPage() {
                 <UsageTrend filter={{ virtual_model: m.name }} defaultMetric="revenue" />
               </Section>
 
-              <Section id="price" title="售价" actions={<Button size="sm" variant="primary" onClick={() => setEditingPrice(true)}>调整售价</Button>}>
+              <Section id="price" title="售价" actions={<Can perm="pricing:write"><Button size="sm" variant="primary" onClick={() => setEditingPrice(true)}>调整售价</Button></Can>}>
                 <div className="space-y-3">
                   <div className="bg-blue-50 border border-blue-200 text-blue-700 rounded-xl p-3 text-xs flex items-start gap-2">
                     <Info className="w-4 h-4 shrink-0" />
@@ -172,7 +173,7 @@ export default function ModelDetailPage() {
                       <PriceComponentsTable components={m.sell_price_book.components} currency={m.sell_price_book.currency} />
                     </>
                   ) : (
-                    <EmptyState title="尚未设置售价" description="没有生效售价的模型无法计费" action={<Button variant="primary" onClick={() => setEditingPrice(true)}>设置售价</Button>} />
+                    <EmptyState title="尚未设置售价" description="没有生效售价的模型无法计费" action={<Can perm="pricing:write"><Button variant="primary" onClick={() => setEditingPrice(true)}>设置售价</Button></Can>} />
                   )}
                   <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold pt-2">历史版本</div>
                   <DataState loading={books.loading} error={books.error} onRetry={books.reload} skeleton="text">
@@ -181,7 +182,7 @@ export default function ModelDetailPage() {
                 </div>
               </Section>
 
-              <Section id="channels" title="渠道" actions={<Button size="sm" onClick={() => setAddingChannel(true)}>添加渠道</Button>}>
+              <Section id="channels" title="渠道" actions={<Can perm="catalog:write"><Button size="sm" onClick={() => setAddingChannel(true)}>添加渠道</Button></Can>}>
                 <ModelChannelsSection model={m} onChanged={refresh} adding={addingChannel} setAdding={setAddingChannel} />
               </Section>
 

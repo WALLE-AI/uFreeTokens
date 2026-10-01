@@ -1,9 +1,15 @@
-import { request } from './client';
+import { request, type QueryValue } from './client';
+import { ADMIN_TZ, toApiTime } from '../lib/tz';
 import type { Cursor, RequestLogDetail, RequestLogItem, StatsOverview, UsageGroupBy, UsageInterval, UsageOrderBy, UsageResult } from '../types';
 
 // 用量统计与全局调用日志（接口方案 §3、§6，后端 B4）。
-// 时间参数接受 RFC3339 或 YYYY-MM-DD（按 UTC；纯日期的 to 包含当天）。
-// 统计接口在服务端缓存 60 秒。
+// 时间参数接受 RFC3339 或 YYYY-MM-DD（按 ADMIN_TZ 换算成 RFC3339 再发送；纯日期的
+// to 包含当天）。统计接口带 tz=ADMIN_TZ，按运营时区分桶。统计接口在服务端缓存 60 秒；
+// 时间窗超过 48 小时时读小时汇总表（响应里 source=rollup）。
+
+function withTime(q: { from?: string; to?: string }): Record<string, QueryValue> {
+  return { ...q, from: toApiTime(q.from), to: toApiTime(q.to, true), tz: ADMIN_TZ };
+}
 
 export interface StatsFilterQuery {
   from?: string;
@@ -17,7 +23,7 @@ export interface StatsFilterQuery {
 
 // 不传 from/to 时默认最近 7 天；previous 是等长的上一个时间窗（用于环比）
 export function getStatsOverview(q: { from?: string; to?: string } = {}, signal?: AbortSignal) {
-  return request<StatsOverview>('/stats/overview', { query: { ...q }, signal });
+  return request<StatsOverview>('/stats/overview', { query: withTime(q), signal });
 }
 
 export interface UsageQuery extends StatsFilterQuery {
@@ -28,11 +34,11 @@ export interface UsageQuery extends StatsFilterQuery {
 }
 
 export function getUsage(q: UsageQuery = {}, signal?: AbortSignal) {
-  return request<UsageResult>('/stats/usage', { query: { ...q }, signal });
+  return request<UsageResult>('/stats/usage', { query: withTime(q), signal });
 }
 
 export function getAccountUsage(accountId: number, q: Omit<UsageQuery, 'account_id'> = {}, signal?: AbortSignal) {
-  return request<UsageResult>(`/accounts/${accountId}/usage`, { query: { ...q }, signal });
+  return request<UsageResult>(`/accounts/${accountId}/usage`, { query: withTime(q), signal });
 }
 
 export interface RequestLogsQuery extends StatsFilterQuery {
@@ -49,7 +55,7 @@ export interface RequestLogsQuery extends StatsFilterQuery {
 
 // 默认最近 24 小时；不带 account_id 时时间窗最长 7 天，带时 30 天
 export function listRequestLogs(q: RequestLogsQuery = {}, signal?: AbortSignal) {
-  return request<Cursor<RequestLogItem>>('/request-logs', { query: { ...q }, signal });
+  return request<Cursor<RequestLogItem>>('/request-logs', { query: { ...q, from: toApiTime(q.from), to: toApiTime(q.to, true) }, signal });
 }
 
 // 从列表跳转时带上 created_at，可直接命中分区

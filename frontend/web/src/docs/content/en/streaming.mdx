@@ -1,0 +1,216 @@
+---
+title: Streaming (SSE)
+description: Enable stream on /v1/chat/completions to receive output chunk by chunk as Server-Sent Events, and learn the usage and billing rules for streaming requests.
+section: guides
+order: 10
+translatedFrom: 769c5ada2bb8
+---
+
+Set `"stream": true` in the body of `POST /v1/chat/completions` and the gateway returns the model output incrementally as `text/event-stream` (Server-Sent Events) instead of waiting for the full completion. Use it for chat UIs, long-form generation, and anything that should render while the model is still generating.
+
+## Request
+
+A streaming request uses the same authentication and parameters as a regular one, plus the `stream` field:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `stream` | boolean | Set to `true` to enable streaming |
+| `stream_options.include_usage` | boolean | Optional. When `true`, the stream ends with an extra chunk that carries only `usage` — see "Usage chunk" below |
+
+<Callout type="info">
+
+Only models whose catalog `capabilities` include `stream` can be streamed. A `stream: true` request to a model without streaming support fails with `503 no_available_channel` because no eligible channel exists. Check the [model list](/docs/en/models) or `GET /v1/catalog`.
+
+</Callout>
+
+## Response format
+
+Response headers:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
+```
+
+The body is a sequence of `data:` events separated by blank lines. Each event's data is an OpenAI-compatible `chat.completion.chunk` JSON object:
+
+```text
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"content":"Hello"}}]}
+
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+```
+
+Notes:
+
+- Every chunk's `id` is rewritten to this request's Request ID (the same value as the `X-Request-Id` header), and `model` is rewritten to the model ID you requested. All other fields come from the upstream as-is.
+- Text deltas are in `choices[0].delta.content`; the last content chunk carries `finish_reason` (e.g. `stop`, `length`, `tool_calls`).
+- Only `data:` lines are forwarded. Upstream SSE metadata lines such as `event:`, `id:` and comments are dropped.
+
+### End of stream
+
+<Callout type="warning" title="The gateway does not send data: [DONE]">
+
+The OpenAI protocol marks the end of a stream with `data: [DONE]`. When the gateway reads `[DONE]` from the upstream it simply ends the response (closes the connection) and does **not** forward `[DONE]` to you. Treat "the response body has ended" as the end-of-stream signal; handling `[DONE]` as well is harmless (all examples below do both). The official OpenAI SDKs finish iterating normally when the body ends, so they are unaffected.
+
+</Callout>
+
+Once the stream has started (a `200` status and the first byte have been sent), the gateway no longer fails over to another channel. If the upstream breaks mid-stream, the stream just ends — **no** error event is sent. You can tell whether the output is complete by whether you received a chunk with `finish_reason`.
+
+## Usage chunk
+
+To bill accurately, the gateway **always** asks the upstream for usage at the end of the stream (it injects `stream_options.include_usage=true` upstream). Whether that usage-only chunk is forwarded to you depends on your own request:
+
+| Your request | The stream you receive |
+| --- | --- |
+| No `stream_options.include_usage`, or set to `false` | No usage chunk — identical to calling the upstream directly |
+| Includes `"stream_options": {"include_usage": true}` | One extra chunk after the last content chunk, with an empty `choices` array and a `usage` object |
+
+Example usage chunk:
+
+```json
+{"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":48,"total_tokens":60}}
+```
+
+Whether or not you request the usage chunk, billing is based on the real usage reported by the upstream.
+
+## Client disconnects and billing
+
+If the client disconnects before the stream ends:
+
+- If the upstream had already reported usage, you are billed for the real usage.
+- If it had not, the gateway estimates output tokens from **the number of content bytes already forwarded to you** (roughly 4 bytes per token), **capped at the amount pre-authorized for the request**; input tokens are estimated from the request body size. Such requests are marked as estimated usage in the platform's records (`usage_source` is `estimated`).
+
+The pre-authorization cap is the smallest of `max_tokens` (or `max_completion_tokens`), the model's maximum output length, and the platform's pre-authorization cap. See [Billing](/docs/en/billing).
+
+## Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -N {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "stream": true,
+    "stream_options": {"include_usage": true},
+    "messages": [{"role": "user", "content": "Explain SSE in three sentences"}]
+  }'
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+stream = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "Explain SSE in three sentences"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+
+for chunk in stream:
+    if chunk.choices:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+    if chunk.usage:
+        print(f"\n\n[usage] {chunk.usage}")
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "Explain SSE in three sentences" }],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+
+for await (const chunk of stream) {
+  const delta = chunk.choices[0]?.delta?.content;
+  if (delta) process.stdout.write(delta);
+  if (chunk.usage) console.log("\n\n[usage]", chunk.usage);
+}
+```
+
+</CodeTabs>
+
+The `-N` flag disables cURL's output buffering so each chunk is printed as soon as it arrives.
+
+### Browser: fetch + ReadableStream
+
+Without an SDK, read the response stream with `fetch` and parse the SSE format yourself:
+
+```ts title="browser.ts"
+async function streamChat(apiKey: string, prompt: string, onDelta: (text: string) => void) {
+  const res = await fetch("{{BASE_URL}}/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "deepseek-ai/DeepSeek-V4-Flash",
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => null);
+    throw new Error(`${res.status} ${err?.error?.code ?? ""} request_id=${res.headers.get("X-Request-Id")}`);
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break; // the gateway ends the stream by closing the connection
+    buffer += value;
+
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const event = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      for (const line of event.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return; // defensive; the gateway does not currently send it
+        const chunk = JSON.parse(data);
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta) onDelta(delta);
+      }
+    }
+  }
+}
+```
+
+<Callout type="danger" title="Never expose an API key on a public web page">
+
+Calling the API directly from a browser makes your API key visible to anyone using the page. Only do this for bring-your-own-key (BYOK) tools or local debugging. Cross-origin calls also require the platform to enable CORS for your origin; otherwise, proxy requests through your own backend.
+
+</Callout>
+
+## Related
+
+- [Chat Completions API reference](/docs/en/api/createChatCompletion)
+- [Error handling](/docs/en/errors)
+- [Billing](/docs/en/billing)

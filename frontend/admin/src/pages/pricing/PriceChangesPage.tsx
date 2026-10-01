@@ -1,7 +1,6 @@
 import { Checkbox } from '../../components/ui/index';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CheckCheck, Keyboard, RotateCw, Scale, X } from 'lucide-react';
-import { listProviders } from '../../api/catalog';
 import {
   approveChangeRequest,
   batchApproveChangeRequests,
@@ -18,6 +17,7 @@ import {
   Modal,
   PageHeader,
   Pills,
+  RemoteSelect,
   Select,
   Textarea,
   useToast,
@@ -31,6 +31,9 @@ import { formatRelative } from '../../lib/time';
 import type { BatchApproveResult, ChangeRequestSummary } from '../../types';
 import { ChangeRequestDetailView } from './ChangeRequestDetail';
 import { DirectionIcon, PriceSyncDisabledCard, RatioText, errorDetail, friendlyError, isNotConfigured } from './shared';
+import { fetchAllPages, providerLabel, searchProviders } from '../../api/pickers';
+import { Can } from '../../components/ui/Can';
+import { useCan } from '../../api/auth';
 
 // 调价审批收件箱（UI_DESIGN.md §5.2）：左列表 + 右详情，键盘优先。
 // URL：?tab=pending|blocked|history &direction= &provider_id= &id=（当前选中项）
@@ -65,21 +68,24 @@ export default function PriceChangesPage() {
   const selectedId = params.id ? Number(params.id) : null;
 
   const [listTick, setListTick] = useState(0);
+  // 审批队列逐页取完（最多 1000 条），不再只取第一页 100 条后静默截断
   const list = useAsync(
     (signal) =>
-      listChangeRequests(
-        {
-          status: TABS[tab].status,
-          direction: direction || undefined,
-          provider_id: providerId ? Number(providerId) : undefined,
-          sort: TABS[tab].sort,
-          page_size: 100,
-        },
-        signal,
+      fetchAllPages((page, page_size) =>
+        listChangeRequests(
+          {
+            status: TABS[tab].status,
+            direction: direction || undefined,
+            provider_id: providerId ? Number(providerId) : undefined,
+            sort: TABS[tab].sort,
+            page,
+            page_size,
+          },
+          signal,
+        ),
       ),
     [tab, direction, providerId, listTick],
   );
-  const providers = useAsync((signal) => listProviders({ page_size: 100 }, signal), []);
 
   // blocked 置顶（UI_DESIGN.md §5.2），其余保持后端顺序（最早的优先处理）
   const items = useMemo(() => {
@@ -108,6 +114,7 @@ export default function PriceChangesPage() {
   const [reason, setReason] = useState('');
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [acting, setActing] = useState<'approve' | 'reject' | null>(null);
+  const canApprove = useCan('price_change:approve');
   const [confirmBlocked, setConfirmBlocked] = useState(false);
   const [fadingId, setFadingId] = useState<number | null>(null);
 
@@ -154,13 +161,14 @@ export default function PriceChangesPage() {
   };
 
   const approve = () => {
+    if (!canApprove) return;
     if (!actionable || acting) return;
     if (current!.status === 'blocked') setConfirmBlocked(true);
     else void doApprove(false);
   };
 
   const reject = async () => {
-    if (!actionable || acting || !current) return;
+    if (!canApprove || !actionable || acting || !current) return;
     if (!reason.trim()) {
       setReasonError('驳回必须填写原因');
       reasonRef.current?.focus();
@@ -254,7 +262,6 @@ export default function PriceChangesPage() {
   }
 
   const pendingCount = tab === 'pending' ? items.length : undefined;
-  const providerOptions = (providers.data?.data ?? []).map((p) => ({ value: String(p.id), label: `${p.name}（${p.code}）` }));
 
   return (
     <>
@@ -292,11 +299,13 @@ export default function PriceChangesPage() {
           options={DIRECTION_OPTIONS}
           onChange={(e) => setParams({ direction: e.target.value || null, id: null })}
         />
-        <Select
+        <RemoteSelect
           value={providerId}
           placeholder="全部供应商"
-          options={providerOptions}
-          onChange={(e) => setParams({ provider_id: e.target.value || null, id: null })}
+          clearable
+          load={searchProviders}
+          resolve={providerLabel}
+          onChange={(v) => setParams({ provider_id: v || null, id: null })}
         />
       </div>
 
@@ -324,9 +333,9 @@ export default function PriceChangesPage() {
                     <span className="text-gray-700 font-medium">{checked.size} 项已选</span>
                     <div className="flex-1" />
                     <Select value={threshold} options={BATCH_THRESHOLDS} onChange={(e) => setThreshold(e.target.value)} />
-                    <Button size="sm" variant="dark" icon={<CheckCheck className="w-3.5 h-3.5" />} onClick={() => setBatchOpen(true)}>
+                    <Can perm="price_change:approve"><Button size="sm" variant="dark" icon={<CheckCheck className="w-3.5 h-3.5" />} onClick={() => setBatchOpen(true)}>
                       批量批准
-                    </Button>
+                    </Button></Can>
                   </>
                 ) : (
                   <span>勾选小幅 pending 调价可批量批准（blocked 不可批量）</span>
@@ -385,6 +394,7 @@ export default function PriceChangesPage() {
                     }}
                   />
                 </Field>
+                <Can perm="price_change:approve" fallback={<div className="text-right text-[11px] text-gray-400">当前角色没有审批权限（price_change:approve）</div>}>
                 <div className="flex items-center justify-end gap-2">
                   <Button icon={<X className="w-3.5 h-3.5" />} loading={acting === 'reject'} disabled={!!acting} onClick={() => void reject()}>
                     驳回 <kbd className="ml-1 font-mono text-[10px] text-gray-400">R</kbd>
@@ -400,6 +410,7 @@ export default function PriceChangesPage() {
                     <kbd className="ml-1 font-mono text-[10px] text-purple-200">A</kbd>
                   </Button>
                 </div>
+                </Can>
               </div>
             )}
           </div>

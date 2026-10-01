@@ -47,14 +47,25 @@
 
 ## 3. 鉴权策略（后台专属，区别于 frontend/web 的 BYOK）
 
-`cmd/admin` 目前只有一个**全局共享** `UFT_ADMIN_TOKEN`，没有按运营人员区分身份的登录系统（`X-Actor-ID` 是调用方自报的，不校验）。这对一个多人协作、需要审计"谁审批了这次调价"的后台是不够的，`frontend/admin` 上线前需要后端配合：
+**现状（B5 已落地）**：`cmd/admin` 有了真正的管理员账号体系（`internal/adminauth`）：
 
-1. **短期（Phase 0，先让后台能用起来）**：`frontend/admin` 做一个登录页，运营人员输入被下发的 `UFT_ADMIN_TOKEN`，前端存入 `sessionStorage`（关闭标签页即失效，比 `localStorage` 更安全），所有请求带 `Authorization: Bearer <token>`。同时**必须**把 `frontend/admin` 部署在内网/VPN/需要公司 SSO 才能访问的域名下，不能公网直接开放——因为 token 本身不区分人。这一步和 `frontend/test_web/admin.html` 的鉴权方式一样，区别只是从裸 HTML 表单升级成正式 UI，本质风险不变，靠网络层访问控制兜底。
-2. **中期（对应后端 V2 路线图 §7.15 的 RBAC 规划）**：后端给 `cmd/admin` 加真正的运营账号体系（`super_admin`/`operator`/`finance`/`support` 角色 + 各自密码登录 + JWT/Session），`X-Actor-ID` 从"自报"变成"服务端从鉴权上下文里取"，审计日志才可信。届时 `frontend/admin` 只需要把 §7 的 `authStore` 换掉登录方式，页面基本不用改。
+- **角色**：`super_admin` / `operator` / `pricing` / `finance` / `support`。
+- **登录与会话**：邮箱 + 密码登录（argon2id），换取不透明会话令牌（`uas_…`）。数据库只存令牌的 SHA-256。会话 12 小时无操作过期，最长 7 天有效。
+- **权限**：每个接口在路由表里声明权限点，无权限返回 403。审计日志的操作人来自会话，不再读取客户端请求头。
+- **应急令牌**：`UFT_ADMIN_TOKEN` 降级为可选的应急令牌，身份为 `system`。
+
+前端相应地：
+
+- 登录页用邮箱和密码登录，应急令牌是折叠的备用入口。
+- 登录后把令牌和 `/me` 结果存 `sessionStorage`。
+- 侧栏、命令面板、快捷键按权限显隐。
+- 登出时调用 `/auth/logout`，让服务端立即作废会话。
+
+`frontend/admin` 仍建议部署在内网或 VPN 后面，这是纵深防御，而不是唯一的防线。接口约定见 `docs/admin-api.md`。
 
 `frontend/admin` 的服务层要按这个演进路径设计（见 §7），不要把 token 直接硬编码在组件里。
 
-## 4. 后端接口清单（`cmd/admin`，均需 `Authorization: Bearer <UFT_ADMIN_TOKEN>`）
+## 4. 后端接口清单（`cmd/admin`，均需 `Authorization: Bearer <会话令牌>`；完整清单与权限见 `docs/admin-api.md`）
 
 对应前端应该规划的功能模块：
 

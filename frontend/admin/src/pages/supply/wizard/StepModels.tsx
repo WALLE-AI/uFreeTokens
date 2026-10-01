@@ -1,13 +1,13 @@
 import { describeError } from '../../../api/errors';
 import { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Plus, RotateCw, Square } from 'lucide-react';
-import { findChannel, findVirtualModelByName, listUpstreamModels } from '../../../api/catalog';
+import { importModels, listUpstreamModels } from '../../../api/catalog';
 import { lookupReferencePrices } from '../../../api/pricing';
 import { Button, Input, Pills, SearchInput } from '../../../components/ui';
 import { cn } from '../../../lib/cn';
 import type { UpstreamModel } from '../../../types';
 import { upstreamErrorHint } from '../common';
-import { defaultRow, mapLimit, resolvedAccountId, type PlatformStatus } from './state';
+import { defaultRow, resolvedAccountId, type PlatformStatus } from './state';
 import { StepFooter, type StepProps } from './ui';
 
 const STATUS_LABEL: Record<PlatformStatus, { label: string; className: string; title: string }> = {
@@ -42,29 +42,30 @@ export function StepModels({ state, update, goto }: StepProps) {
     return () => controller.abort();
   }, [isOpenAI, state.models.length, accountId, state.connection.tested, update]);
 
-  // 核对本平台状态：同名虚拟模型是否存在、这个账号下是否已有渠道（先查后建的幂等依据）
+  // 核对本平台状态：同名虚拟模型是否存在、这个账号下是否已有渠道。用批量导入接口的
+  // dry_run 一次查一批（每批 200 个），代替逐个模型两次查询。
   useEffect(() => {
     if (state.statusChecked || state.models.length === 0 || accountId === null) return;
     const controller = new AbortController();
     const result: Record<string, PlatformStatus> = {};
-    let done = 0;
-    setProgress({ done: 0, total: state.models.length });
-    mapLimit(
-      state.models,
-      6,
-      async (m) => {
+    const total = state.models.length;
+    setProgress({ done: 0, total });
+    (async () => {
+      for (let i = 0; i < total && !controller.signal.aborted; i += 200) {
+        const batch = state.models.slice(i, i + 200);
         try {
-          const vm = await findVirtualModelByName(m.id, controller.signal);
-          if (!vm) result[m.id] = 'new';
-          else result[m.id] = (await findChannel(vm.id, accountId, m.id, controller.signal)) ? 'listed' : 'vm_exists';
+          const res = await importModels(
+            accountId,
+            { dry_run: true, currency: 'USD', markup_percent: '0', items: batch.map((m) => ({ upstream_model: m.id })) },
+            controller.signal,
+          );
+          for (const r of res.items) result[r.upstream_model] = r.status;
         } catch {
-          result[m.id] = 'new'; // 查询失败按新模型处理，导入时还会再做一次先查后建
+          for (const m of batch) result[m.id] ??= 'new'; // 查询失败按新模型处理，导入时服务端还会再核对
         }
-        done++;
-        setProgress({ done, total: state.models.length });
-      },
-      controller.signal,
-    ).then(() => {
+        setProgress({ done: Math.min(i + 200, total), total });
+      }
+    })().then(() => {
       if (controller.signal.aborted) return;
       setProgress(null);
       update((s) => ({

@@ -2,6 +2,8 @@ import { useCallback, useRef, useState } from 'react';
 import { Link, useMatches, useNavigate, type UIMatch } from 'react-router';
 import { ChevronDown, ChevronRight, Keyboard, LogOut, Menu, Search, ShieldCheck } from 'lucide-react';
 import { authStore, useAuth } from '../../api/auth';
+import { logout } from '../../api/session';
+import { SecurityModal } from './SecurityModal';
 import { cn } from '../../lib/cn';
 import { ADMIN_ENV } from '../../lib/env';
 import { useDismiss } from '../../hooks/useDismiss';
@@ -49,9 +51,10 @@ export interface AdminHeaderProps {
 // AdminHeader：对齐 web Header.tsx（h-12 sticky top-0 z-40 border-b）。左侧是面包屑
 // 而不是顶部 tab（导航已在侧栏）；生产环境额外加 2px 红色顶边（§11.9）。
 export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }: AdminHeaderProps) {
-  const { actorName } = useAuth();
+  const { actorName, me } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useDismiss(menuRef, menuOpen, closeMenu);
@@ -110,8 +113,9 @@ export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }:
           {menuOpen && (
             <div className="absolute right-0 top-9 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-50 text-xs w-44 animate-in fade-in zoom-in-95 duration-100">
               <div className="px-3 py-2 border-b border-gray-100">
-                <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">当前操作人</div>
+                <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">当前登录</div>
                 <div className="text-gray-900 font-medium truncate mt-0.5">{actorName}</div>
+                <div className="text-[11px] text-gray-400 truncate">{me?.break_glass ? '应急令牌（system）' : me?.email}</div>
               </div>
               <button
                 type="button"
@@ -128,6 +132,20 @@ export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }:
               <button
                 type="button"
                 onClick={() => {
+                  setMenuOpen(false);
+                  setSecurityOpen(true);
+                }}
+                className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-gray-50 text-gray-700 cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                安全设置
+                {me && !me.break_glass && !me.totp_enabled && <span className="ml-auto text-[10px] text-amber-600">未开两步验证</span>}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  // 先让服务端注销会话（令牌立即失效），失败也照常清理本地登录态
+                  await logout().catch(() => undefined);
                   authStore.clear();
                   navigate('/login', { replace: true });
                 }}
@@ -140,6 +158,7 @@ export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }:
           )}
         </div>
       </div>
+      <SecurityModal open={securityOpen} onClose={() => setSecurityOpen(false)} />
     </header>
   );
 }

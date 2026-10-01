@@ -9,6 +9,7 @@ import { formatDateTime, formatRelative } from '../../lib/time';
 import type { AccountSummary } from '../../types';
 import { CreateAccountModal } from './modals';
 import { ACCOUNT_STATUS_OPTIONS, ACCOUNT_TYPE_LABELS, TIER_OPTIONS } from './shared';
+import { Can } from '../../components/ui/Can';
 
 // 账户列表（UI_DESIGN.md §5.5 / §3.1）：q 支持账户 ID、owner 邮箱、名称三种检索。
 
@@ -76,9 +77,9 @@ export default function AccountsPage() {
         title="账户"
         description="计费主体（个人或组织）：余额、API Key、资金流水与用量"
         actions={
-          <Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setCreating(true)}>
+          <Can perm="account:write"><Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setCreating(true)}>
             新建账户
-          </Button>
+          </Button></Can>
         }
       />
 

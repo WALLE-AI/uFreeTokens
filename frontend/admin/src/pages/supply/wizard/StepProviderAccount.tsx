@@ -1,18 +1,24 @@
 import { describeError } from '../../../api/errors';
 import { useState } from 'react';
 import { CheckCircle2, Eye, EyeOff, Lock, Plug, XCircle } from 'lucide-react';
-import { addProviderKey, createProvider, createProviderAccount, listProviderAccounts, listProviders, listUpstreamModels } from '../../../api/catalog';
-import { Button, ConfirmDialog, DataState, Field, IconButton, Input, SegmentedToggle, Select } from '../../../components/ui';
+import { addProviderKey, createProvider, createProviderAccount, getProvider, listUpstreamModels } from '../../../api/catalog';
+import { Button, ConfirmDialog, DataState, Field, IconButton, Input, RemoteSelect, SegmentedToggle, Select } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
 import { cn } from '../../../lib/cn';
-import type { Protocol } from '../../../types';
+import type { Protocol, ProviderSummary } from '../../../types';
 import { PROTOCOL_OPTIONS, ProtocolBadge, upstreamErrorHint } from '../common';
 import { resolvedAccountId, resolvedProviderId, type WizardState } from './state';
 import { StepFooter, type StepProps } from './ui';
+import { listAllProviderAccounts, providerLabel, searchProviders } from '../../../api/pickers';
 
 // ① 基本信息：选择已有供应商或新建
 export function StepProvider({ state, update, goto }: StepProps) {
-  const providers = useAsync((signal) => listProviders({ page_size: 100, sort: 'code' }, signal), []);
+  // 选中的供应商（RemoteSelect 远程搜索选择；刷新后按 id 重新取详情）
+  const [picked, setPicked] = useState<ProviderSummary | null>(null);
+  const providerDetail = useAsync(
+    (signal) => (state.provider.existingId && !picked ? getProvider(Number(state.provider.existingId), signal) : Promise.resolve(null)),
+    [state.provider.existingId],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const p = state.provider;
@@ -35,7 +41,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
   const next = async () => {
     setError(null);
     if (p.mode === 'existing') {
-      const found = providers.data?.data.find((x) => String(x.id) === p.existingId);
+      const found = picked ?? providerDetail.data;
       update((s) => ({ ...s, provider: { ...s.provider, protocol: found?.protocol ?? s.provider.protocol } }));
       goto(2);
       return;
@@ -57,7 +63,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
   };
 
   const canNext = p.mode === 'existing' ? !!p.existingId : locked || (codeValid && !!p.name.trim());
-  const selected = providers.data?.data.find((x) => String(x.id) === p.existingId);
+  const selected = picked ?? providerDetail.data ?? null;
 
   return (
     <div className="max-w-2xl space-y-5">
@@ -71,14 +77,18 @@ export function StepProvider({ state, update, goto }: StepProps) {
       />
 
       {p.mode === 'existing' ? (
-        <DataState loading={providers.loading} error={providers.error} onRetry={providers.reload} skeleton="text">
+        <div>
           <Field label="供应商" required>
-            <Select
+            <RemoteSelect<ProviderSummary>
               className="w-full"
               value={p.existingId}
-              placeholder="请选择…"
-              options={(providers.data?.data ?? []).map((x) => ({ value: String(x.id), label: `${x.name}（${x.code}）${x.status === 'disabled' ? ' · 已停用' : ''}` }))}
-              onChange={(e) => setProvider({ existingId: e.target.value })}
+              placeholder="搜索并选择供应商…"
+              load={searchProviders}
+              resolve={providerLabel}
+              onChange={(v, o) => {
+                setPicked(o?.data ?? null);
+                setProvider({ existingId: v });
+              }}
             />
           </Field>
           {selected && (
@@ -91,7 +101,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
               {selected.status === 'disabled' && <span className="text-amber-700">该供应商已停用</span>}
             </div>
           )}
-        </DataState>
+        </div>
       ) : (
         <div className="space-y-4">
           {locked && (
@@ -139,7 +149,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
 export function StepAccount({ state, update, goto, secret, setSecret }: StepProps) {
   const providerId = resolvedProviderId(state);
   const accounts = useAsync(
-    (signal) => (providerId ? listProviderAccounts({ provider_id: providerId, page_size: 100 }, signal) : Promise.resolve(null)),
+    (signal) => (providerId ? listAllProviderAccounts(providerId, signal) : Promise.resolve(null)),
     [providerId],
   );
   const [showSecret, setShowSecret] = useState(false);

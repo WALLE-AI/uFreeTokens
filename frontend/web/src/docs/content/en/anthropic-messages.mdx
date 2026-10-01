@@ -1,0 +1,152 @@
+---
+title: Anthropic Messages API
+description: Call models on the gateway with the Anthropic Messages API request and response format via POST /v1/messages.
+section: guides
+order: 20
+translatedFrom: df3ab3d5defa
+---
+
+`POST /v1/messages` accepts requests in the Anthropic Messages API shape and returns Anthropic-shaped responses. Internally the gateway translates the request to the `chat.completions` format and runs it through exactly the same authentication, rate limiting, pre-authorization, routing and settlement pipeline as `/v1/chat/completions`. Billing is identical, and so is the set of callable models (any chat model in the catalog, not just Claude).
+
+<Callout type="info">
+
+This release documents **non-streaming** basic calls only (`model`, `max_tokens`, `messages`, `system`).
+
+</Callout>
+
+## Authentication
+
+<Callout type="warning" title="Only Authorization: Bearer is accepted">
+
+Like every other `/v1/*` endpoint, `/v1/messages` reads the API key **only** from the `Authorization: Bearer <API key>` header. The `x-api-key` header used by Anthropic is **not** recognized — a request that only sends `x-api-key` gets `401 invalid_api_key`.
+
+The `anthropic-version` header is not required; the gateway ignores it.
+
+</Callout>
+
+With the official Anthropic SDKs, pass your key as `auth_token` (Python) / `authToken` (TypeScript); the SDK then sends an `Authorization: Bearer` header. See [Anthropic SDK integration](/docs/en/integrations/anthropic-sdk).
+
+## Request parameters
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | string | Yes | Model ID, e.g. `deepseek-ai/DeepSeek-V4-Flash`. See the [model list](/docs/en/models) |
+| `max_tokens` | integer | Recommended | Maximum output tokens; also determines the pre-authorization cap. Required by the Anthropic protocol; the gateway does not enforce it, and if omitted pre-authorizes based on the model's maximum output length (subject to the platform cap) |
+| `messages` | array | Yes | Conversation messages with `role` `user` or `assistant`; `content` is a string or an array of `{"type": "text", "text": "..."}` blocks |
+| `system` | string or array | No | System prompt; a string or an array of text blocks |
+| `temperature` | number | No | Passed to the upstream as-is |
+| `top_p` | number | No | Passed to the upstream as-is |
+| `stop_sequences` | string[] | No | Translated to the OpenAI `stop` parameter |
+
+Translation rules to keep in mind:
+
+- In a `content` array, only blocks of `type` `text` are kept and concatenated into one string; images and other non-text blocks are **silently dropped**.
+- Fields not listed above (such as `top_k` or `metadata`) are not forwarded to the upstream.
+- A request body containing a `tools` field is rejected with `400 invalid_request`.
+
+## Response
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Hi! How can I help you?"}],
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 18, "output_tokens": 12}
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `id` | This request's Request ID, same as the `X-Request-Id` header |
+| `content` | Always a single `text` block |
+| `model` | The model ID you requested |
+| `stop_reason` | Mapped from the upstream `finish_reason`: `length` → `max_tokens`, `tool_calls` → `tool_use`, everything else (including `stop`) → `end_turn` |
+| `stop_sequence` | Always `null` |
+| `usage.input_tokens` / `usage.output_tokens` | From the upstream `prompt_tokens` / `completion_tokens` |
+
+### Error responses
+
+Errors are **not** translated into Anthropic's `{"type": "error", ...}` format. They use the same OpenAI-style error body as every other endpoint:
+
+```json
+{"error": {"message": "Invalid API key.", "type": "authentication_error", "code": "invalid_api_key", "request_id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6"}}
+```
+
+Handle them by HTTP status and `error.code`; see [Error handling](/docs/en/errors).
+
+## Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/messages \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "max_tokens": 512,
+    "system": "You are a concise assistant.",
+    "messages": [
+      {"role": "user", "content": "Explain what an API gateway is in one sentence"}
+    ]
+  }'
+```
+
+```python title="Python"
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    auth_token=os.environ["UFREETOKENS_API_KEY"],  # sends Authorization: Bearer
+    base_url="{{BASE_URL}}",  # the SDK appends /v1/messages
+)
+
+message = client.messages.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens=512,
+    system="You are a concise assistant.",
+    messages=[{"role": "user", "content": "Explain what an API gateway is in one sentence"}],
+)
+
+print(message.content[0].text)
+print(message.usage)
+```
+
+```ts title="TypeScript"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  authToken: process.env.UFREETOKENS_API_KEY, // sends Authorization: Bearer
+  apiKey: null,
+  baseURL: "{{BASE_URL}}", // the SDK appends /v1/messages
+});
+
+const message = await client.messages.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  max_tokens: 512,
+  system: "You are a concise assistant.",
+  messages: [{ role: "user", content: "Explain what an API gateway is in one sentence" }],
+});
+
+const block = message.content[0];
+if (block.type === "text") console.log(block.text);
+console.log(message.usage);
+```
+
+</CodeTabs>
+
+<Callout type="tip">
+
+If `ANTHROPIC_API_KEY` is also set in your environment, the SDK additionally sends an `x-api-key` header. The gateway ignores it and only uses the key from the `Authorization` header.
+
+</Callout>
+
+## Related
+
+- [Messages API reference](/docs/en/api/createMessage)
+- [Anthropic SDK integration](/docs/en/integrations/anthropic-sdk)
+- [Authentication](/docs/en/authentication)

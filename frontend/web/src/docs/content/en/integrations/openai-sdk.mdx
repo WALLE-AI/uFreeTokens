@@ -1,0 +1,251 @@
+---
+title: OpenAI SDK
+description: Use the official OpenAI Python / Node.js SDKs with uFreeTokens — setup, streaming, embeddings and error handling.
+section: integrations
+order: 10
+translatedFrom: aa7a8250f3c6
+---
+
+## Configure the client
+
+uFreeTokens is OpenAI-compatible, so the official SDKs only need two settings: point `base_url` at the gateway's `/v1`, and use your uFreeTokens key as `api_key`.
+
+<CodeTabs>
+
+```python title="Python"
+# pip install openai
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+)
+```
+
+```ts title="Node.js"
+// npm install openai
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{BASE_URL}}/v1",
+  apiKey: process.env.UFREETOKENS_API_KEY,
+});
+```
+
+</CodeTabs>
+
+The SDK sends the key as `Authorization: Bearer`, which is exactly what the gateway expects.
+
+## Chat completions
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+resp = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "Explain what an API gateway is."},
+    ],
+    max_tokens=512,
+)
+print(resp.choices[0].message.content)
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const resp = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [
+    { role: "system", content: "You are a concise assistant." },
+    { role: "user", content: "Explain what an API gateway is." },
+  ],
+  max_tokens: 512,
+});
+console.log(resp.choices[0].message.content);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+Setting `max_tokens` also lowers the amount pre-authorized for the request — see [Billing](/docs/en/billing).
+
+## Streaming
+
+Pass `stream=True` and iterate over the chunks. To receive token usage at the end of the stream, set `stream_options.include_usage` yourself. That final usage-only chunk has an empty `choices` array, so check before reading content.
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+stream = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "Write a short poem about autumn."}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+    if chunk.usage:
+        print("\n\nusage:", chunk.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "Write a short poem about autumn." }],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+for await (const chunk of stream) {
+  const text = chunk.choices[0]?.delta?.content;
+  if (text) process.stdout.write(text);
+  if (chunk.usage) console.log("\n\nusage:", chunk.usage);
+}
+```
+
+</CodeTabs>
+
+<Callout type="info">
+
+If you stop reading early (break out of the loop or close the connection), the gateway bills an estimate based on the content already sent to you, not the full output limit. See [Streaming](/docs/en/streaming).
+
+</Callout>
+
+## Embeddings
+
+`/v1/embeddings` only accepts models of type `embedding`. Find a model ID with `type` set to `embedding` in `GET /v1/catalog` and put it in the `EMBEDDING_MODEL` environment variable:
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+resp = client.embeddings.create(
+    model=os.environ["EMBEDDING_MODEL"],
+    input=["The weather is nice today", "What an API gateway does"],
+)
+for item in resp.data:
+    print(item.index, len(item.embedding))
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const resp = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: ["The weather is nice today", "What an API gateway does"],
+});
+for (const item of resp.data) console.log(item.index, item.embedding.length);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+Passing a model that is not of type `embedding` returns `404 model_not_found`. See [Embeddings](/docs/en/embeddings) for details.
+
+## List available models
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+for m in client.models.list():
+    print(m.id)
+```
+
+## Error handling
+
+Gateway errors use the OpenAI-compatible format, so the SDK turns them into exception objects: `code` is the stable error code, and `request_id` helps with troubleshooting.
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import openai
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+try:
+    resp = client.chat.completions.create(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+    print(resp.choices[0].message.content)
+except openai.APIStatusError as e:
+    # e.code is the gateway error code, e.g. insufficient_balance, model_not_found
+    print(f"HTTP {e.status_code} code={e.code} request_id={e.request_id}")
+    if e.code == "insufficient_balance":
+        print("Insufficient balance")
+except openai.APIConnectionError as e:
+    print("Network error:", e)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+try {
+  const resp = await client.chat.completions.create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    messages: [{ role: "user", content: "Hello" }],
+  });
+  console.log(resp.choices[0].message.content);
+} catch (err) {
+  if (err instanceof OpenAI.APIError) {
+    // err.code is the gateway error code; err.requestID comes from the X-Request-Id header
+    console.log(`HTTP ${err.status} code=${err.code} request_id=${err.requestID}`);
+    if (err.code === "insufficient_balance") console.log("Insufficient balance");
+  } else {
+    throw err;
+  }
+}
+```
+
+</CodeTabs>
+
+### Built-in SDK retries
+
+By default the OpenAI SDK retries 429s, 5xx responses and connection errors twice, honoring the `Retry-After` header; `402`, `401`, `404` and similar are not retried. Tune this with `max_retries` (Python) / `maxRetries` (Node.js):
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    max_retries=5,
+)
+```
+
+See [Errors](/docs/en/errors) and [Rate limits](/docs/en/rate-limits) for common error codes and how to handle them.

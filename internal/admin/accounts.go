@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
 
 	"github.com/jackc/pgx/v5"
 
@@ -40,7 +45,7 @@ type CreateAccountInput struct {
 // 账户和钱包在这里必须一起创建，不允许出现"有账户没钱包"的中间状态——否则
 // 这个账户的第一次计费请求会因为 wallet.Reserve 找不到钱包行而莫名其妙地失败。
 func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*Account, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("admin: begin tx: %w", err)
 	}
@@ -66,11 +71,15 @@ func CreateAccountTx(ctx context.Context, tx pgx.Tx, in CreateAccountInput) (*Ac
 	if !validAccountTypes[in.Type] {
 		return nil, fmt.Errorf("admin: invalid account type %q, want personal or organization", in.Type)
 	}
-	if in.Name == "" {
-		return nil, errors.New("admin: account name is required")
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" || utf8.RuneCountInString(in.Name) > 128 {
+		return nil, errors.New("admin: account name is required (at most 128 characters)")
 	}
 	if in.Tier == "" {
 		in.Tier = "free"
+	}
+	if !slices.Contains(validTiers, in.Tier) {
+		return nil, invalid("tier must be one of %s, got %q", strings.Join(validTiers, "/"), in.Tier)
 	}
 	if in.CreditLimit < 0 {
 		return nil, errors.New("admin: credit_limit must not be negative")
@@ -101,7 +110,7 @@ var ErrAccountNotFound = errors.New("admin: account not found")
 func (s *Service) GetAccount(ctx context.Context, accountID int64) (*Account, *WalletSummary, error) {
 	acct := &Account{ID: accountID}
 	wallet := &WalletSummary{}
-	err := s.pool.QueryRow(ctx,
+	err := s.db(ctx).QueryRow(ctx,
 		`SELECT a.type, a.name, a.status, a.tier, a.credit_limit, a.created_at,
 		        w.cash_balance, w.bonus_balance, w.frozen
 		 FROM accounts a JOIN wallets w ON w.account_id = a.id
@@ -125,7 +134,7 @@ type GrantCreditInput struct {
 	Amount     int64  // 微元，必须 > 0
 	ExpiresAt  *time.Time
 	ModelScope []string // 空 = 不限模型
-	RefID      string   // 审计用；留空则用当前时间生成一个
+	RefID      string   // 幂等键（工单号/前端生成的 UUID），必填：同一账户同一来源重复提交只发放一次
 }
 
 type GrantedCredit struct {
@@ -137,9 +146,13 @@ type GrantedCredit struct {
 // 促销唯一的发放入口（还没有自动触发的注册赠送/活动赠送流程，都得靠这个接口
 // 手工/由外部系统调用）。
 func (s *Service) GrantCredit(ctx context.Context, in GrantCreditInput) (*GrantedCredit, error) {
-	refID := in.RefID
+	refID := strings.TrimSpace(in.RefID)
 	if refID == "" {
-		refID = fmt.Sprintf("admin-grant-%d", time.Now().UnixNano())
+		// 不再自动生成：自动生成的 ref_id 每次都不同，重试会重复发放。
+		return nil, invalid("ref_id is required (use a ticket number or a client-generated UUID so retries are idempotent)")
+	}
+	if in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now()) {
+		return nil, invalid("expires_at must be in the future")
 	}
 	grantID, bonusAfter, err := s.wallet.Grant(ctx, wallet.GrantInput{
 		AccountID: in.AccountID, Source: in.Source, Amount: in.Amount,

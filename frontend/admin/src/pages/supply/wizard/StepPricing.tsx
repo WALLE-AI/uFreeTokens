@@ -2,26 +2,29 @@ import { describeError } from '../../../api/errors';
 import { useState } from 'react';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { listLatestFXRates, setFXRate } from '../../../api/catalog';
-import { Button, Input, useToast } from '../../../components/ui';
+import { Button, Input, Select, useToast } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
 import { cn } from '../../../lib/cn';
 import { fmtPrice } from '../common';
-import { computeRow, resolvedMultiplier, type RowConfig } from './state';
+import { computeRow, fxToCNY, resolvedMultiplier, round4, type RowConfig } from './state';
 import { StepFooter, type StepProps } from './ui';
 
-// ④ 定价：参考成本 USD → 折合 CNY（× 汇率 × 成本倍率）→ 加价率 → 售价 CNY → 毛利率
+// ④ 定价：成本（USD / CNY / 其他币种）→ 折合 CNY（× 汇率 × 成本倍率）→ 加价率 → 售价 CNY → 毛利率
 export function StepPricing({ state, update, goto }: StepProps) {
   const toast = useToast();
   const [fxKey, setFxKey] = useState(0);
   const fxRates = useAsync((signal) => listLatestFXRates(signal), [fxKey]);
-  const usd = fxRates.data?.data.find((r) => r.base === 'USD' && r.quote === 'CNY');
-  const fx = usd ? Number(usd.rate) : null;
+  const currency = state.costCurrency;
+  const rates = fxRates.data?.data;
+  const fxRow = rates?.find((r) => r.base === currency && r.quote === 'CNY');
+  const fx = fxToCNY(rates, currency);
+  const currencyOptions = Array.from(new Set(['USD', 'CNY', ...(rates ?? []).filter((r) => r.quote === 'CNY').map((r) => r.base), currency]));
   const multiplier = resolvedMultiplier(state);
   const [fxDraft, setFxDraft] = useState('');
   const [fxSaving, setFxSaving] = useState(false);
 
   const ids = state.selected.filter((id) => state.rows[id]);
-  const computed = ids.map((id) => ({ id, row: state.rows[id], p: computeRow(state.rows[id], fx, multiplier, state.globalMarkup, state.refPrices[id]) }));
+  const computed = ids.map((id) => ({ id, row: state.rows[id], p: computeRow(state.rows[id], fx, multiplier, state.globalMarkup, state.refPrices[id], currency) }));
   const invalid = computed.filter((c) => c.p.errors.length > 0);
   const negative = computed.filter((c) => !c.row.keepSell && c.p.margin !== null && c.p.margin < 0);
 
@@ -36,8 +39,8 @@ export function StepPricing({ state, update, goto }: StepProps) {
   const saveFx = async () => {
     setFxSaving(true);
     try {
-      await setFXRate({ base: 'USD', quote: 'CNY', rate: fxDraft.trim(), source: 'manual' });
-      toast.success(`已设置 1 USD = ${fxDraft} CNY`);
+      await setFXRate({ base: currency, quote: 'CNY', rate: fxDraft.trim(), source: 'manual' });
+      toast.success(`已设置 1 ${currency} = ${fxDraft} CNY`);
       setFxKey((k) => k + 1);
     } catch (err) {
       toast.error('设置汇率失败', describeError(err));
@@ -49,21 +52,41 @@ export function StepPricing({ state, update, goto }: StepProps) {
   // 售价向上取整到 0.1 元（运营常用的"好看价格"）
   const roundUp = () =>
     setAllRows((id, r) => {
-      const p = computeRow(r, fx, multiplier, state.globalMarkup, state.refPrices[id]);
+      const p = computeRow(r, fx, multiplier, state.globalMarkup, state.refPrices[id], currency);
       const up = (v: number | null) => (v === null ? null : String(Math.ceil(v * 10 - 1e-9) / 10));
       return { sellIn: up(p.sellIn), sellOut: up(p.sellOut) };
     });
+
+  // 切换成本币种：已填的成本按汇率换算到新币种（两边汇率都有时），否则保持数值不变由运营手改
+  const changeCurrency = (next: string) => {
+    const from = fxToCNY(rates, currency);
+    const to = fxToCNY(rates, next);
+    const conv = (v: string) => (v.trim() === '' || from === null || to === null ? v : String(round4((Number(v) * from) / to)));
+    update((s) => {
+      const rows = { ...s.rows };
+      for (const id of Object.keys(rows)) rows[id] = { ...rows[id], costIn: conv(rows[id].costIn), costOut: conv(rows[id].costOut) };
+      return { ...s, costCurrency: next, rows };
+    });
+    setFxDraft('');
+    if (from === null || to === null) toast.info(`缺少汇率，已填的成本没有换算，请按 ${next} 核对`);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3 bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs">
         <div>
-          <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">汇率 USD → CNY</div>
-          {fxRates.loading ? (
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">成本币种</div>
+          <Select className="mt-1 py-1 w-24" value={currency} onChange={(e) => changeCurrency(e.target.value)} options={currencyOptions.map((c) => ({ value: c, label: c }))} />
+        </div>
+        <div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">汇率 {currency} → CNY</div>
+          {currency === 'CNY' ? (
+            <div className="font-mono text-gray-900 mt-1">1 <span className="text-[11px] text-gray-400 font-sans">（人民币无需换算）</span></div>
+          ) : fxRates.loading ? (
             <div className="text-gray-400 mt-1">加载中…</div>
-          ) : usd ? (
+          ) : fxRow ? (
             <div className="font-mono text-gray-900 mt-1">
-              {usd.rate} <span className="text-[11px] text-gray-400 font-sans">（{usd.effective_date.slice(0, 10)}）</span>
+              {fxRow.rate} <span className="text-[11px] text-gray-400 font-sans">（{fxRow.effective_date.slice(0, 10)}）</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 mt-1">
@@ -108,7 +131,8 @@ export function StepPricing({ state, update, goto }: StepProps) {
       </div>
 
       <p className="text-[11px] text-gray-400">
-        成本价以 USD 发布到渠道，运行时按汇率与成本倍率折算；售价以人民币发布，每个模型只有一个生效售价（运行时不区分 tier）。
+        成本价以 {currency} 发布到渠道{currency === 'CNY' ? '' : '，运行时按汇率折算成人民币'}，再乘成本倍率；售价以人民币发布，每个模型只有一个生效售价（运行时不区分 tier）。
+        {currency !== 'USD' && ' 参考价来自 OpenRouter / LiteLLM（USD），已按汇率换算，国内厂商请按官网人民币价格核对。'}
       </p>
 
       <div className="overflow-x-auto bg-white border border-gray-200 rounded-xl shadow-xs">
@@ -117,7 +141,7 @@ export function StepPricing({ state, update, goto }: StepProps) {
             <tr className="bg-gray-50 border-b border-gray-200 text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
               <th className="px-3 py-2.5 text-left">模型</th>
               <th className="px-3 py-2.5 text-left">family / 上下文 / 最大输出</th>
-              <th className="px-3 py-2.5 text-right">成本 USD/1M（in / out）</th>
+              <th className="px-3 py-2.5 text-right">成本 {currency}/1M（in / out）</th>
               <th className="px-3 py-2.5 text-right">折合 CNY</th>
               <th className="px-3 py-2.5 text-right">加价率</th>
               <th className="px-3 py-2.5 text-right">售价 CNY/1M（in / out）</th>

@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
@@ -21,6 +26,35 @@ import (
 type Change struct {
 	Before map[string]any
 	After  map[string]any
+	// Version 是更新后的行版本（乐观锁），供响应头 ETag 使用。
+	Version int
+}
+
+type expectedVersionKey struct{}
+
+// WithExpectedVersion 声明调用方基于哪个版本做的修改（HTTP If-Match）：patchRow
+// 在行锁内核对，不一致返回 ErrVersionConflict，避免两个运营互相覆盖。
+func WithExpectedVersion(ctx context.Context, version int) context.Context {
+	return context.WithValue(ctx, expectedVersionKey{}, version)
+}
+
+// RowVersion 返回可编辑实体当前的版本号（详情接口的 ETag）。table 只能是
+// patchRow 支持的表名，由调用方传常量。
+func (s *Service) RowVersion(ctx context.Context, table string, id int64) (int, error) {
+	if !versionedTables[table] {
+		return 0, fmt.Errorf("admin: %s is not a versioned table", table)
+	}
+	var v int
+	if err := s.db(ctx).QueryRow(ctx, fmt.Sprintf(`SELECT version FROM %s WHERE id = $1`, table), id).Scan(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
+}
+
+// versionedTables 是带 version 列（迁移 00018）、通过 patchRow 编辑的表。
+var versionedTables = map[string]bool{
+	"providers": true, "provider_accounts": true, "provider_keys": true, "virtual_models": true,
+	"channels": true, "accounts": true, "price_sources": true, "api_keys": true,
 }
 
 type setClause struct {
@@ -36,7 +70,10 @@ func (s *Service) patchRow(ctx context.Context, table string, id int64, sets []s
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
 	}
-	tx, err := s.pool.Begin(ctx)
+	if !versionedTables[table] {
+		return nil, fmt.Errorf("admin: %s is not a versioned table", table)
+	}
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("admin: begin tx: %w", err)
 	}
@@ -46,7 +83,7 @@ func (s *Service) patchRow(ctx context.Context, table string, id int64, sets []s
 	for i, sc := range sets {
 		cols[i] = sc.col
 	}
-	rows, err := tx.Query(ctx, fmt.Sprintf(`SELECT %s FROM %s WHERE id = $1 FOR UPDATE`, strings.Join(cols, ", "), table), id)
+	rows, err := tx.Query(ctx, fmt.Sprintf(`SELECT version, %s FROM %s WHERE id = $1 FOR UPDATE`, strings.Join(cols, ", "), table), id)
 	if err != nil {
 		return nil, fmt.Errorf("admin: lock %s: %w", table, err)
 	}
@@ -64,9 +101,13 @@ func (s *Service) patchRow(ctx context.Context, table string, id int64, sets []s
 	if old == nil {
 		return nil, notFound
 	}
-	ch := &Change{Before: map[string]any{}, After: map[string]any{}}
+	current := int(old[0].(int32))
+	if expected, ok := ctx.Value(expectedVersionKey{}).(int); ok && expected != current {
+		return nil, ErrVersionConflict
+	}
+	ch := &Change{Before: map[string]any{}, After: map[string]any{}, Version: current + 1}
 	for i, sc := range sets {
-		ch.Before[sc.col] = old[i]
+		ch.Before[sc.col] = old[i+1]
 		ch.After[sc.col] = sc.val
 	}
 	if extraCheck != nil {
@@ -81,6 +122,7 @@ func (s *Service) patchRow(ctx context.Context, table string, id int64, sets []s
 		args = append(args, sc.val)
 		assign[i] = fmt.Sprintf("%s = $%d", sc.col, len(args))
 	}
+	assign = append(assign, "version = version + 1", "updated_at = now()")
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE %s SET %s WHERE id = $1`, table, strings.Join(assign, ", ")), args...); err != nil {
 		return nil, fmt.Errorf("admin: update %s: %w", table, err)
 	}
@@ -99,6 +141,14 @@ func oneOf(field, v string, allowed ...string) error {
 		return invalid("%s must be one of %s, got %q", field, strings.Join(allowed, "/"), v)
 	}
 	return nil
+}
+
+// validateEnum 校验可选的枚举参数：空字符串表示不限制。
+func validateEnum(field, v string, allowed ...string) error {
+	if v == "" {
+		return nil
+	}
+	return oneOf(field, v, allowed...)
 }
 
 func nonEmpty(field string, v *string) error {
@@ -134,8 +184,9 @@ func nullIfNonPositive(v int) any {
 // ---------- providers ----------
 
 type UpdateProviderInput struct {
-	Name   *string `json:"name"`
-	Status *string `json:"status"`
+	Name         *string   `json:"name"`
+	Status       *string   `json:"status"`
+	AllowedHosts *[]string `json:"allowed_hosts"` // 空数组 = 不限域名
 }
 
 func (s *Service) UpdateProvider(ctx context.Context, id int64, in UpdateProviderInput) (*Change, error) {
@@ -152,6 +203,13 @@ func (s *Service) UpdateProvider(ctx context.Context, id int64, in UpdateProvide
 		}
 		sets = append(sets, setClause{"status", *in.Status})
 	}
+	if in.AllowedHosts != nil {
+		hosts, err := normalizeHosts(*in.AllowedHosts)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, setClause{"allowed_hosts", hosts})
+	}
 	return s.patchRow(ctx, "providers", id, sets, ErrProviderNotFound, nil)
 }
 
@@ -159,7 +217,7 @@ func (s *Service) UpdateProvider(ctx context.Context, id int64, in UpdateProvide
 // 停用供应商不级联停用下属账号/渠道（接口方案 §2）。
 func (s *Service) ActiveChannelCountForProvider(ctx context.Context, providerID int64) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx,
+	err := s.db(ctx).QueryRow(ctx,
 		`SELECT count(*) FROM channels c JOIN provider_accounts pa ON pa.id = c.provider_account_id
 		 WHERE pa.provider_id = $1 AND c.status = 'active'`, providerID).Scan(&n)
 	return n, err
@@ -177,16 +235,28 @@ type UpdateProviderAccountInput struct {
 
 func (s *Service) UpdateProviderAccount(ctx context.Context, id int64, in UpdateProviderAccountInput) (*Change, error) {
 	var sets []setClause
-	for _, f := range []struct {
-		name string
-		v    *string
-	}{{"name", in.Name}, {"base_url", in.BaseURL}} {
-		if err := nonEmpty(f.name, f.v); err != nil {
+	if err := nonEmpty("name", in.Name); err != nil {
+		return nil, err
+	}
+	if in.Name != nil {
+		sets = append(sets, setClause{"name", strings.TrimSpace(*in.Name)})
+	}
+	if err := nonEmpty("base_url", in.BaseURL); err != nil {
+		return nil, err
+	}
+	if in.BaseURL != nil {
+		var providerID int64
+		if err := s.db(ctx).QueryRow(ctx, `SELECT provider_id FROM provider_accounts WHERE id = $1`, id).Scan(&providerID); err != nil {
+			if isNoRows(err) {
+				return nil, ErrProviderAccountNotFound
+			}
+			return nil, fmt.Errorf("admin: load provider_account: %w", err)
+		}
+		u, err := s.validateUpstreamURL(ctx, s.db(ctx), providerID, *in.BaseURL)
+		if err != nil {
 			return nil, err
 		}
-		if f.v != nil {
-			sets = append(sets, setClause{f.name, strings.TrimSpace(*f.v)})
-		}
+		sets = append(sets, setClause{"base_url", u}, setClause{"base_url_changed_at", time.Now()})
 	}
 	if in.Region != nil {
 		var region any
@@ -380,6 +450,12 @@ func (s *Service) UpdateChannel(ctx context.Context, id int64, in UpdateChannelI
 	var guard func(pgx.Tx, map[string]any) error
 	if in.Status != nil && *in.Status == "disabled" && !in.Force {
 		guard = func(tx pgx.Tx, _ map[string]any) error {
+			// 先锁住所属虚拟模型行：同一模型下并发停用不同渠道的请求在这里串行，
+			// 后到的那个会看到前一个已提交的停用，不会两个都判断"还有别的活跃渠道"。
+			if _, err := tx.Exec(ctx,
+				`SELECT 1 FROM virtual_models WHERE id = (SELECT virtual_model_id FROM channels WHERE id = $1) FOR UPDATE`, id); err != nil {
+				return fmt.Errorf("admin: lock virtual model: %w", err)
+			}
 			var others int
 			if err := tx.QueryRow(ctx,
 				`SELECT count(*) FROM channels WHERE status = 'active' AND id <> $1
@@ -450,17 +526,30 @@ func (s *Service) UpdatePriceSource(ctx context.Context, id int64, in UpdatePric
 	if in.URL != nil {
 		var u any
 		if v := strings.TrimSpace(*in.URL); v != "" {
+			pu, err := url.Parse(v)
+			if err != nil || (pu.Scheme != "https" && pu.Scheme != "http") || pu.Host == "" || pu.User != nil {
+				return nil, invalid("url must be an absolute http(s) URL without credentials")
+			}
 			u = v
 		}
 		sets = append(sets, setClause{"url", u})
 	}
 	if in.Schedule != nil {
-		sets = append(sets, setClause{"schedule", strings.TrimSpace(*in.Schedule)})
+		sched := strings.TrimSpace(*in.Schedule)
+		if sched != "" && !validSchedule(sched) {
+			return nil, invalid("schedule must be a 5-field cron expression or @hourly/@daily/@every <duration>")
+		}
+		sets = append(sets, setClause{"schedule", sched})
 	}
 	if in.Config != nil {
 		var obj map[string]any
 		if err := json.Unmarshal(*in.Config, &obj); err != nil || obj == nil {
 			return nil, invalid("config must be a JSON object")
+		}
+		// config 是明文 JSONB：不允许把凭据塞进来（方案 §2.1 S10）。确实需要鉴权的
+		// 来源应该走上游密钥的加密存储，而不是写在抓取配置里。
+		if key := findSecretLikeKey(obj); key != "" {
+			return nil, invalid("config must not contain credentials (found key %q); price source configs are stored in plaintext", key)
 		}
 		sets = append(sets, setClause{"config", obj})
 	}
@@ -482,7 +571,7 @@ func (s *Service) GetPriceSource(ctx context.Context, id int64) (*PriceSourceInf
 // GetProviderKey 供 PATCH 之后返回最新对象。
 func (s *Service) GetProviderKey(ctx context.Context, id int64) (*ProviderKeyInfo, error) {
 	var k ProviderKeyInfo
-	err := s.pool.QueryRow(ctx,
+	err := s.db(ctx).QueryRow(ctx,
 		`SELECT id, secret_last4, weight, status, disabled_reason, rpm_limit, tpm_limit, concurrency_limit, created_at
 		 FROM provider_keys WHERE id = $1`, id,
 	).Scan(&k.ID, &k.Last4, &k.Weight, &k.Status, &k.DisabledReason, &k.RPMLimit, &k.TPMLimit, &k.ConcurrencyLimit, &k.CreatedAt)
@@ -493,4 +582,52 @@ func (s *Service) GetProviderKey(ctx context.Context, id int64) (*ProviderKeyInf
 		return nil, fmt.Errorf("admin: query provider_key: %w", err)
 	}
 	return &k, nil
+}
+
+var secretLikeKey = regexp.MustCompile(`(?i)(^|[_\-.])(api[_\-]?key|access[_\-]?key|token|secret|password|passwd|authorization|cookie|credentials?)($|[_\-.])`)
+
+// findSecretLikeKey 递归查找看起来像凭据的键名，返回第一个命中的键。
+func findSecretLikeKey(v any) string {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			if secretLikeKey.MatchString(k) {
+				return k
+			}
+			if found := findSecretLikeKey(child); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if found := findSecretLikeKey(child); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+var cronField = regexp.MustCompile(`^[0-9*/,\-]+$`)
+
+// validSchedule 接受 5 段 cron 表达式、@hourly/@daily/@weekly，或 @every <Go duration>（至少 1 分钟）。
+func validSchedule(s string) bool {
+	switch s {
+	case "@hourly", "@daily", "@weekly":
+		return true
+	}
+	if d, ok := strings.CutPrefix(s, "@every "); ok {
+		dur, err := time.ParseDuration(strings.TrimSpace(d))
+		return err == nil && dur >= time.Minute
+	}
+	fields := strings.Fields(s)
+	if len(fields) != 5 {
+		return false
+	}
+	for _, f := range fields {
+		if !cronField.MatchString(f) {
+			return false
+		}
+	}
+	return true
 }

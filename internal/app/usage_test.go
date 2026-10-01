@@ -32,6 +32,7 @@ func TestUsageEndpoint_ReflectsWalletAndRequestLogTotals(t *testing.T) {
 
 	walletSvc := wallet.New(pool)
 	adminSvc := admin.New(pool, walletSvc, box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}

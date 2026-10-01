@@ -37,6 +37,9 @@ type CreateAPIKeyInput struct {
 	RPMLimit         *int
 	TPMLimit         *int
 	ConcurrencyLimit *int
+	BudgetLimitMicro *int64     // nil = 不限预算
+	BudgetPeriod     string     // none / daily / monthly；空 = none
+	ExpiresAt        *time.Time // nil = 永不过期
 }
 
 // CreateAPIKey 生成一个新的 User API Key（技术方案 §7.2）。明文只在返回值里出现
@@ -47,6 +50,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (*Crea
 	}
 	if len(s.pepper) == 0 {
 		return nil, errors.New("admin: server misconfigured, no API key pepper available")
+	}
+	if in.BudgetPeriod == "" {
+		in.BudgetPeriod = "none"
+	}
+	if err := oneOf("budget_period", in.BudgetPeriod, "none", "daily", "monthly"); err != nil {
+		return nil, err
+	}
+	if in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now()) {
+		return nil, invalid("expires_at must be in the future")
 	}
 
 	key, err := auth.GenerateAPIKey(s.pepper)
@@ -62,11 +74,13 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (*Crea
 		RawKey: key.Raw,
 	}
 
-	err = s.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (account_id, created_by, name, display_prefix, key_hmac, status, allowed_models, rpm_limit, tpm_limit, concurrency_limit)
-		 VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9)
+	err = s.db(ctx).QueryRow(ctx,
+		`INSERT INTO api_keys (account_id, created_by, name, display_prefix, key_hmac, status, allowed_models, rpm_limit, tpm_limit, concurrency_limit,
+		   budget_limit, budget_period, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9, $10, $11, $12)
 		 RETURNING id, created_at`,
 		in.AccountID, in.CreatedBy, in.Name, key.DisplayPrefix, key.HMAC, in.AllowedModels, in.RPMLimit, in.TPMLimit, in.ConcurrencyLimit,
+		in.BudgetLimitMicro, in.BudgetPeriod, in.ExpiresAt,
 	).Scan(&out.ID, &out.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("admin: insert api_key: %w", err)
@@ -76,7 +90,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, in CreateAPIKeyInput) (*Crea
 
 // ListAPIKeys 返回某账户下的全部 Key（不含明文/HMAC，只有展示用的前缀）。
 func (s *Service) ListAPIKeys(ctx context.Context, accountID int64) ([]APIKey, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT id, account_id, name, display_prefix, status, allowed_models, rpm_limit, tpm_limit, concurrency_limit, created_at
 		 FROM api_keys WHERE account_id = $1 ORDER BY id`,
 		accountID,
@@ -103,7 +117,7 @@ var ErrAPIKeyNotFound = errors.New("admin: api key not found")
 // RevokeAPIKey 把某个 Key 标记为不可用。之后拿它请求网关会被 401
 // （internal/auth.PostgresStore.FindByHMAC 只认 status='active'）。
 func (s *Service) RevokeAPIKey(ctx context.Context, apiKeyID int64) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND status != 'revoked'`, apiKeyID)
+	tag, err := s.db(ctx).Exec(ctx, `UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND status != 'revoked'`, apiKeyID)
 	if err != nil {
 		return fmt.Errorf("admin: revoke api_key: %w", err)
 	}
@@ -111,7 +125,7 @@ func (s *Service) RevokeAPIKey(ctx context.Context, apiKeyID int64) error {
 		// 可能是不存在，也可能是已经被吊销过——两种情况都返回同一个 not-found 语义
 		// 的错误对调用方更简单；如果需要区分，调用方应该先 ListAPIKeys 检查状态。
 		var exists bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)`, apiKeyID).Scan(&exists); err != nil {
+		if err := s.db(ctx).QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)`, apiKeyID).Scan(&exists); err != nil {
 			return fmt.Errorf("admin: check api_key existence: %w", err)
 		}
 		if !exists {
@@ -129,7 +143,7 @@ func (s *Service) RevokeAPIKey(ctx context.Context, apiKeyID int64) error {
 // 传错/漏传空账户 ID 的后果差异太大（全局吊销 vs 越权拒绝），值得用两个
 // 不同名字的方法在类型层面强制调用方想清楚自己要哪种语义。
 func (s *Service) RevokeAPIKeyForAccount(ctx context.Context, accountID, apiKeyID int64) error {
-	tag, err := s.pool.Exec(ctx,
+	tag, err := s.db(ctx).Exec(ctx,
 		`UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND account_id = $2 AND status != 'revoked'`,
 		apiKeyID, accountID,
 	)
@@ -138,7 +152,7 @@ func (s *Service) RevokeAPIKeyForAccount(ctx context.Context, accountID, apiKeyI
 	}
 	if tag.RowsAffected() == 0 {
 		var exists bool
-		if err := s.pool.QueryRow(ctx,
+		if err := s.db(ctx).QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1 AND account_id = $2)`, apiKeyID, accountID,
 		).Scan(&exists); err != nil {
 			return fmt.Errorf("admin: check api_key existence: %w", err)

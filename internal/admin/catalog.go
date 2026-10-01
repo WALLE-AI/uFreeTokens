@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
@@ -26,6 +30,9 @@ type CreateProviderInput struct {
 	Code     string `json:"code"`
 	Name     string `json:"name"`
 	Protocol string `json:"protocol"` // openai / anthropic / gemini（三者都已有适配器实现，见 internal/adapter）
+	// AllowedHosts 是上游 base_url 的域名白名单（见 urlpolicy.go），可空。
+	AllowedHosts []string `json:"allowed_hosts"`
+	Currency     string   `json:"currency"` // 成本价默认币种，空 = USD
 }
 
 func (s *Service) CreateProvider(ctx context.Context, in CreateProviderInput) (*Provider, error) {
@@ -35,10 +42,21 @@ func (s *Service) CreateProvider(ctx context.Context, in CreateProviderInput) (*
 	if !validProtocols[in.Protocol] {
 		return nil, fmt.Errorf("admin: invalid protocol %q, want openai/anthropic/gemini", in.Protocol)
 	}
+	hosts, err := normalizeHosts(in.AllowedHosts)
+	if err != nil {
+		return nil, err
+	}
+	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
+	if currency == "" {
+		currency = "USD"
+	}
+	if !validCurrency(currency) {
+		return nil, invalid("currency must be a currency code such as USD or CNY")
+	}
 	p := &Provider{Code: in.Code, Name: in.Name, Protocol: in.Protocol}
-	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO providers (code, name, protocol, status) VALUES ($1, $2, $3, 'active') RETURNING id`,
-		in.Code, in.Name, in.Protocol,
+	if err := s.db(ctx).QueryRow(ctx,
+		`INSERT INTO providers (code, name, protocol, status, allowed_hosts, currency) VALUES ($1, $2, $3, 'active', $4, $5) RETURNING id`,
+		in.Code, in.Name, in.Protocol, hosts, currency,
 	).Scan(&p.ID); err != nil {
 		return nil, fmt.Errorf("admin: insert provider: %w", err)
 	}
@@ -60,20 +78,28 @@ type CreateProviderAccountInput struct {
 	CostMultiplier *decimal.Decimal // nil = 1（不打折）
 }
 
-// CreateProviderAccount 建一个上游账号。BaseURL 只应该由管理员配置——技术方案
-// §7.15 要求校验域名白名单、禁止内网地址防 SSRF，这里暂时没做，属于已知缺口
-// （部署前必须补上，否则一个能调用这个接口的人可以让网关向任意内网地址发起
-// 带着真实上游 Key 的请求）。
+// CreateProviderAccount 建一个上游账号。BaseURL 按 urlpolicy.go 校验（https、
+// 供应商域名白名单、禁止内网地址），防止持有写权限的人把网关流量或上游密钥
+// 引到任意地址（技术方案 §7.15）。
 func (s *Service) CreateProviderAccount(ctx context.Context, in CreateProviderAccountInput) (*ProviderAccount, error) {
+	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || in.BaseURL == "" {
 		return nil, errors.New("admin: provider account name and base_url are required")
 	}
 	mult := decimal.NewFromInt(1)
 	if in.CostMultiplier != nil {
+		if !in.CostMultiplier.IsPositive() {
+			return nil, invalid("cost_multiplier must be > 0")
+		}
 		mult = *in.CostMultiplier
 	}
+	baseURL, err := s.validateUpstreamURL(ctx, s.db(ctx), in.ProviderID, in.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	in.BaseURL = baseURL
 	pa := &ProviderAccount{ProviderID: in.ProviderID, Name: in.Name, BaseURL: in.BaseURL, CostMultiplier: mult}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`INSERT INTO provider_accounts (provider_id, name, base_url, cost_multiplier, status)
 		 VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
 		in.ProviderID, in.Name, in.BaseURL, mult,
@@ -106,7 +132,8 @@ func (s *Service) AddProviderKey(ctx context.Context, in AddProviderKeyInput) (*
 		return nil, errors.New("admin: provider key secret is required")
 	}
 	if s.box == nil {
-		return nil, errors.New("admin: server has no KEK configured, refusing to store an upstream key in plaintext")
+		// 不能因为漏配置就把明文 Key 存到数据库里。
+		return nil, ErrKEKNotConfigured
 	}
 	weight := in.Weight
 	if weight <= 0 {
@@ -123,7 +150,7 @@ func (s *Service) AddProviderKey(ctx context.Context, in AddProviderKeyInput) (*
 	}
 
 	out := &ProviderKeySummary{ProviderAccountID: in.ProviderAccountID, Last4: last4, Weight: weight}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`INSERT INTO provider_keys (provider_account_id, secret_ciphertext, secret_dek_wrapped, secret_last4, weight, status)
 		 VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
 		in.ProviderAccountID, sealed.Ciphertext, sealed.WrappedDEK, last4, weight,
@@ -183,7 +210,7 @@ func (s *Service) CreateVirtualModel(ctx context.Context, in CreateVirtualModelI
 		ContextWindow: in.ContextWindow, MaxOutput: in.MaxOutput,
 		Capabilities: caps, VisibleTiers: tiers,
 	}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`INSERT INTO virtual_models (name, family, type, context_window, max_output, capabilities, visible_tiers, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') RETURNING id`,
 		in.Name, in.Family, in.Type, in.ContextWindow, in.MaxOutput, caps, tiers,
@@ -201,7 +228,7 @@ var ErrVirtualModelNotFound = errors.New("admin: virtual model not found")
 // 调用方应该先查一遍、存在就复用，而不是每次都硬 INSERT 再处理冲突错误。
 func (s *Service) GetVirtualModelByName(ctx context.Context, name string) (*VirtualModel, error) {
 	vm := &VirtualModel{}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT id, name, family, type, context_window, max_output, capabilities, visible_tiers
 		 FROM virtual_models WHERE name = $1`,
 		name,
@@ -246,7 +273,7 @@ func (s *Service) SetVirtualModelMetadata(ctx context.Context, in SetVirtualMode
 		}
 	}
 
-	_, err := s.pool.Exec(ctx,
+	_, err := s.db(ctx).Exec(ctx,
 		`INSERT INTO virtual_model_metadata (virtual_model_id, display_name, description, provider_display, tags, scores, updated_at)
 		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5, $6, now())
 		 ON CONFLICT (virtual_model_id) DO UPDATE SET
@@ -315,7 +342,7 @@ func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Ch
 		VirtualModelID: in.VirtualModelID, ProviderAccountID: in.ProviderAccountID,
 		UpstreamModel: in.UpstreamModel, Priority: in.Priority, Weight: weight,
 	}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, allowed_account_ids, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, 'active') RETURNING id, experiment_key, variant_label, allowed_account_ids`,
 		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel, in.AllowedAccountIDs,
@@ -333,7 +360,7 @@ var ErrChannelNotFound = errors.New("admin: channel not found")
 // INSERT 再解析冲突错误更直接。
 func (s *Service) FindChannel(ctx context.Context, virtualModelID, providerAccountID int64, upstreamModel string) (*Channel, error) {
 	ch := &Channel{}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT id, virtual_model_id, provider_account_id, upstream_model, priority, weight, experiment_key, variant_label, allowed_account_ids
 		 FROM channels WHERE virtual_model_id = $1 AND provider_account_id = $2 AND upstream_model = $3`,
 		virtualModelID, providerAccountID, upstreamModel,
@@ -416,29 +443,47 @@ func (s *Service) setPrice(ctx context.Context, target priceTarget, components [
 	if len(components) == 0 {
 		return 0, errors.New("admin: at least one price component is required")
 	}
-	for _, c := range components {
-		if !validMeters[c.Meter] {
-			return 0, fmt.Errorf("admin: invalid meter %q", c.Meter)
-		}
-		if !validUnits[c.Unit] {
-			return 0, fmt.Errorf("admin: invalid unit %q", c.Unit)
-		}
-		if c.UnitPrice.IsNegative() {
-			return 0, fmt.Errorf("admin: unit_price must not be negative (meter=%s)", c.Meter)
-		}
+	if err := validateComponents(components); err != nil {
+		return 0, err
+	}
+	if target.tier != "" && !slices.Contains(validTiers, target.tier) {
+		return 0, invalid("tier must be one of %s, got %q", strings.Join(validTiers, "/"), target.tier)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return 0, fmt.Errorf("admin: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// 同一条价格链（sell: 虚拟模型+tier；cost: 渠道）上的发布串行化，再把新版本
+	// 插进版本链：上一本的 effective_to 截到新版本的 effective_from，新版本的
+	// effective_to 是下一本（预约生效的）的 effective_from。数据库的排他约束
+	// （迁移 00019）保证同一条链上生效区间不重叠。
+	chainKey := fmt.Sprintf("price_book:%s:%d:%d:%s", target.kind, deref(target.virtualModelID), deref(target.channelID), target.tier)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, chainKey); err != nil {
+		return 0, fmt.Errorf("admin: lock price chain: %w", err)
+	}
+	var effectiveFrom time.Time
+	if err := tx.QueryRow(ctx, `SELECT COALESCE($1::timestamptz, now())`, target.effectiveFrom).Scan(&effectiveFrom); err != nil {
+		return 0, fmt.Errorf("admin: resolve effective_from: %w", err)
+	}
+	const chain = `kind = $1 AND virtual_model_id IS NOT DISTINCT FROM $2 AND channel_id IS NOT DISTINCT FROM $3
+		AND COALESCE(tier, '') = $4`
+	if _, err := tx.Exec(ctx,
+		`UPDATE price_books SET effective_to = $5
+		 WHERE `+chain+` AND effective_from <= $5 AND (effective_to IS NULL OR effective_to > $5)`,
+		target.kind, target.virtualModelID, target.channelID, target.tier, effectiveFrom,
+	); err != nil {
+		return 0, fmt.Errorf("admin: close previous price_book: %w", err)
+	}
 	var bookID int64
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO price_books (kind, virtual_model_id, channel_id, tier, currency, effective_from)
-		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, COALESCE($6, now())) RETURNING id`,
-		target.kind, target.virtualModelID, target.channelID, target.tier, target.currency, target.effectiveFrom,
+		`INSERT INTO price_books (kind, virtual_model_id, channel_id, tier, currency, effective_from, effective_to, created_by)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6,
+		   (SELECT min(effective_from) FROM price_books WHERE `+chain+` AND effective_from > $6), $7)
+		 RETURNING id`,
+		target.kind, target.virtualModelID, target.channelID, target.tier, target.currency, effectiveFrom, actorFrom(ctx),
 	).Scan(&bookID); err != nil {
 		return 0, fmt.Errorf("admin: insert price_book: %w", err)
 	}
@@ -463,6 +508,71 @@ func (s *Service) setPrice(ctx context.Context, target priceTarget, components [
 	return bookID, nil
 }
 
+// validCurrency 接受 ISO 4217 三位代码，也允许最长 16 位的大写字母数字代码
+// （内部结算单位/测试用的虚拟币种）。
+func validCurrency(c string) bool {
+	if len(c) < 3 || len(c) > 16 || c[0] < 'A' || c[0] > 'Z' {
+		return false
+	}
+	for _, r := range c {
+		if !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func deref(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// validateComponents 在写库前校验价格分量，给出比数据库约束更清楚的错误信息。
+func validateComponents(components []PriceComponentInput) error {
+	type slot struct {
+		meter, serviceTier string
+		tierMin            int
+		windowStart        int16
+		hasWindow          bool
+	}
+	seen := map[slot]bool{}
+	for _, c := range components {
+		if !validMeters[c.Meter] {
+			return fmt.Errorf("admin: invalid meter %q", c.Meter)
+		}
+		if !validUnits[c.Unit] {
+			return fmt.Errorf("admin: invalid unit %q", c.Unit)
+		}
+		if c.UnitPrice.IsNegative() {
+			return fmt.Errorf("admin: unit_price must not be negative (meter=%s)", c.Meter)
+		}
+		if c.TierMinInput < 0 || (c.TierMaxInput != nil && *c.TierMaxInput <= c.TierMinInput) {
+			return invalid("tier_max_input must be greater than tier_min_input (meter=%s)", c.Meter)
+		}
+		if (c.WindowStartMin == nil) != (c.WindowEndMin == nil) {
+			return invalid("window_start_min and window_end_min must be set together (meter=%s)", c.Meter)
+		}
+		if c.WindowStartMin != nil && (*c.WindowStartMin < 0 || *c.WindowStartMin > 1439 || *c.WindowEndMin < 1 || *c.WindowEndMin > 1440) {
+			return invalid("time window must be within 0-1440 minutes (meter=%s)", c.Meter)
+		}
+		tier := c.ServiceTier
+		if tier == "" {
+			tier = "default"
+		}
+		k := slot{meter: c.Meter, serviceTier: tier, tierMin: c.TierMinInput, hasWindow: c.WindowStartMin != nil}
+		if c.WindowStartMin != nil {
+			k.windowStart = *c.WindowStartMin
+		}
+		if seen[k] {
+			return invalid("duplicate price component for meter=%s service_tier=%s tier_min_input=%d", c.Meter, tier, c.TierMinInput)
+		}
+		seen[k] = true
+	}
+	return nil
+}
+
 // SetFXRateInput 对应一条 fx_rates（技术方案 §7.16.9）。
 type SetFXRateInput struct {
 	Base          string          `json:"base"`           // 原币种，如 "USD"
@@ -475,31 +585,61 @@ type SetFXRateInput struct {
 // SetFXRate 写入/更新某一天生效的汇率。和价格表不同，这里用 upsert 而不是
 // 只追加新版本——同一天的汇率写错了应该能直接改，不需要背上一条"错误历史版本"
 // 永久留痕（fx_rates 不像 price_books 那样承担"账单纠纷时查历史价格"的审计职责）。
-func (s *Service) SetFXRate(ctx context.Context, in SetFXRateInput) error {
-	if in.Base == "" {
-		return errors.New("admin: fx_rate base currency is required")
+// 被覆盖的旧值作为第一个返回值交给调用方写审计（新建时为 nil）。
+//
+// EffectiveDate 为零值时取数据库的 CURRENT_DATE——与价格查询里"effective_date <=
+// CURRENT_DATE"的口径一致，不受应用服务器本地时区影响。
+func (s *Service) SetFXRate(ctx context.Context, in SetFXRateInput) (prev *FXRateInfo, cur *FXRateInfo, err error) {
+	base := strings.ToUpper(strings.TrimSpace(in.Base))
+	if base == "" {
+		return nil, nil, errors.New("admin: fx_rate base currency is required")
 	}
 	if !in.Rate.IsPositive() {
-		return errors.New("admin: fx_rate rate must be positive")
+		return nil, nil, errors.New("admin: fx_rate rate must be positive")
 	}
-	quote := in.Quote
+	quote := strings.ToUpper(strings.TrimSpace(in.Quote))
 	if quote == "" {
 		quote = "CNY"
+	}
+	if !validCurrency(base) || !validCurrency(quote) || base == quote {
+		return nil, nil, invalid("fx_rate base/quote must be two different currency codes (ISO 4217, e.g. USD/CNY)")
 	}
 	source := in.Source
 	if source == "" {
 		source = "manual"
 	}
-	effDate := in.EffectiveDate
-	if effDate.IsZero() {
-		effDate = time.Now()
+	var effDate *time.Time
+	if !in.EffectiveDate.IsZero() {
+		d := in.EffectiveDate
+		effDate = &d
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO fx_rates (base, quote, rate, source, effective_date) VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (base, quote, effective_date) DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source`,
-		in.Base, quote, in.Rate, source, effDate,
-	); err != nil {
-		return fmt.Errorf("admin: upsert fx_rate: %w", err)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
+	if err != nil {
+		return nil, nil, fmt.Errorf("admin: begin tx: %w", err)
 	}
-	return nil
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var old FXRateInfo
+	err = tx.QueryRow(ctx,
+		`SELECT base, quote, rate, source, effective_date FROM fx_rates
+		 WHERE base = $1 AND quote = $2 AND effective_date = COALESCE($3::date, CURRENT_DATE) FOR UPDATE`,
+		base, quote, effDate).Scan(&old.Base, &old.Quote, &old.Rate, &old.Source, &old.EffectiveDate)
+	switch {
+	case err == nil:
+		prev = &old
+	case !isNoRows(err):
+		return nil, nil, fmt.Errorf("admin: load fx_rate: %w", err)
+	}
+	cur = &FXRateInfo{}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO fx_rates (base, quote, rate, source, effective_date) VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE))
+		 ON CONFLICT (base, quote, effective_date) DO UPDATE SET rate = EXCLUDED.rate, source = EXCLUDED.source
+		 RETURNING base, quote, rate, source, effective_date`,
+		base, quote, in.Rate, source, effDate,
+	).Scan(&cur.Base, &cur.Quote, &cur.Rate, &cur.Source, &cur.EffectiveDate); err != nil {
+		return nil, nil, fmt.Errorf("admin: upsert fx_rate: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("admin: commit: %w", err)
+	}
+	return prev, cur, nil
 }

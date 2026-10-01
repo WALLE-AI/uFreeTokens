@@ -66,7 +66,9 @@ func testBox(t *testing.T) *secretbox.Box {
 
 func newService(t *testing.T, pool *pgxpool.Pool) *Service {
 	t.Helper()
-	return New(pool, wallet.New(pool), testBox(t), []byte(testPepper))
+	s := New(pool, wallet.New(pool), testBox(t), []byte(testPepper))
+	s.SetUpstreamURLPolicy(PermissiveUpstreamURLPolicy())
+	return s
 }
 
 func TestCreateAccount_InitializesEmptyWallet(t *testing.T) {
@@ -189,6 +191,7 @@ func TestAddProviderKey_EncryptsAndRoundTrips(t *testing.T) {
 	pool := testPool(t)
 	box := testBox(t)
 	s := New(pool, wallet.New(pool), box, []byte(testPepper))
+	s.SetUpstreamURLPolicy(PermissiveUpstreamURLPolicy())
 	ctx := context.Background()
 
 	provider, err := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "Test", Protocol: "openai"})
@@ -227,6 +230,7 @@ func TestAddProviderKey_EncryptsAndRoundTrips(t *testing.T) {
 func TestAddProviderKey_RefusesWithoutKEK(t *testing.T) {
 	pool := testPool(t)
 	s := New(pool, wallet.New(pool), nil, []byte(testPepper)) // 没有配置 box
+	s.SetUpstreamURLPolicy(PermissiveUpstreamURLPolicy())
 	ctx := context.Background()
 
 	provider, err := s.CreateProvider(ctx, CreateProviderInput{Code: uniqueCode(t), Name: "x", Protocol: "openai"})
@@ -340,8 +344,14 @@ func TestRecordAudit_InsertsAndListsByTarget(t *testing.T) {
 	ctx := context.Background()
 	targetID := uniqueCode(t)
 
+	var actorID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO admin_users (email, name, password_hash) VALUES ($1, 'audit-test', '!') RETURNING id`,
+		targetID+"@audit.test").Scan(&actorID); err != nil {
+		t.Fatalf("insert admin user: %v", err)
+	}
 	id, err := s.RecordAudit(ctx, AuditLogInput{
-		ActorID: 42, Action: "wallet.adjust", TargetType: "account", TargetID: targetID,
+		ActorID: actorID, Action: "wallet.adjust", TargetType: "account", TargetID: targetID,
 		Before: map[string]any{"cash_balance": 1000}, After: map[string]any{"cash_balance": 2000}, IP: "203.0.113.7",
 	})
 	if err != nil {
@@ -359,8 +369,8 @@ func TestRecordAudit_InsertsAndListsByTarget(t *testing.T) {
 		t.Fatalf("entries = %+v, want exactly 1", entries)
 	}
 	e := entries[0]
-	if e.ActorID != 42 || e.Action != "wallet.adjust" || e.TargetType != "account" || e.TargetID != targetID {
-		t.Errorf("entry = %+v, want actor=42 action=wallet.adjust target=account/%s", e, targetID)
+	if e.ActorID != actorID || e.Action != "wallet.adjust" || e.TargetType != "account" || e.TargetID != targetID {
+		t.Errorf("entry = %+v, want actor=%d action=wallet.adjust target=account/%s", e, actorID, targetID)
 	}
 	if e.IP != "203.0.113.7" {
 		t.Errorf("IP = %q, want 203.0.113.7", e.IP)
@@ -657,10 +667,15 @@ func TestSetFXRate_InsertsAndUpsertsSameDay(t *testing.T) {
 	pool := testPool(t)
 	s := newService(t, pool)
 	ctx := context.Background()
-	base := uniqueCode(t) // 假币种代码，避免和真实 "USD" 撞车（同一开发库长期共享）
+	// 假币种代码（大写字母数字），避免和真实 "USD" 撞车（同一开发库长期共享）
+	base := fmt.Sprintf("X%d", time.Now().UnixNano()%1_000_000_000_000)
 
-	if err := s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.2)}); err != nil {
+	prev, cur, err := s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.2)})
+	if err != nil {
 		t.Fatalf("SetFXRate: %v", err)
+	}
+	if prev != nil || cur == nil || cur.Quote != "CNY" {
+		t.Errorf("first write: prev = %+v, cur = %+v, want prev=nil and cur quote=CNY", prev, cur)
 	}
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM fx_rates WHERE base = $1`, base) })
 
@@ -680,9 +695,14 @@ func TestSetFXRate_InsertsAndUpsertsSameDay(t *testing.T) {
 		t.Errorf("rate = %s, want 7.2", rate)
 	}
 
-	// 同一天再写一次：应该更新而不是报唯一约束冲突或产生第二行。
-	if err := s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.3)}); err != nil {
+	// 同一天再写一次：应该更新而不是报唯一约束冲突或产生第二行；被覆盖的旧值
+	// 作为 prev 返回（写进审计的 before）。
+	prev, _, err = s.SetFXRate(ctx, SetFXRateInput{Base: base, Rate: decimal.NewFromFloat(7.3)})
+	if err != nil {
 		t.Fatalf("SetFXRate (update): %v", err)
+	}
+	if prev == nil || !prev.Rate.Equal(decimal.NewFromFloat(7.2)) {
+		t.Errorf("prev = %+v, want the overwritten 7.2 rate", prev)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM fx_rates WHERE base = $1`, base).Scan(&count); err != nil {
@@ -704,13 +724,13 @@ func TestSetFXRate_ValidatesInput(t *testing.T) {
 	s := newService(t, pool)
 	ctx := context.Background()
 
-	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "", Rate: decimal.NewFromInt(1)}); err == nil {
+	if _, _, err := s.SetFXRate(ctx, SetFXRateInput{Base: "", Rate: decimal.NewFromInt(1)}); err == nil {
 		t.Error("expected error for empty base currency")
 	}
-	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(0)}); err == nil {
+	if _, _, err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(0)}); err == nil {
 		t.Error("expected error for zero rate")
 	}
-	if err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(-1)}); err == nil {
+	if _, _, err := s.SetFXRate(ctx, SetFXRateInput{Base: "USD", Rate: decimal.NewFromInt(-1)}); err == nil {
 		t.Error("expected error for negative rate")
 	}
 }

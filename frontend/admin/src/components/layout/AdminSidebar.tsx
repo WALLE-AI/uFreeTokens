@@ -10,11 +10,11 @@ import type { TodoCounts } from '../../types';
 // AdminSidebar：按任务域分组（UI_DESIGN.md §1.1），样式对齐 web 个人中心左侧导航
 // （w-56，选中 bg-purple-100/70 text-purple-700，分组标签 text-[11px] uppercase）。
 export function AdminSidebar({ counts, onNavigate }: { counts: TodoCounts | null; onNavigate?: () => void }) {
-  const { actorName } = useAuth();
+  const { me } = useAuth();
   return (
     <div className="w-56 h-full border-r border-gray-200 bg-white flex flex-col">
       <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-4 text-[13px]">
-        {navGroups().map(({ group, items }) => (
+        {navGroups(me).map(({ group, items }) => (
           <div key={group ?? 'root'}>
             {group && <div className="px-2.5 mb-1 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">{group}</div>}
             <ul className="space-y-0.5">
@@ -50,9 +50,12 @@ export function AdminSidebar({ counts, onNavigate }: { counts: TodoCounts | null
           <span className={cn('w-1.5 h-1.5 rounded-full', ENV_DOT_CLASS[ADMIN_ENV])} />
           {ENV_LABEL[ADMIN_ENV]}
         </span>
-        <div className="flex items-center gap-1.5 text-[11px] text-gray-500" title="写操作以此身份记入审计日志（X-Actor-Name）">
+        <div className="flex items-center gap-1.5 text-[11px] text-gray-500" title="写操作以当前登录身份记入审计日志">
           <UserRound className="w-3 h-3" />
-          <span className="truncate">操作人：{actorName ?? '未设置'}</span>
+          <span className="truncate">
+            {me?.name ?? '未登录'}
+            {me && <span className="text-gray-400">（{me.break_glass ? '应急令牌' : me.roles.join('、')}）</span>}
+          </span>
         </div>
       </div>
     </div>

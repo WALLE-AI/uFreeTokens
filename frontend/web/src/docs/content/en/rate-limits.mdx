@@ -1,0 +1,98 @@
+---
+title: Rate limits
+description: Per-API-key RPM, TPM and concurrency limits, the per-IP limit on the public catalog, and how to respond when you hit them.
+section: guides
+order: 70
+translatedFrom: 99b73d37b18e
+---
+
+## Overview
+
+| Limit | Applies to | Endpoints | When exceeded |
+| --- | --- | --- | --- |
+| RPM (requests per minute) | Each API key | `/v1/chat/completions`, `/v1/embeddings`, `/v1/messages` | `429 rate_limit_exceeded` |
+| TPM (tokens per minute) | Each API key | Same as above | `429 rate_limit_exceeded` |
+| Concurrency | Each API key | Same as above | `429 concurrency_limit_exceeded` |
+| 60 requests per minute per IP | Client IP | `GET /v1/catalog` (no auth) | `429 rate_limit_exceeded` |
+
+`GET /v1/models` and `GET /v1/usage` are currently not rate limited.
+
+## Your API key's limits
+
+RPM, TPM and concurrency are **configured per API key** by the platform:
+
+- If a limit is **not set**, that dimension is unlimited. There are currently no account-level or plan-level defaults — the limits depend entirely on the key's own configuration.
+- Newly created keys have none of the three set. Limits cannot be changed from the self-service console; contact the platform to adjust them.
+- The API key list in the website's **personal center** shows each key's RPM limit (shown as unlimited when not set).
+
+Multiple keys under the same account are counted independently.
+
+## How each limit is counted
+
+### RPM
+
+Every authenticated request to the chat, embeddings or Messages endpoints counts once — including requests later rejected for reasons such as an unknown model or insufficient balance.
+
+### TPM
+
+TPM is deducted **before** the request runs, using estimates rather than actual usage:
+
+- Chat completions and Messages: estimated input tokens (from request body size, roughly 4 bytes per token) **plus** the request's output reservation. The output reservation is the smallest of `max_tokens` (or `max_completion_tokens`), the model's maximum output length, and the platform's pre-authorization cap.
+- Embeddings: estimated input tokens only.
+
+The deduction is not refunded based on actual usage. TPM uses a fixed 60-second window (starting at the first deduction in the window) that resets when it expires. If a single request's estimate alone exceeds your TPM limit, it will be rejected no matter when you send it — reduce the request body or `max_tokens`.
+
+<Callout type="tip" title="Set a sensible max_tokens when TPM is tight">
+
+Without `max_tokens`, the output reservation is based on the model's maximum output length, so a single request can consume a large share of your TPM budget. Setting `max_tokens` to what you actually need lets the same TPM budget fit more requests.
+
+</Callout>
+
+### Concurrency
+
+A request holds one concurrency slot from the moment it passes the RPM check until it finishes (for streaming requests, until the stream ends).
+
+## The 429 response
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 2
+X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
+
+{"error":{"message":"Too many requests.","type":"rate_limit_error","code":"rate_limit_exceeded","request_id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6"}}
+```
+
+| Case | `code` | `message` | `Retry-After` |
+| --- | --- | --- | --- |
+| RPM exceeded | `rate_limit_exceeded` | `Too many requests.` | Yes — seconds until you can retry (at least 1) |
+| TPM exceeded | `rate_limit_exceeded` | `Token-per-minute quota exceeded.` | Yes — always `60` |
+| Concurrency exceeded | `concurrency_limit_exceeded` | `Too many concurrent requests.` | No (a slot frees up when one of your other requests finishes) |
+| `/v1/catalog` over 60/min per IP | `rate_limit_exceeded` | `Too many requests.` | Yes |
+
+The gateway does not return `X-RateLimit-*` style headers with remaining quota. RPM and TPM share the `rate_limit_exceeded` code; you can tell them apart by `message` if needed, but your code should treat both the same way: wait for `Retry-After`, then retry.
+
+<Callout type="info" title="Upstream rate limits are not returned as 429">
+
+Only the gateway's own limits produce `429`. Rate limiting by an upstream provider is handled inside the gateway (by retrying with another upstream key or channel); if the request still fails, you get `502 upstream_error`, not `429`.
+
+</Callout>
+
+## What to do
+
+- On `429 rate_limit_exceeded`: wait `Retry-After` seconds, then retry.
+- On `429 concurrency_limit_exceeded`: lower your client-side concurrency (e.g. a semaphore or queue limiting in-flight requests), or back off and retry.
+- For batch jobs: throttle on the client so your request rate stays slightly under your RPM limit, and for embeddings combine multiple texts into one `input` array.
+- See [Error handling](/docs/en/errors) for retry code.
+
+<Callout type="info">
+
+Rate limiting relies on the platform's Redis service. If Redis is temporarily unavailable, the gateway lets requests through (a failing rate limiter should not reject legitimate traffic), so per-key limits are temporarily not enforced.
+
+</Callout>
+
+## Related
+
+- [Error handling](/docs/en/errors)
+- [Authentication](/docs/en/authentication)
+- [Billing](/docs/en/billing)

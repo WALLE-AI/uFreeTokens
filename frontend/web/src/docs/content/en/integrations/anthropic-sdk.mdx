@@ -1,0 +1,184 @@
+---
+title: Anthropic SDK
+description: Point the official Anthropic Python / Node.js SDK at uFreeTokens and make basic non-streaming messages.create calls.
+section: integrations
+order: 20
+translatedFrom: 94a57d6fa0e6
+---
+
+## How it works
+
+The gateway's `POST /v1/messages` accepts requests in the Anthropic Messages API shape and returns Anthropic-shaped responses, so the official Anthropic SDK works against it. Inside the gateway, these requests share the same auth, rate limiting and billing as `/v1/chat/completions`, and `model` can be any chat model ID on the platform — not just Claude.
+
+This page covers basic non-streaming `messages.create` calls only. For the endpoint's full behavior, see [Anthropic-compatible API](/docs/en/anthropic-messages).
+
+## Configure the client
+
+Two things matter:
+
+1. **Authentication**: the gateway only accepts `Authorization: Bearer`. The SDK's `api_key` / `apiKey` option sends the key in the `x-api-key` header, which the gateway ignores, so you would get `401 invalid_api_key`. Pass your key as `auth_token` (Python) / `authToken` (Node.js) instead; the SDK then sends it as `Authorization: Bearer`.
+2. **Base URL**: the SDK appends `/v1/messages` itself, so set `base_url` to the gateway root **without** `/v1`.
+
+<CodeTabs>
+
+```python title="Python"
+# pip install anthropic
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+```
+
+```ts title="Node.js"
+// npm install @anthropic-ai/sdk
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null, // don't read ANTHROPIC_API_KEY from the environment, so no x-api-key header is sent
+});
+```
+
+</CodeTabs>
+
+<Callout type="warning" title="Watch out for ANTHROPIC_API_KEY">
+
+If `ANTHROPIC_API_KEY` is set in the environment, the Python SDK **also** sends it in an `x-api-key` header alongside `Authorization` — i.e. it sends your official Anthropic key to the gateway. The gateway does not use that header, but for safety, don't set `ANTHROPIC_API_KEY` in processes that call uFreeTokens. In Node.js, passing `apiKey: null` avoids this.
+
+</Callout>
+
+## Send a message
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+
+message = client.messages.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens=1024,
+    system="You are a concise assistant.",
+    messages=[{"role": "user", "content": "Describe an API gateway in three sentences."}],
+)
+print(message.content[0].text)
+print(message.stop_reason, message.usage)
+```
+
+```ts title="Node.js"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null,
+});
+
+const message = await client.messages.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  max_tokens: 1024,
+  system: "You are a concise assistant.",
+  messages: [{ role: "user", content: "Describe an API gateway in three sentences." }],
+});
+const block = message.content[0];
+if (block.type === "text") console.log(block.text);
+console.log(message.stop_reason, message.usage);
+```
+
+</CodeTabs>
+
+Example response:
+
+```json
+{
+  "id": "...",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "..."}],
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 25, "output_tokens": 80}
+}
+```
+
+## Supported parameters
+
+| Parameter | Description |
+|---|---|
+| `model` | Model ID, required |
+| `messages` | Conversation messages with `role` `user` or `assistant`; `content` is a string or an array of text blocks |
+| `system` | System prompt, as a string or an array of text blocks |
+| `max_tokens` | Maximum output tokens |
+| `temperature`, `top_p` | Sampling parameters |
+| `stop_sequences` | Stop sequences |
+
+Other parameters are ignored. Only blocks with `type` `text` are read from `content`; images and other block types are dropped. Including `tools` in the request returns `400 invalid_request`.
+
+`stop_reason` is either `end_turn` (finished normally) or `max_tokens` (hit the output limit).
+
+## Error handling
+
+Errors from `/v1/messages` use the **OpenAI-compatible format** (`{"error": {"code": ..., ...}}`), not Anthropic's error format. The SDK still raises the exception matching the HTTP status; read the error code from the response body:
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+
+try:
+    message = client.messages.create(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        max_tokens=256,
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+    print(message.content[0].text)
+except anthropic.APIStatusError as e:
+    err = (e.body or {}).get("error", {}) if isinstance(e.body, dict) else {}
+    print(f"HTTP {e.status_code} code={err.get('code')} request_id={err.get('request_id')}")
+```
+
+```ts title="Node.js"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null,
+});
+
+try {
+  const message = await client.messages.create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens: 256,
+    messages: [{ role: "user", content: "Hello" }],
+  });
+  console.log(message.content);
+} catch (err) {
+  if (err instanceof Anthropic.APIError) {
+    const body = err.error as { error?: { code?: string; request_id?: string } } | undefined;
+    console.log(`HTTP ${err.status} code=${body?.error?.code} request_id=${body?.error?.request_id}`);
+  } else {
+    throw err;
+  }
+}
+```
+
+</CodeTabs>
+
+Error codes mean the same as on `/v1/chat/completions`; see [Errors](/docs/en/errors).

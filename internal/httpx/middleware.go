@@ -19,17 +19,42 @@ type ctxKey int
 const requestIDKey ctxKey = iota
 
 // RequestID 生成/透传请求 ID（ULID，时间有序），贯穿 reservation、ledger、request_log
-// （见技术方案 §7.9.3）。若客户端已带 X-Request-Id，则复用（便于客户端侧关联排障）。
+// （见技术方案 §7.9.3）。若客户端已带合法的 X-Request-Id（1-64 位字母数字、'-'、'_'），
+// 则复用（便于客户端侧关联排障）；不合法的值会被替换，避免日志/响应头注入。
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" {
+		if !validRequestID(id) {
 			id = ulid.Make().String()
 		}
 		w.Header().Set("X-Request-Id", id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// MaxBodyBytes 限制请求体大小，超出时后续的 JSON 解码会失败（返回 400）。
+func MaxBodyBytes(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, n)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // RequestIDFromContext 取出当前请求的 request_id；不存在时返回空字符串。

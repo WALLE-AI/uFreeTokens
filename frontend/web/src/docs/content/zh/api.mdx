@@ -1,0 +1,98 @@
+---
+title: API 参考概述
+description: Base URL、鉴权方式、请求与响应约定、错误格式、金额单位，以及全部接口列表。
+section: api
+order: 0
+---
+
+## Base URL
+
+```text
+{{BASE_URL}}/v1
+```
+
+接口与 OpenAI API 兼容：使用 OpenAI SDK 时，把 `base_url` 设为上面的地址即可。
+
+## 鉴权
+
+除 `GET /v1/catalog` 外，所有接口都需要 API Key：
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+只接受 `Authorization: Bearer`，不接受 `x-api-key`。Key 的创建与吊销见[鉴权与 API Key](/docs/zh/authentication)。
+
+## 请求与响应约定
+
+- 请求体为 JSON，建议带上 `Content-Type: application/json`。
+- 成功响应为 JSON；流式请求（`stream: true`）返回 `text/event-stream`。
+- 请求与响应字段沿用 OpenAI（`/v1/messages` 沿用 Anthropic）的命名与语义；网关会把你的参数转发给上游模型，所以各模型对可选参数的支持程度可能不同。
+
+## 请求 ID
+
+每个响应都带有 `X-Request-Id` 响应头，错误响应体中也有同样的 `request_id`。
+
+你也可以在请求头中自带 `X-Request-Id`：只要是 1–64 位的字母、数字、`-` 或 `_`，网关就会沿用它，否则会生成一个新的 ID。自带时请保证**每个请求的值都唯一**，因为网关会用它标识这次请求的计费记录。详见[请求 ID](/docs/zh/request-id)。
+
+## 错误格式
+
+所有错误都使用 OpenAI 兼容的格式（包括 `/v1/messages`）：
+
+```json
+{
+  "error": {
+    "message": "Insufficient balance.",
+    "type": "insufficient_quota",
+    "code": "insufficient_balance",
+    "request_id": "01J9ZK8X5W3Q7M2N4P6R8T0V1A"
+  }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `code` | 稳定的错误码，**程序应该根据它判断错误类型** |
+| `type` | 错误大类，由 HTTP 状态码决定（见下表） |
+| `message` | 给人看的英文描述，内容可能变化，不要用于程序判断 |
+| `request_id` | 本次请求的 ID，与 `X-Request-Id` 响应头一致 |
+
+| HTTP 状态码 | `type` |
+|---|---|
+| 400、404 等 | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 402 | `insufficient_quota` |
+| 403 | `permission_error` |
+| 429 | `rate_limit_error` |
+| 500、502、503、504 | `api_error` |
+
+429 响应在可以确定等待时长时会带 `Retry-After` 响应头（秒）。完整错误码表与重试建议见[错误处理](/docs/zh/errors)。
+
+## 金额单位
+
+- 余额、扣费等字段为 `int64` 整数，单位是**微元**：1,000,000 = 1 元（CNY），字段名以 `_micro` 结尾。
+- 目录中的单价 `unit_price` 是十进制字符串，单位是元。
+
+详见[计费与余额](/docs/zh/billing)。
+
+## 接口列表
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|---|---|---|---|
+| GET | [`/v1/catalog`](/docs/zh/api/getCatalog) | 公开模型目录（含售价） | 无 |
+| GET | [`/v1/models`](/docs/zh/api/listModels) | 当前 Key 可用的模型 ID | API Key |
+| GET | [`/v1/usage`](/docs/zh/api/getUsage) | 账户余额与累计用量 | API Key |
+| POST | [`/v1/chat/completions`](/docs/zh/api/createChatCompletion) | 对话补全，支持流式与工具调用 | API Key |
+| POST | [`/v1/embeddings`](/docs/zh/api/createEmbedding) | 文本向量 | API Key |
+| POST | [`/v1/messages`](/docs/zh/api/createMessage) | Anthropic Messages 兼容入口 | API Key |
+
+### 尚未实现
+
+以下路径已预留，调用会返回 `503`，错误码为 `not_implemented`：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | [`/v1/completions`](/docs/zh/api/createCompletion) | 旧式文本补全 |
+| POST | [`/v1/images/generations`](/docs/zh/api/createImage) | 图像生成 |
+| POST | [`/v1/audio/transcriptions`](/docs/zh/api/createTranscription) | 语音转写 |
+| POST | [`/v1/audio/speech`](/docs/zh/api/createSpeech) | 语音合成 |

@@ -20,6 +20,7 @@ import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import type { ProviderSummary } from '../../types';
 import { PROTOCOL_OPTIONS, ProtocolBadge } from './common';
+import { Can } from '../../components/ui/Can';
 
 const STATUS_OPTIONS = [
   { value: 'active', label: '启用' },
@@ -130,9 +131,9 @@ export default function ProvidersPage() {
         title="供应商"
         description="上游供应商、上游账号与密钥。新接入一家上游请使用接入向导（建供应商 → 账号与密钥 → 选模型 → 定价 → 导入）"
         actions={
-          <Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => navigate('/providers/new')}>
+          <Can perm="catalog:write"><Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => navigate('/providers/new')}>
             接入新供应商
-          </Button>
+          </Button></Can>
         }
       />
 
@@ -168,9 +169,9 @@ export default function ProvidersPage() {
         emptyTitle="还没有接入任何供应商"
         emptyDescription="使用接入向导添加第一家上游：填写账号与密钥、拉取模型列表、按参考价定价后一键导入"
         emptyAction={
-          <Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => navigate('/providers/new')}>
+          <Can perm="catalog:write"><Button variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => navigate('/providers/new')}>
             接入新供应商
-          </Button>
+          </Button></Can>
         }
       >
         {list.data && (

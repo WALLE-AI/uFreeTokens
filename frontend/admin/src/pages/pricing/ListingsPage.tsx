@@ -2,7 +2,7 @@ import { Checkbox } from '../../components/ui/index';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { ExternalLink, EyeOff, PackagePlus, RotateCw, Upload } from 'lucide-react';
-import { dismissListing, listPendingListings } from '../../api/pricing';
+import { batchDismissListings, listPendingListings } from '../../api/pricing';
 import { Button, ConfirmDialog, DataState, Field, PageHeader, Pills, StatusBadge, Textarea, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
@@ -12,6 +12,8 @@ import { formatDateTime, formatRelative } from '../../lib/time';
 import type { PendingListing } from '../../types';
 import { PublishListingDrawer } from './PublishListingDrawer';
 import { PriceSyncDisabledCard, friendlyError, isNotConfigured } from './shared';
+import { fetchAllPages } from '../../api/pickers';
+import { Can } from '../../components/ui/Can';
 
 // 待上架模型（UI_DESIGN.md §5.3）：上游出现、但平台还没有渠道的模型。
 // URL：?status=pending|published|dismissed
@@ -30,7 +32,8 @@ export default function ListingsPage() {
   const [tick, setTick] = useState(0);
   const providerFilter = params.provider_id ? Number(params.provider_id) : undefined;
   const list = useAsync(
-    (signal) => listPendingListings({ status, provider_id: providerFilter, page_size: 100 }, signal),
+    // 逐页取完（最多 1000 条），不再只取第一页 100 条后静默截断
+    (signal) => fetchAllPages((page, page_size) => listPendingListings({ status, provider_id: providerFilter, page, page_size }, signal)),
     [status, providerFilter, tick],
   );
   const items = list.data?.data ?? [];
@@ -53,13 +56,19 @@ export default function ListingsPage() {
     setDismissing(true);
     let ok = 0;
     const failed: string[] = [];
-    for (const l of dismissTargets) {
-      try {
-        await dismissListing(l.id, dismissReason.trim() || undefined);
-        ok++;
-      } catch (err) {
-        failed.push(`${l.upstream_model}：${friendlyError(err)}`);
+    // 一次请求批量忽略（服务端逐条独立处理并逐条返回结果）
+    try {
+      const { results } = await batchDismissListings(
+        dismissTargets.map((l) => l.id),
+        dismissReason.trim() || undefined,
+      );
+      const byId = new Map(dismissTargets.map((l) => [l.id, l]));
+      for (const r of results) {
+        if (r.ok) ok++;
+        else failed.push(`${byId.get(r.id)?.upstream_model ?? `#${r.id}`}：${r.error?.message ?? '失败'}`);
       }
+    } catch (err) {
+      failed.push(friendlyError(err));
     }
     setDismissing(false);
     setDismissTargets(null);
@@ -103,9 +112,9 @@ export default function ListingsPage() {
         {status === 'pending' && selected.size > 0 && (
           <div className="flex items-center gap-2 text-xs">
             <span className="text-gray-700 font-medium">{selected.size} 项已选</span>
-            <Button size="sm" icon={<EyeOff className="w-3.5 h-3.5" />} onClick={() => openDismiss(selectedItems)}>
+            <Can perm="pricing:write"><Button size="sm" icon={<EyeOff className="w-3.5 h-3.5" />} onClick={() => openDismiss(selectedItems)}>
               批量忽略
-            </Button>
+            </Button></Can>
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
               取消选择
             </Button>
@@ -261,12 +270,12 @@ function ListingCard({
       </div>
       {pending && (
         <div className="mt-3 flex justify-end gap-2">
-          <Button size="sm" variant="ghost" icon={<EyeOff className="w-3.5 h-3.5" />} onClick={onDismiss}>
+          <Can perm="pricing:write"><Button size="sm" variant="ghost" icon={<EyeOff className="w-3.5 h-3.5" />} onClick={onDismiss}>
             忽略
-          </Button>
-          <Button size="sm" variant="dark" icon={<Upload className="w-3.5 h-3.5" />} onClick={onPublish}>
+          </Button></Can>
+          <Can perm="pricing:write"><Button size="sm" variant="dark" icon={<Upload className="w-3.5 h-3.5" />} onClick={onPublish}>
             上架…
-          </Button>
+          </Button></Can>
         </div>
       )}
     </div>

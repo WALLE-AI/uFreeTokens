@@ -5,7 +5,7 @@ import { AdminLayout } from './components/layout/AdminLayout';
 import type { RouteHandle } from './components/layout/AdminHeader';
 import { NotFoundPage, RouteErrorPage } from './pages/ErrorPages';
 
-// 鉴权守卫：sessionStorage 里没有令牌时跳登录页，登录后回到原路径（UI_DESIGN.md §8）
+// 鉴权守卫：sessionStorage 里没有会话（令牌 + /me 身份）时跳登录页，登录后回到原路径（UI_DESIGN.md §8）
 function requireAuth({ request }: LoaderFunctionArgs) {
   if (!authStore.isAuthenticated()) {
     const url = new URL(request.url);
@@ -77,6 +77,7 @@ export const router = createBrowserRouter([
       { path: 'logs', handle: crumb('调用日志'), lazy: page(() => import('./pages/observe/LogsPage')) },
       { path: 'analytics', handle: crumb('用量分析'), lazy: page(() => import('./pages/observe/AnalyticsPage')) },
       { path: 'audit', handle: crumb('审计日志'), lazy: page(() => import('./pages/audit/AuditPage')) },
+      { path: 'admin-users', handle: crumb('管理员与角色'), lazy: page(() => import('./pages/system/AdminUsersPage')) },
       { path: '*', handle: crumb('页面不存在'), Component: NotFoundPage },
     ],
   },

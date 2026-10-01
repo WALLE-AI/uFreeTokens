@@ -37,12 +37,18 @@ const openRouterModelsLookupFixture = `{
   ]
 }`
 
-func newAdminRouterForPriceLookup(t *testing.T) *httptest.Server {
+// newAdminRouterForPriceLookup 把两个参考来源地址配置在服务端（AdminDeps）——
+// 请求体里只能传与之相同的值或不传，不能指向任意 URL。
+func newAdminRouterForPriceLookup(t *testing.T, litellmURL, openRouterURL string) *httptest.Server {
 	t.Helper()
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
-	srv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
+	srv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{
+		Logger: logger, Admin: adminSvc, AdminToken: testAdminToken,
+		ReferencePriceURLs: app.ReferencePriceURLs{LiteLLMDataset: litellmURL, OpenRouterModels: openRouterURL},
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -83,7 +89,7 @@ type priceLookupResponse struct {
 func TestReferencePriceLookup_OpenRouterTakesPriorityOverLiteLLM(t *testing.T) {
 	litellmSrv := fakeJSONServer(t, litellmDatasetFixture)
 	openrouterSrv := fakeJSONServer(t, openRouterModelsLookupFixture)
-	adminSrv := newAdminRouterForPriceLookup(t)
+	adminSrv := newAdminRouterForPriceLookup(t, litellmSrv.URL, openrouterSrv.URL)
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
 	var out priceLookupResponse
@@ -122,7 +128,7 @@ func TestReferencePriceLookup_OpenRouterTakesPriorityOverLiteLLM(t *testing.T) {
 }
 
 func TestReferencePriceLookup_EmptyModelsList_400(t *testing.T) {
-	adminSrv := newAdminRouterForPriceLookup(t)
+	adminSrv := newAdminRouterForPriceLookup(t, "", "")
 
 	raw := []byte(`{"upstream_models":[]}`)
 	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/reference-price-lookup", bytes.NewReader(raw))
@@ -145,7 +151,7 @@ func TestReferencePriceLookup_EmptyModelsList_400(t *testing.T) {
 func TestReferencePriceLookup_BothSourcesUnavailable_502(t *testing.T) {
 	litellmSrv := fake500Server(t)
 	openrouterSrv := fake500Server(t)
-	adminSrv := newAdminRouterForPriceLookup(t)
+	adminSrv := newAdminRouterForPriceLookup(t, litellmSrv.URL, openrouterSrv.URL)
 
 	raw := []byte(`{"litellm_dataset_url":"` + litellmSrv.URL + `","openrouter_models_url":"` + openrouterSrv.URL + `","upstream_models":["gpt-4o"]}`)
 	req, err := http.NewRequest(http.MethodPost, adminSrv.URL+"/pricesync/reference-price-lookup", bytes.NewReader(raw))
@@ -168,7 +174,7 @@ func TestReferencePriceLookup_BothSourcesUnavailable_502(t *testing.T) {
 func TestReferencePriceLookup_OneSourceDown_StillReturnsTheOtherOnesMatches(t *testing.T) {
 	litellmSrv := fakeJSONServer(t, litellmDatasetFixture)
 	openrouterSrv := fake500Server(t)
-	adminSrv := newAdminRouterForPriceLookup(t)
+	adminSrv := newAdminRouterForPriceLookup(t, litellmSrv.URL, openrouterSrv.URL)
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
 
 	var out priceLookupResponse
@@ -184,5 +190,18 @@ func TestReferencePriceLookup_OneSourceDown_StillReturnsTheOtherOnesMatches(t *t
 	}
 	if out.OpenRouterError == "" {
 		t.Error("expected openrouter_error to be set when that source failed")
+	}
+}
+
+// TestReferencePriceLookup_RejectsClientSuppliedURLs：请求体不能把来源改成任意
+// 地址（否则这是一个 SSRF 入口）。
+func TestReferencePriceLookup_RejectsClientSuppliedURLs(t *testing.T) {
+	adminSrv := newAdminRouterForPriceLookup(t, "", "")
+	ac := &adminClient{t: t, baseURL: adminSrv.URL}
+	status, body := ac.do(http.MethodPost, "/pricesync/reference-price-lookup", map[string]any{
+		"litellm_dataset_url": "http://169.254.169.254/latest/meta-data/", "upstream_models": []string{"gpt-4o"},
+	}, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", status, body)
 	}
 }

@@ -1,0 +1,151 @@
+---
+title: Anthropic Messages 兼容接口
+description: 通过 POST /v1/messages 以 Anthropic Messages API 的请求/响应格式调用网关上的模型。
+section: guides
+order: 20
+---
+
+`POST /v1/messages` 接受 Anthropic Messages API 形状的请求，并返回 Anthropic 形状的响应。网关在内部把请求转换为 `chat.completions` 格式，走与 `/v1/chat/completions` 完全相同的鉴权、限流、预扣、路由与结算流程——计费口径一致，可调用的模型也一致（任意目录中的对话模型，不限于 Claude）。
+
+<Callout type="info">
+
+本版本文档仅覆盖**非流式**的基础调用（`model`、`max_tokens`、`messages`、`system`）。
+
+</Callout>
+
+## 鉴权
+
+<Callout type="warning" title="只接受 Authorization: Bearer">
+
+和其它 `/v1/*` 接口一样，`/v1/messages` **只**从 `Authorization: Bearer <API Key>` 头读取 API Key。Anthropic 官方习惯的 `x-api-key` 头**不会**被识别——只带 `x-api-key` 的请求会返回 `401 invalid_api_key`。
+
+`anthropic-version` 头不是必需的，网关会忽略它。
+
+</Callout>
+
+使用 Anthropic 官方 SDK 时，请通过 `auth_token`（Python）/ `authToken`（TypeScript）传入 Key，SDK 会据此发送 `Authorization: Bearer` 头，详见 [Anthropic SDK 接入](/docs/zh/integrations/anthropic-sdk)。
+
+## 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `model` | string | 是 | 模型 ID，如 `deepseek-ai/DeepSeek-V4-Flash`，见[模型列表](/docs/zh/models) |
+| `max_tokens` | integer | 建议填写 | 最大输出 token 数，同时决定预扣上限。Anthropic 协议要求必填；网关不强制，省略时按模型最大输出长度（受平台预扣上限约束）预扣 |
+| `messages` | array | 是 | 对话消息，`role` 为 `user` 或 `assistant`；`content` 可以是字符串，或由 `{"type": "text", "text": "..."}` 组成的数组 |
+| `system` | string 或 array | 否 | 系统提示词；字符串，或文本块数组 |
+| `temperature` | number | 否 | 原样传给上游 |
+| `top_p` | number | 否 | 原样传给上游 |
+| `stop_sequences` | string[] | 否 | 转换为 OpenAI 的 `stop` 参数 |
+
+转换规则需要注意：
+
+- `content` 数组中只有 `type` 为 `text` 的块会被保留并拼接成一段文本；图片等非文本块会被**静默忽略**。
+- 上表以外的字段（如 `top_k`、`metadata`）不会传给上游。
+- 请求体中带 `tools` 字段会直接返回 `400 invalid_request`。
+
+## 响应
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "你好！有什么可以帮你的？"}],
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 18, "output_tokens": 12}
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 本次请求的 Request ID，与响应头 `X-Request-Id` 相同 |
+| `content` | 固定为一个 `text` 块 |
+| `model` | 你请求的模型 ID |
+| `stop_reason` | 由上游的 `finish_reason` 映射：`length` → `max_tokens`，`tool_calls` → `tool_use`，其余（含 `stop`）→ `end_turn` |
+| `stop_sequence` | 恒为 `null` |
+| `usage.input_tokens` / `usage.output_tokens` | 来自上游的 `prompt_tokens` / `completion_tokens` |
+
+### 错误响应
+
+错误响应**不会**转换成 Anthropic 的 `{"type": "error", ...}` 格式，而是与其它接口一致的 OpenAI 风格错误体：
+
+```json
+{"error": {"message": "Invalid API key.", "type": "authentication_error", "code": "invalid_api_key", "request_id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6"}}
+```
+
+请按 HTTP 状态码和 `error.code` 处理，见[错误处理](/docs/zh/errors)。
+
+## 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/messages \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "max_tokens": 512,
+    "system": "你是一个简洁的助手。",
+    "messages": [
+      {"role": "user", "content": "用一句话解释什么是 API 网关"}
+    ]
+  }'
+```
+
+```python title="Python"
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    auth_token=os.environ["UFREETOKENS_API_KEY"],  # 发送 Authorization: Bearer
+    base_url="{{BASE_URL}}",  # SDK 会自动拼接 /v1/messages
+)
+
+message = client.messages.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens=512,
+    system="你是一个简洁的助手。",
+    messages=[{"role": "user", "content": "用一句话解释什么是 API 网关"}],
+)
+
+print(message.content[0].text)
+print(message.usage)
+```
+
+```ts title="TypeScript"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  authToken: process.env.UFREETOKENS_API_KEY, // 发送 Authorization: Bearer
+  apiKey: null,
+  baseURL: "{{BASE_URL}}", // SDK 会自动拼接 /v1/messages
+});
+
+const message = await client.messages.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  max_tokens: 512,
+  system: "你是一个简洁的助手。",
+  messages: [{ role: "user", content: "用一句话解释什么是 API 网关" }],
+});
+
+const block = message.content[0];
+if (block.type === "text") console.log(block.text);
+console.log(message.usage);
+```
+
+</CodeTabs>
+
+<Callout type="tip">
+
+如果环境变量中同时设置了 `ANTHROPIC_API_KEY`，SDK 还会附带 `x-api-key` 头；网关会忽略它，只使用 `Authorization` 头中的 Key。
+
+</Callout>
+
+## 相关
+
+- [Messages API 参考](/docs/zh/api/createMessage)
+- [Anthropic SDK 接入](/docs/zh/integrations/anthropic-sdk)
+- [鉴权](/docs/zh/authentication)

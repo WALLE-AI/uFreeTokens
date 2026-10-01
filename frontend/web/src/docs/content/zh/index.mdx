@@ -1,0 +1,58 @@
+---
+title: 概览
+description: uFreeTokens 是兼容 OpenAI 协议的多供应商大模型 API 网关：一把 Key、一个 Base URL、统一以人民币计费。
+section: getting-started
+order: 0
+---
+
+## uFreeTokens 是什么
+
+uFreeTokens 是一个兼容 OpenAI 协议的大模型 API 网关。它把多家上游供应商的模型统一到同一个 Base URL 和同一套 API Key 之下：
+
+- **一个入口**：用 OpenAI 的请求/响应格式调用所有已上架的模型，现有的 OpenAI SDK 只需改 `base_url` 和 `api_key`。
+- **统一计费**：所有模型按人民币（CNY）计价，从同一个账户余额中扣费，先预扣、后按实际用量结算。
+- **自动容错**：上游某个 Key 或渠道出错时，网关会在开始向你返回内容之前自动换 Key / 换渠道重试。
+
+## Base URL
+
+所有接口都挂在 `/v1` 下：
+
+```text
+{{BASE_URL}}/v1
+```
+
+除公开模型目录 `GET /v1/catalog` 外，所有接口都需要在请求头中携带 API Key：
+
+```http
+Authorization: Bearer sk-uft-...
+```
+
+## 当前可用的接口
+
+| 接口 | 说明 | 鉴权 |
+|---|---|---|
+| `GET /v1/catalog` | 公开模型目录，含价格与上下文长度 | 无需 Key |
+| `GET /v1/models` | 当前 Key 可调用的模型 ID 列表（OpenAI 格式） | API Key |
+| `GET /v1/usage` | 账户余额与累计用量 | API Key |
+| `POST /v1/chat/completions` | 对话补全，支持流式（SSE）与工具调用 | API Key |
+| `POST /v1/embeddings` | 文本向量 | API Key |
+| `POST /v1/messages` | Anthropic Messages 兼容入口（不支持工具调用） | API Key |
+
+## 当前还不能做什么
+
+以下接口已预留路径，但调用会返回 `503`，错误码为 `not_implemented`：
+
+- `POST /v1/completions`（旧式文本补全）
+- `POST /v1/images/generations`（图像生成）
+- `POST /v1/audio/transcriptions`（语音转写）
+- `POST /v1/audio/speech`（语音合成）
+
+另外，目前网站暂未开放在线充值，新注册账户的余额为 0。
+
+## 文档结构
+
+- **入门**：[快速开始](/docs/zh/quickstart)、[鉴权与 API Key](/docs/zh/authentication)、[模型与模型 ID](/docs/zh/models)、[计费与余额](/docs/zh/billing)。
+- **指南**：[流式输出](/docs/zh/streaming)、[Anthropic 兼容接口](/docs/zh/anthropic-messages)、[工具调用](/docs/zh/tool-calling)、[Embeddings](/docs/zh/embeddings)、[用量查询](/docs/zh/usage)、[错误处理](/docs/zh/errors)、[限流与并发](/docs/zh/rate-limits)、[请求 ID](/docs/zh/request-id)。
+- **集成**：[OpenAI SDK](/docs/zh/integrations/openai-sdk)、[Anthropic SDK](/docs/zh/integrations/anthropic-sdk)。
+- **API 参考**：[每个接口的参数、响应和错误码](/docs/zh/api)。
+- **更新日志**：[平台的真实变更记录](/docs/zh/changelog)。

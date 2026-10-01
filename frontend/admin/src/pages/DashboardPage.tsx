@@ -13,7 +13,8 @@ import { actionLabel, actorLabel, targetHref, targetLabel } from '../lib/audit';
 import { cn } from '../lib/cn';
 import { formatCompact, formatMicroCompact, formatRatio } from '../lib/money';
 import { formatDateTime, formatRelative } from '../lib/time';
-import type { Metrics, UsagePoint } from '../types';
+import type { UsagePoint } from '../types';
+import { getChannelHealth } from '../api/catalog';
 
 // 工作台（UI_DESIGN.md §4）：今天有什么要处理？平台运转正常吗？钱赚得怎么样？
 // 各数据块独立加载（互不阻塞）；统计接口在服务端缓存 60 秒。
@@ -25,9 +26,8 @@ const RANGE_OPTIONS: Array<{ value: DashRange; label: string }> = [
   { value: '30d', label: '30 天' },
 ];
 
-// 渠道健康阈值：错误率 > 5% 或 P95 > 5 秒视为异常
-const HEALTH_ERROR_RATE = 0.05;
-const HEALTH_P95_MS = 5000;
+// KPI 卡片的错误率告警线（与后端渠道健康阈值 DefaultHealthThresholds.ErrorRate 一致）
+const KPI_ERROR_RATE_WARN = 0.05;
 
 export default function DashboardPage() {
   const [range, setRange] = useState<DashRange>('7d');
@@ -50,7 +50,7 @@ export default function DashboardPage() {
         <TopModels from={bounds.from} to={bounds.to} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChannelHealth from={bounds.from} to={bounds.to} />
+        <ChannelHealth />
         <RecentActions />
       </div>
     </div>
@@ -178,7 +178,7 @@ function KpiSection({ from, to }: { from: string; to: string }) {
             deltaUnit="pp"
             goodWhenUp={false}
             deltaHint={hint ? `${hint}（差值，百分点）` : undefined}
-            warning={cur.error_rate !== null && Number(cur.error_rate) > HEALTH_ERROR_RATE}
+            warning={cur.error_rate !== null && Number(cur.error_rate) > KPI_ERROR_RATE_WARN}
           />
           <StatCard
             label="P95 延迟"
@@ -240,7 +240,7 @@ function TrendSection({ from, to, interval }: { from: string; to: string; interv
               { label: '成本', className: 'bg-gray-300' },
             ]}
           />
-          <p className="mt-2 text-[11px] text-gray-400">柱高 = 收入（成本 + 毛利）；时间按 UTC 分桶，点击柱子查看当天拆分。</p>
+          <p className="mt-2 text-[11px] text-gray-400">柱高 = 收入（成本 + 毛利）；时间按运营时区（北京时间）分桶，点击柱子查看当天拆分；时间窗超过 48 小时时读小时汇总表。</p>
         </DataState>
       </Card>
     </div>
@@ -299,49 +299,67 @@ function TopModels({ from, to }: { from: string; to: string }) {
 
 // ---------- 渠道健康 ----------
 
-function isUnhealthy(m: Metrics): boolean {
-  return (m.error_rate !== null && Number(m.error_rate) > HEALTH_ERROR_RATE) || (m.p95_latency_ms !== null && m.p95_latency_ms > HEALTH_P95_MS);
-}
+const HEALTH_DOT: Record<string, string> = { down: 'bg-rose-500', degraded: 'bg-amber-500' };
+const BREAKER_LABEL: Record<string, string> = { open: '熔断中', half_open: '熔断半开', closed: '', unknown: '' };
 
-function ChannelHealth({ from, to }: { from: string; to: string }) {
-  const usage = useAsync(
-    (signal) => getUsage({ from, to, interval: 'none', group_by: 'channel', top: 20, order_by: 'errors' }, signal),
-    [from, to],
-  );
-  const bad = (usage.data?.groups ?? []).filter((g) => g.key !== '__other__' && g.key !== '' && isUnhealthy(g.totals));
+// 渠道健康卡片读 GET /channels/health（后端 G9）：最近 15 分钟的错误率/P95、网关熔断器状态、
+// 上游 Key 冷却；判定阈值与"异常原因"都由服务端给出，前端只负责展示。
+function ChannelHealth() {
+  const health = useAsync((signal) => getChannelHealth(15, signal), []);
+  const rep = health.data;
+  const bad = (rep?.channels ?? []).filter((c) => c.status === 'down' || c.status === 'degraded');
+  const th = rep?.thresholds;
   return (
     <div>
-      <SectionTitle actions={<span className="text-[11px] text-gray-400">错误率 &gt; 5% 或 P95 &gt; 5s</span>}>渠道健康</SectionTitle>
+      <SectionTitle
+        actions={
+          th && (
+            <span className="text-[11px] text-gray-400">
+              近 {rep?.window_minutes} 分钟 · 错误率 &gt; {formatRatio(th.error_rate, 0)} 或 P95 &gt; {formatMs(th.p95_latency_ms)}
+            </span>
+          )
+        }
+      >
+        渠道健康
+      </SectionTitle>
       <Card padding="p-0">
-        <DataState loading={usage.loading} error={usage.error} onRetry={usage.reload} skeleton="text">
+        <DataState loading={health.loading} error={health.error} onRetry={health.reload} skeleton="text">
           {bad.length === 0 ? (
             <div className="px-4 py-6 flex items-center justify-center gap-2 text-xs text-gray-600">
               <CircleCheck className="w-4 h-4 text-emerald-600" />
-              全部渠道正常
+              全部 {rep?.channels?.length ?? 0} 个活跃渠道正常
             </div>
           ) : (
             <ul className="divide-y divide-gray-100">
-              {bad.map((g) => {
-                const err = g.totals.error_rate !== null && Number(g.totals.error_rate) > HEALTH_ERROR_RATE;
-                return (
-                  <li key={g.key}>
-                    <Link to={`/channels/${g.key}`} className="px-4 py-2.5 flex items-center gap-3 text-xs hover:bg-gray-50/70">
-                      <span className={cn('w-2 h-2 rounded-full shrink-0', err ? 'bg-rose-500' : 'bg-amber-500')} />
-                      <span className="font-mono text-gray-400 w-10">#{g.key}</span>
-                      <span className="flex-1 min-w-0 truncate text-gray-900">{g.label}</span>
-                      <span className={cn('font-mono', err ? 'text-rose-700' : 'text-gray-500')}>错误率 {formatRatio(g.totals.error_rate, 1)}</span>
-                      <span className={cn('font-mono w-24 text-right', !err ? 'text-amber-700' : 'text-gray-500')}>P95 {formatMs(g.totals.p95_latency_ms)}</span>
-                    </Link>
-                  </li>
-                );
-              })}
+              {bad.slice(0, 20).map((c) => (
+                <li key={c.channel_id}>
+                  <Link to={`/channels/${c.channel_id}`} className="px-4 py-2.5 flex items-center gap-3 text-xs hover:bg-gray-50/70">
+                    <span className={cn('w-2 h-2 rounded-full shrink-0', HEALTH_DOT[c.status])} />
+                    <span className="font-mono text-gray-400 w-10">#{c.channel_id}</span>
+                    <span className="flex-1 min-w-0 truncate text-gray-900">
+                      {c.provider_account} / {c.upstream_model}
+                      <span className="ml-2 text-[11px] text-gray-400">{(c.status_reasons ?? []).join('、')}</span>
+                    </span>
+                    {BREAKER_LABEL[c.breaker_state] && <span className="text-rose-700 font-medium">{BREAKER_LABEL[c.breaker_state]}</span>}
+                    {c.keys_on_cooldown > 0 && (
+                      <span className="text-amber-700 font-mono">
+                        冷却 {c.keys_on_cooldown}/{c.keys_total}
+                      </span>
+                    )}
+                    <span className="font-mono text-gray-500">错误率 {formatRatio(c.error_rate, 1)}</span>
+                    <span className="font-mono w-24 text-right text-gray-500">P95 {formatMs(c.p95_latency_ms)}</span>
+                  </Link>
+                </li>
+              ))}
             </ul>
           )}
         </DataState>
       </Card>
       <p className="mt-1.5 text-[11px] text-gray-400">
         <Activity className="inline w-3 h-3 mr-1 -mt-0.5" />
-        基于调用日志统计；熔断器的实时状态暂无接口（后端 G9）。
+        {rep && !rep.runtime_state_known
+          ? '后台未连接 Redis，熔断与密钥冷却状态未知，仅按调用日志判断。'
+          : `熔断/冷却为网关实时状态；最近事件 ${rep?.recent_events?.length ?? 0} 条。`}
       </p>
     </div>
   );

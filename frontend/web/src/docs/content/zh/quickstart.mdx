@@ -1,0 +1,134 @@
+---
+title: 快速开始
+description: 注册账号、创建 API Key，然后用 cURL、Python 或 Node.js 发出第一次调用。
+section: getting-started
+order: 10
+---
+
+## 三步完成第一次调用
+
+<Steps>
+
+<Step title="注册并登录">
+
+在网站右上角点击「注册」，填写邮箱和密码（至少 8 位）。注册成功后会自动登录，目前不需要邮箱验证。
+
+</Step>
+
+<Step title="在个人中心创建 API Key">
+
+打开「个人中心」→「API 密钥」，点击创建并填写一个便于识别的名称。
+
+完整的 Key（以 `sk-uft-` 开头）**只会在创建成功的弹窗里显示这一次**，关闭后无法再次查看，请立即复制保存。之后列表中只显示前缀，例如 `sk-uft-a1B2c3`。
+
+</Step>
+
+<Step title="把 Key 写入环境变量">
+
+本文档的所有示例都从环境变量读取 Key，不要把 Key 写进代码：
+
+```bash
+export UFREETOKENS_API_KEY="粘贴你的 Key"
+```
+
+</Step>
+
+<Step title="发出第一次请求">
+
+把下面示例中的模型 ID 换成你的 Key 可用的模型（可以用 `GET /v1/models` 查询，见[模型与模型 ID](/docs/zh/models)）：
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "messages": [{"role": "user", "content": "用一句话介绍你自己"}]
+  }'
+```
+
+```python title="Python"
+# pip install openai
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+)
+
+resp = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "用一句话介绍你自己"}],
+)
+print(resp.choices[0].message.content)
+```
+
+```ts title="Node.js"
+// npm install openai
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{BASE_URL}}/v1",
+  apiKey: process.env.UFREETOKENS_API_KEY,
+});
+
+const resp = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "用一句话介绍你自己" }],
+});
+console.log(resp.choices[0].message.content);
+```
+
+</CodeTabs>
+
+</Step>
+
+</Steps>
+
+## 成功的响应
+
+响应是标准的 OpenAI Chat Completions 格式，`usage` 字段给出本次的 token 用量：
+
+```json
+{
+  "id": "...",
+  "object": "chat.completion",
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "..."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 14, "completion_tokens": 32, "total_tokens": 46}
+}
+```
+
+每个响应都带有 `X-Request-Id` 响应头，排查问题时请提供它（见[请求 ID](/docs/zh/request-id)）。
+
+## 常见问题
+
+<Callout type="warning" title="返回 402 insufficient_balance">
+
+账户可用余额不足以覆盖本次请求的预扣金额。新注册账户的余额为 0，目前网站暂未开放在线充值。计费规则见[计费与余额](/docs/zh/billing)。
+
+</Callout>
+
+| 状态码 | 错误码 | 原因 |
+|---|---|---|
+| 401 | `invalid_api_key` | 没带 `Authorization` 头、格式不对，或 Key 已被吊销 |
+| 404 | `model_not_found` | 模型 ID 不存在，或对你的账户不可见 |
+| 402 | `insufficient_balance` | 余额不足 |
+| 429 | `rate_limit_exceeded` | 触发了 Key 的限流，按 `Retry-After` 头等待后重试 |
+
+完整错误码见[错误处理](/docs/zh/errors)。
+
+## 下一步
+
+- [流式输出](/docs/zh/streaming)：用 `stream: true` 逐字返回。
+- [OpenAI SDK 集成](/docs/zh/integrations/openai-sdk)：流式、Embeddings 和错误处理的完整示例。
+- [API 参考](/docs/zh/api)：所有接口的参数与响应。

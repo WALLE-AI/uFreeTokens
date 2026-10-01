@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	_ "time/tzdata" // 服务器（尤其是 Windows/精简容器）可能没有系统时区库
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
@@ -14,11 +16,15 @@ import (
 // 用量统计与全局调用日志（运营后台接口方案 §3、§6）。
 
 // statsCache 按完整 URL 缓存统计结果 60 秒（接口方案 §3.4 阶段 A）：多个运营同时
-// 打开工作台时，不必每人每次都扫一遍 request_logs。
+// 打开工作台时，不必每人每次都扫一遍 request_logs。条目数有上限（超出时淘汰最旧的），
+// 同一个 URL 的并发未命中只计算一次（singleflight），其余请求等结果。
 var statsCache = struct {
 	sync.Mutex
 	entries map[string]statsCacheEntry
+	group   singleflight.Group
 }{entries: map[string]statsCacheEntry{}}
+
+const statsCacheMaxEntries = 512
 
 type statsCacheEntry struct {
 	at  time.Time
@@ -36,31 +42,61 @@ func cachedStats(r *http.Request, compute func() (any, error)) (any, error) {
 	}
 	statsCache.Unlock()
 
-	val, err := compute()
+	val, err, _ := statsCache.group.Do(key, compute)
 	if err != nil {
 		return nil, err
 	}
 	statsCache.Lock()
 	defer statsCache.Unlock()
-	// 顺手清理过期条目，避免不同参数组合无限累积
+	// 顺手清理过期条目；仍超过上限时淘汰最旧的，避免不同参数组合无限累积。
+	var oldestKey string
+	var oldestAt time.Time
 	for k, e := range statsCache.entries {
 		if time.Since(e.at) >= statsCacheTTL {
 			delete(statsCache.entries, k)
+			continue
 		}
+		if oldestKey == "" || e.at.Before(oldestAt) {
+			oldestKey, oldestAt = k, e.at
+		}
+	}
+	if len(statsCache.entries) >= statsCacheMaxEntries && oldestKey != "" {
+		delete(statsCache.entries, oldestKey)
 	}
 	statsCache.entries[key] = statsCacheEntry{at: time.Now(), val: val}
 	return val, nil
 }
 
-// statsRange 解析 from/to；缺省时取 [to-defaultSpan, now)。
-func statsRange(w http.ResponseWriter, r *http.Request, defaultSpan time.Duration) (time.Time, time.Time, bool) {
+// statsTZ 读 ?tz=（IANA 时区名，如 Asia/Shanghai），缺省为 UTC。
+func (h *adminHandlers) statsTZ(w http.ResponseWriter, r *http.Request) (*time.Location, bool) {
+	name := r.URL.Query().Get("tz")
+	if name == "" {
+		if h.defaultTZ != nil {
+			return h.defaultTZ, true
+		}
+		return time.UTC, true
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil || name == "Local" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'tz', want an IANA time zone such as Asia/Shanghai")
+		return nil, false
+	}
+	return loc, true
+}
+
+// statsRange 解析 from/to（纯日期按 ?tz= 时区解释）；缺省时取 [to-defaultSpan, now)。
+func (h *adminHandlers) statsRange(w http.ResponseWriter, r *http.Request, defaultSpan time.Duration) (time.Time, time.Time, bool) {
 	q := r.URL.Query()
-	from, err := parseTimeParam(q.Get("from"), false)
+	loc, ok := h.statsTZ(w, r)
+	if !ok {
+		return time.Time{}, time.Time{}, false
+	}
+	from, err := parseTimeParamIn(q.Get("from"), false, loc)
 	if err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'from': "+err.Error())
 		return time.Time{}, time.Time{}, false
 	}
-	to, err := parseTimeParam(q.Get("to"), true)
+	to, err := parseTimeParamIn(q.Get("to"), true, loc)
 	if err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid 'to': "+err.Error())
 		return time.Time{}, time.Time{}, false
@@ -74,15 +110,8 @@ func statsRange(w http.ResponseWriter, r *http.Request, defaultSpan time.Duratio
 	return from, to, true
 }
 
-func (h *adminHandlers) registerStatsRoutes(r chi.Router) {
-	r.Get("/stats/overview", h.statsOverview)
-	r.Get("/stats/usage", h.statsUsage)
-	r.Get("/request-logs", h.listRequestLogs)
-	r.Get("/request-logs/{requestID}", h.getRequestLog)
-}
-
 func (h *adminHandlers) statsOverview(w http.ResponseWriter, r *http.Request) {
-	from, to, ok := statsRange(w, r, 7*24*time.Hour)
+	from, to, ok := h.statsRange(w, r, 7*24*time.Hour)
 	if !ok {
 		return
 	}
@@ -96,12 +125,14 @@ func (h *adminHandlers) statsOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *adminHandlers) usageFromQuery(w http.ResponseWriter, r *http.Request, accountID int64) (admin.UsageInput, bool) {
-	from, to, ok := statsRange(w, r, 7*24*time.Hour)
+	from, to, ok := h.statsRange(w, r, 7*24*time.Hour)
 	if !ok {
 		return admin.UsageInput{}, false
 	}
+	loc, _ := h.statsTZ(w, r) // statsRange 已经校验过
 	q := &queryParser{r: r}
 	in := admin.UsageInput{
+		TZ: loc,
 		StatsFilter: admin.StatsFilter{
 			From: from, To: to, VirtualModel: q.str("virtual_model"), ChannelID: q.int64("channel_id"),
 			ProviderID: q.int64("provider_id"), AccountID: q.int64("account_id"), APIKeyID: q.int64("api_key_id"),

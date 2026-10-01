@@ -5,6 +5,12 @@
 > `503 not_implemented`（比如 `/v1/completions`），要么根本不存在。
 > `cmd/admin`（:8081）是内部运营工具，鉴权是共享密钥
 > `UFT_ADMIN_TOKEN`，`frontend/web` 从不直连它，这里不展开列举它的接口。
+>
+> `/v1/*` 的字段级细节（请求/响应结构、错误码全集、示例）以
+> [gateway-openapi.json](gateway-openapi.json) 为准：它由
+> `internal/app.GatewayOpenAPI()` 从代码生成，`TestGatewayOpenAPI_UpToDate`
+> 保证与实现一致，并驱动 `frontend/web` 开发者文档的 API 参考页。本文件是给人
+> 读的概述。
 
 ## 通用约定
 
@@ -35,7 +41,7 @@
 
 **鉴权**：无。**限流**：按 IP 60 次/分钟。**缓存**：`Cache-Control: public, max-age=60`。
 
-只返回 `status=active` 且对 `free` tier 可见的虚拟模型。
+返回对 `free` tier 可见的虚拟模型，包括 `status=active` 和 `status=deprecated`（每条带 `status` 字段；deprecated 模型只用于展示，调用会返回 404 `model_not_found`）。
 
 ```json
 {
@@ -120,9 +126,12 @@
 
 ### `POST /v1/messages` — Anthropic 兼容入口
 
-**鉴权**：`Bearer <api-key>`。请求/响应都是 Anthropic Messages API 的形状；
-网关内部转译成 `chat.completions` 走同一条鉴权/预扣/路由/结算管线，计费
-口径和 `/v1/chat/completions` 完全一致。
+**鉴权**：`Bearer <api-key>`（只认 `Authorization` 头，不认 Anthropic 的
+`x-api-key`）。请求/成功响应是 Anthropic Messages API 的形状；网关内部转译成
+`chat.completions` 走同一条鉴权/预扣/路由/结算管线，计费口径和
+`/v1/chat/completions` 完全一致。与官方 API 的差异：错误响应仍是上面的
+OpenAI 兼容格式；只支持文本内容块；只转发 `model`、`messages`、`system`、
+`max_tokens`、`temperature`、`top_p`、`stream`、`stop_sequences`，其余字段丢弃。
 
 ### 尚未实现（返回 `503 not_implemented`）
 

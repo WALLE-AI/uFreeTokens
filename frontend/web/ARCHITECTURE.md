@@ -184,7 +184,7 @@
 | `usage.ts` | `getUsage(apiKey)` + `microToDisplay` |
 | `console.ts` | `register/login/logout/getMe/listKeys/createKey/revokeKey/getWallet/getUsageInterval/getLogs` |
 
-环境变量：`frontend/web/.env.example` 只有 `VITE_GATEWAY_BASE_URL`（留空=同源）；**没有、也不应该有**任何指向 `:8081`（admin）的前端可读 env。
+环境变量：`frontend/web/.env.example` 有 `VITE_GATEWAY_BASE_URL`（留空=同源）和 `VITE_DOCS_PUBLIC_ORIGIN`（文档站构建期产物用的正式域名，见 §10）；**没有、也不应该有**任何指向 `:8081`（admin）的前端可读 env。
 
 ---
 
@@ -205,3 +205,22 @@
 2. **CORS 已实现**（`internal/httpx.CORS`）：只挂在 `/v1`，且在 `auth.APIKey` 之前（预检 OPTIONS 不带 Authorization，先过 CORS 中间件应答，不会被鉴权中间件拦成 401）。默认不开启（`gateway.cors_origins` 为空），dev/prod 都走同源反代，不需要它；只有前后端分开部署、无法同源反代时才需要显式配置。不开 credentials，`/console/*` 完全不挂这个中间件——Cookie 会话只信任同源请求。
 3. BYOK 模式下 API Key 明文存 `localStorage` 是已知取舍，`ConnectKeyModal` 已经在 UI 上提示"仅保存在本机浏览器"，并提供"断开并清除"入口。
 4. Console 会话是 httpOnly Cookie（前端 JS 拿不到 token 本身），`consoleAuthStore` 只缓存 `GET /console/me` 的返回值；写操作的 CSRF 防护见 §3。
+
+---
+
+## 10. 开发者文档站（`/docs`，`src/docs/`）
+
+面向接入 `/v1/*` 的第三方开发者，中英双语。方案见 `docs/frontend-web 文档模块优化技术方案.md`。
+
+| 部分 | 实现 |
+|---|---|
+| 路由 | `/docs/{zh,en}/<slug>`、`/docs/{lang}/api`、`/docs/{lang}/api/<operationId>`；不带语言的 `/docs/...` 按"上次选择 > 浏览器语言"补前缀。`App.tsx` 用 `lazy()` 加载 `src/docs/DocsLayout.tsx`，文档代码不进首屏包 |
+| 正文 | `src/docs/content/{zh,en}/**/*.mdx`，frontmatter 决定标题/分组/顺序；同一篇两种语言文件名相同。MDX 与 shiki 代码高亮都在构建期完成（`vite.config.ts`）。英文缺页时回退显示中文并提示 |
+| API 参考 | 读取 `docs/gateway-openapi.json`（由 `internal/app.GatewayOpenAPI()` 从 Go 代码生成，`TestGatewayOpenAPI_UpToDate` 保证一致）；页面、参数/Schema、示例代码（cURL/Python/Node.js）都由它派生 |
+| 在线调试 | `api/TryIt.tsx` 发真实请求（同源）。Key 优先用 `authStore` 里已连接的 Key，否则临时填写、只存组件 state；计费接口默认 `max_tokens: 64` 并常驻扣费提示 |
+| 构建期插件 | `tools/docsPlugin.ts` 提供 `virtual:docs-manifest`（导航）、`virtual:docs-search/<lang>`（搜索索引，按语言懒加载）、`virtual:docs-openapi`（description 预渲染为 HTML），并在 `dist/` 产出 `llms.txt`、`llms-full.txt`、`llms-full.zh.txt`、`gateway-openapi.json` |
+| 搜索 | `minisearch`，中文按单字 + 二元组切分；`⌘K`/`Ctrl+K` 或 `/` 打开（文档页内优先于全站命令面板） |
+| 一致性检查 | `npm run docs:check`（已串进 `npm run lint`）：文档里的 `/v1/...` 路径必须存在于 OpenAPI；站内链接/锚点必须有效；英文页必须有中文源；译文 `translatedFrom` 与中文当前 hash 不一致时告警 |
+
+示例代码里的 `{{BASE_URL}}` 在页面上替换为当前 origin（或 `VITE_GATEWAY_BASE_URL`），在 `llms*.txt` 里替换为 `VITE_DOCS_PUBLIC_ORIGIN`。
+

@@ -14,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
@@ -53,15 +56,32 @@ func (c *adminClient) do(method, path string, body any, headers map[string]strin
 
 func newAdminTestServer(t *testing.T, withPriceSync bool) (*adminClient, func()) {
 	t.Helper()
+	ac, _, done := newAdminTestServerWithPool(t, withPriceSync)
+	return ac, done
+}
+
+// newAdminTestServerWithPool 同 newAdminTestServer，额外返回连接池（登录测试管理员用）。
+func newAdminTestServerWithPool(t *testing.T, withPriceSync bool) (*adminClient, *pgxpool.Pool, func()) {
+	t.Helper()
+	return newAdminTestServerWithDeps(t, withPriceSync, nil)
+}
+
+// newAdminTestServerWithDeps 允许测试在构造路由前调整依赖（例如接上 Redis、打开 If-Match 强制）。
+func newAdminTestServerWithDeps(t *testing.T, withPriceSync bool, mutate func(*app.AdminDeps)) (*adminClient, *pgxpool.Pool, func()) {
+	t.Helper()
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
-	deps := app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
+	deps := app.AdminDeps{Logger: logger, Admin: adminSvc, Auth: adminauth.New(pool, adminauth.Config{Box: box, MaxIPFailures: 1 << 30}), AdminToken: testAdminToken}
 	if withPriceSync {
 		deps.PriceSync = pricesync.NewEngine(pool, adminSvc)
 	}
+	if mutate != nil {
+		mutate(&deps)
+	}
 	srv := httptest.NewServer(app.NewAdminRouter(deps))
-	return &adminClient{t: t, baseURL: srv.URL}, srv.Close
+	return &adminClient{t: t, baseURL: srv.URL}, pool, srv.Close
 }
 
 func TestAdminAPI_UniqueViolationsReturn409(t *testing.T) {
@@ -101,9 +121,8 @@ func TestAdminAPI_UniqueViolationsReturn409(t *testing.T) {
 }
 
 func TestPriceSyncHTTP_ApproveBlockedRequiresConfirmation(t *testing.T) {
-	ac, done := newAdminTestServer(t, true)
+	ac, pool, done := newAdminTestServerWithPool(t, true)
 	defer done()
-	pool := testPool(t)
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	var provider, providerAccount, vm, channel, source struct {
@@ -128,7 +147,9 @@ func TestPriceSyncHTTP_ApproveBlockedRequiresConfirmation(t *testing.T) {
 		t.Fatalf("ingest result = %+v, want blocked with a change request", result)
 	}
 	crPath := fmt.Sprintf("/price-change-requests/%d/approve", *result.ChangeRequestID)
-	actor := map[string]string{"X-Actor-ID": "9", "X-Actor-Name": url.QueryEscape("李四")}
+	// 审批人来自登录会话；客户端自填的 X-Actor-* 头必须被忽略。
+	approver := ac.loginAs(pool, "李四", "pricing")
+	actor := map[string]string{"X-Actor-ID": "9", "X-Actor-Name": url.QueryEscape("伪造")}
 
 	if status, body := ac.do(http.MethodPost, crPath, map[string]any{"reason": "厂商确认"}, actor); status != http.StatusConflict {
 		t.Fatalf("approve blocked without confirm: status = %d, body = %s, want 409", status, body)
@@ -145,8 +166,8 @@ func TestPriceSyncHTTP_ApproveBlockedRequiresConfirmation(t *testing.T) {
 	).Scan(&decidedBy, &decidedByName, &reason, &crStatus); err != nil {
 		t.Fatalf("query change request: %v", err)
 	}
-	if decidedBy != 9 || decidedByName != "李四" || reason != "厂商确认" || crStatus != "applied" {
-		t.Errorf("decision = (%d, %q, %q, %q), want (9, 李四, 厂商确认, applied)", decidedBy, decidedByName, reason, crStatus)
+	if decidedBy != approver.ID || decidedByName != "李四" || reason != "厂商确认" || crStatus != "applied" {
+		t.Errorf("decision = (%d, %q, %q, %q), want (%d, 李四, 厂商确认, applied)", decidedBy, decidedByName, reason, crStatus, approver.ID)
 	}
 
 	var audit struct {

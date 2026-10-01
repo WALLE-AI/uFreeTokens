@@ -59,3 +59,100 @@ input[type=range]::-webkit-slider-runnable-track {
   background: #d1d5db;
 }
 
+
+/* 文档正文排版（src/docs）。元素自身样式在 src/docs/components/mdx 里，
+   这里只统一段落节奏和基础元素，避免每个组件各自加 margin。 */
+.docs-prose {
+  font-size: 15px;
+  line-height: 1.75;
+  color: #374151;
+}
+.docs-prose > * + * {
+  margin-top: 1rem;
+}
+.docs-prose > h2 {
+  margin-top: 2.5rem;
+  padding-top: 0.25rem;
+}
+.docs-prose > h3 {
+  margin-top: 1.75rem;
+}
+.docs-prose > h2 + *,
+.docs-prose > h3 + * {
+  margin-top: 0.75rem;
+}
+.docs-prose ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.docs-prose ol:not([class]) {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.docs-prose li + li {
+  margin-top: 0.25rem;
+}
+.docs-prose li > ul,
+.docs-prose li > ol {
+  margin-top: 0.25rem;
+}
+.docs-prose strong {
+  color: #111827;
+  font-weight: 600;
+}
+.docs-prose blockquote {
+  border-left: 3px solid #e5e7eb;
+  padding-left: 1rem;
+  color: #4b5563;
+}
+.docs-prose hr {
+  border-color: #e5e7eb;
+}
+.docs-prose-tight {
+  font-size: 14px;
+  line-height: 1.65;
+  color: inherit;
+}
+.docs-prose-tight > * + * {
+  margin-top: 0.5rem;
+}
+/* OpenAPI description 预渲染出的 HTML（无组件映射，直接用选择器控制）。 */
+.docs-prose code:not(pre code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+.docs-html a {
+  color: #6d28d9;
+  text-decoration: underline;
+}
+.docs-html code {
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.docs-html pre {
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  font-size: 12.5px;
+}
+.docs-html pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.docs-html table {
+  width: 100%;
+  font-size: 13px;
+}
+.docs-html th,
+.docs-html td {
+  border-bottom: 1px solid #f3f4f6;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}

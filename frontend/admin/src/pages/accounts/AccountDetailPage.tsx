@@ -11,6 +11,7 @@ import type { AccountStatus, ApiKeyCreated } from '../../types';
 import { AdjustWalletModal, CreateApiKeyModal, EditAccountModal, GrantCreditModal } from './modals';
 import { ApiKeysSection, GrantsSection, LedgerSection, MembersTable, UsageSection } from './sections';
 import { ACCOUNT_TYPE_LABELS } from './shared';
+import { Can } from '../../components/ui/Can';
 
 // 账户详情（UI_DESIGN.md §3.2 详情模板 + §5.5 资金操作）。
 
@@ -110,11 +111,11 @@ export default function AccountDetailPage() {
                 badges={<StatusBadge kind="account" value={a.status} />}
                 actions={
                   <>
-                    <Button onClick={() => setGranting(true)}>发放赠送</Button>
-                    <Button variant="primary" onClick={() => setAdjusting(true)}>
+                    <Can perm="wallet:adjust"><Button onClick={() => setGranting(true)}>发放赠送</Button></Can>
+                    <Can perm="wallet:adjust"><Button variant="primary" onClick={() => setAdjusting(true)}>
                       人工调账
-                    </Button>
-                    <ActionMenu items={menu} />
+                    </Button></Can>
+                    <Can perm="account:write"><ActionMenu items={menu} /></Can>
                   </>
                 }
               />
@@ -149,7 +150,7 @@ export default function AccountDetailPage() {
               <div className="flex gap-8">
                 <AnchorNav items={ANCHORS} />
                 <div className="flex-1 min-w-0 space-y-10">
-                  <Section id="overview" title="概览" actions={<Button size="sm" onClick={() => setEditing(true)}>编辑</Button>}>
+                  <Section id="overview" title="概览" actions={<Can perm="account:write"><Button size="sm" onClick={() => setEditing(true)}>编辑</Button></Can>}>
                     <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-xs mb-4">
                       <InfoGrid
                         items={[
@@ -163,7 +164,7 @@ export default function AccountDetailPage() {
                       />
                     </div>
                     <div className="text-xs font-medium text-gray-900 mb-2">成员</div>
-                    <MembersTable members={members} />
+                    <MembersTable accountId={a.id} members={members} onChanged={bump} />
                   </Section>
 
                   <Section id="usage" title="用量趋势">
@@ -174,9 +175,11 @@ export default function AccountDetailPage() {
                     id="keys"
                     title="API 密钥"
                     actions={
-                      <Button size="sm" onClick={() => setCreatingKey(true)} disabled={a.status !== 'active'}>
-                        代开 API Key
-                      </Button>
+                      <Can perm="account:write">
+                        <Button size="sm" onClick={() => setCreatingKey(true)} disabled={a.status !== 'active'}>
+                          代开 API Key
+                        </Button>
+                      </Can>
                     }
                   >
                     <ApiKeysSection accountId={a.id} reloadKey={version} onChanged={bump} />

@@ -1,0 +1,123 @@
+---
+title: Request ID
+description: 每个响应都带有 X-Request-Id，用于关联客户端日志与平台记录；了解它的生成规则、自定义方式，以及如何在排障时使用。
+section: guides
+order: 80
+---
+
+网关为每个请求分配一个 Request ID，用于把你的客户端日志和平台侧的调用日志、计费记录关联起来。排查问题或联系支持时，提供 Request ID 是最快的定位方式。
+
+## 在哪里获取
+
+| 位置 | 说明 |
+| --- | --- |
+| 响应头 `X-Request-Id` | **所有**响应都有，包括成功、失败和流式响应 |
+| 错误体 `error.request_id` | 所有错误响应都有，值与响应头相同 |
+| 响应体 `id` | `/v1/chat/completions`（含每个流式 chunk）、`/v1/embeddings`、`/v1/messages` 的成功响应中，`id` 字段都被改写为 Request ID |
+
+## 生成规则
+
+- 如果请求带了合法的 `X-Request-Id` 头，网关**沿用**该值，并在响应头中原样返回。
+- 否则，网关生成一个 [ULID](https://github.com/ulid/spec)（26 个字符、按时间有序，例如 `01J9Z3K5V8Q2M4N6P8R0S2T4V6`）。
+
+合法的自定义 Request ID 需要同时满足：
+
+| 规则 | 要求 |
+| --- | --- |
+| 长度 | 1 到 64 个字符 |
+| 字符集 | 仅限英文字母 `A-Z` `a-z`、数字 `0-9`、连字符 `-`、下划线 `_` |
+
+不满足规则的值（例如过长、含空格、含 `.` 或 `:`）**不会**报错，而是被静默替换为网关生成的 ULID。因此请以**响应头中返回的值**为准，而不是你发送的值。
+
+<Callout type="warning" title="每个请求使用唯一的值">
+
+Request ID 在平台内部同时用作该请求的计费预扣与调用日志的标识。如果你自定义 Request ID，请保证**每个请求（包括重试）都使用一个新的、全局唯一的值**，例如 UUID v4 或 ULID。重复使用同一个值会导致这些请求在日志和计费上无法区分，网关不保证此类请求的处理结果。如果没有关联需求，不传这个头、让网关生成即可。
+
+</Callout>
+
+## 示例
+
+### 读取 Request ID
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -sS -D - {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "你好"}]}' \
+  -o /dev/null | grep -i x-request-id
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+raw = client.chat.completions.with_raw_response.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print("request_id:", raw.headers.get("X-Request-Id"))
+completion = raw.parse()
+print(completion.choices[0].message.content)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const { data, response } = await client.chat.completions
+  .create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    messages: [{ role: "user", content: "你好" }],
+  })
+  .withResponse();
+
+console.log("request_id:", response.headers.get("X-Request-Id"));
+console.log(data.choices[0].message.content);
+```
+
+</CodeTabs>
+
+### 发送自定义 Request ID
+
+```bash title="cURL"
+curl -i {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: order-42-$(date +%s%N)" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+使用 SDK 时可以通过额外请求头传入，例如 Python 的 `extra_headers={"X-Request-Id": str(uuid.uuid4())}`，或 Node 的第二个参数 `{ headers: { "X-Request-Id": crypto.randomUUID() } }`。
+
+## 记录日志的建议
+
+- 每次调用都把 Request ID 和你自己的业务 ID（如订单号、会话 ID）、HTTP 状态码、`error.code` 一起写入日志。
+- 出错时优先记录 `error.request_id`；没有错误体（例如网络中断）时退回到响应头 `X-Request-Id`。
+- 浏览器跨域调用时，只有在平台为你的来源开启了 CORS 后才能读取 `X-Request-Id` 响应头（网关会在 CORS 响应中暴露该头）。
+
+## 联系支持
+
+反馈问题时请附上：
+
+1. Request ID；
+2. 请求发生的大致时间（含时区）；
+3. 使用的模型 ID 与接口路径；
+4. 收到的 HTTP 状态码和 `error.code`。
+
+你也可以在网站**个人中心**查看最近 30 天的调用日志（时间、模型、token、费用、状态），结合时间先自行比对。注意：鉴权失败、限流、余额不足等在转发上游之前就被拒绝的请求不会出现在调用日志中，排查这类问题时 Request ID 尤其重要。
+
+## 相关
+
+- [错误处理](/docs/zh/errors)
+- [速率限制](/docs/zh/rate-limits)

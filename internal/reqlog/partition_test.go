@@ -70,3 +70,55 @@ func TestEnsureFuturePartitions_AllowsInsertOnFarFutureDate(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM request_logs WHERE request_id = $1`, requestID)
 	})
 }
+
+// TestEnsurePartition_MovesRowsOutOfDefault：超出已建分区范围的行落进兜底分区
+// 而不是写入失败；之后补建这一天的分区时，行被挪进新分区。
+func TestEnsurePartition_MovesRowsOutOfDefault(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(1, 0, int(time.Now().UnixNano()%300))
+	at := day.Add(3 * time.Hour)
+	requestID := "default-partition-" + day.Format("20060102") + "-" + time.Now().Format("150405.000000")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO request_logs (request_id, created_at, account_id, api_key_id, virtual_model, endpoint,
+		                            is_stream, status, attempts, usage_source)
+		 VALUES ($1, $2, 1, 1, 'm', 'chat.completions', false, 'success', 1, 'upstream')`, requestID, at); err != nil {
+		t.Fatalf("insert beyond partitions should land in the default partition: %v", err)
+	}
+	if err := ensurePartition(ctx, pool, day); err != nil {
+		t.Fatalf("ensurePartition: %v", err)
+	}
+	var where string
+	if err := pool.QueryRow(ctx, `SELECT tableoid::regclass::text FROM request_logs WHERE request_id = $1`, requestID).Scan(&where); err != nil {
+		t.Fatalf("find row: %v", err)
+	}
+	if want := "request_logs_" + day.Format("20060102"); where != want {
+		t.Errorf("row lives in %s, want %s", where, want)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS request_logs_`+day.Format("20060102"))
+	})
+}
+
+func TestDropExpiredPartitions(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := ensurePartition(ctx, pool, old); err != nil {
+		t.Fatalf("ensurePartition: %v", err)
+	}
+	if dropped, err := DropExpiredPartitions(ctx, pool, 0); err != nil || len(dropped) != 0 {
+		t.Fatalf("retention<=0 must be a no-op, got %v %v", dropped, err)
+	}
+	dropped, err := DropExpiredPartitions(ctx, pool, 20*365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("DropExpiredPartitions: %v", err)
+	}
+	found := false
+	for _, n := range dropped {
+		found = found || n == "request_logs_20010101"
+	}
+	if !found {
+		t.Errorf("dropped = %v, want request_logs_20010101", dropped)
+	}
+}

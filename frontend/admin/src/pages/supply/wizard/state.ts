@@ -1,4 +1,4 @@
-import type { Protocol, ReferencePrice, UpstreamModel } from '../../../types';
+import type { FXRate, Protocol, ReferencePrice, UpstreamModel } from '../../../types';
 
 // 接入向导的状态（UI_DESIGN.md §5.1）。整个对象存 sessionStorage，刷新可恢复；
 // 上游密钥明文**不**持久化（只在内存里，刷新后需要重新输入）。
@@ -14,7 +14,7 @@ export interface RowConfig {
   family: string;
   contextWindow: string;
   maxOutput: string;
-  costIn: string; // USD / 百万 token
+  costIn: string; // 成本币种（WizardState.costCurrency）/ 百万 token
   costOut: string;
   markup: string | null; // 单行加价率覆盖（百分比），null = 用全局值
   sellIn: string | null; // 手工覆盖售价（CNY / 百万 token），null = 自动计算
@@ -63,6 +63,7 @@ export interface WizardState {
   refChecked: boolean;
   selected: string[];
   globalMarkup: string; // 百分比
+  costCurrency: string; // 成本价币种（USD / CNY / 已配置汇率的其他币种），参考价固定是 USD
   rows: Record<string, RowConfig>;
   results: Record<string, ImportResult>;
   finished: boolean;
@@ -91,6 +92,7 @@ export const INITIAL_STATE: WizardState = {
   refChecked: false,
   selected: [],
   globalMarkup: '30',
+  costCurrency: 'USD',
   rows: {},
   results: {},
   finished: false,
@@ -165,6 +167,8 @@ export function defaultRow(m: UpstreamModel, ref: ReferencePrice | undefined, st
 }
 
 // ---------- 定价计算 ----------
+// computeRow 只用于第 ④ 步编辑时的即时预览（浮点近似）。真正提交的售价由服务端
+// 按加价率用 decimal 计算，第 ⑤ 步先调用 import-models?dry_run 展示服务端核算结果。
 
 export interface RowPricing {
   costInCNY: number | null;
@@ -186,7 +190,15 @@ export function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
-export function computeRow(row: RowConfig, fx: number | null, multiplier: number, globalMarkup: string, ref: ReferencePrice | undefined): RowPricing {
+// fx：成本币种 → CNY 的汇率（CNY 本身为 1），null = 未配置
+export function computeRow(
+  row: RowConfig,
+  fx: number | null,
+  multiplier: number,
+  globalMarkup: string,
+  ref: ReferencePrice | undefined,
+  currency = 'USD',
+): RowPricing {
   const errors: string[] = [];
   const cIn = pos(row.costIn);
   const cOut = pos(row.costOut);
@@ -212,21 +224,16 @@ export function computeRow(row: RowConfig, fx: number | null, multiplier: number
   if (!(Number(row.contextWindow) > 0)) errors.push('上下文窗口无效');
   if (!(Number(row.maxOutput) > 0)) errors.push('最大输出无效');
   if (cIn === null || cOut === null) errors.push('缺少成本价');
-  if (fx === null) errors.push('缺少 USD→CNY 汇率');
+  if (fx === null) errors.push(`缺少 ${currency}→CNY 汇率`);
   if (!row.keepSell && (!sellIn || !sellOut)) errors.push('缺少售价');
   if (!row.keepSell && margin !== null && margin < 0) errors.push('负毛利');
 
   return { costInCNY, costOutCNY, sellIn, sellOut, margin, missingRef: !ref?.matched, errors };
 }
 
-// 以有限并发执行一批异步任务（检查本平台状态时避免一次打出上百个请求）
-export async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>, signal?: AbortSignal) {
-  let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length && !signal?.aborted) {
-      const item = items[i++];
-      await fn(item);
-    }
-  });
-  await Promise.all(workers);
+// 成本币种 → CNY 汇率：CNY 为 1；其他币种取最新汇率，没有配置返回 null
+export function fxToCNY(rates: FXRate[] | undefined, currency: string): number | null {
+  if (currency === 'CNY') return 1;
+  const r = rates?.find((x) => x.base === currency && x.quote === 'CNY');
+  return r ? Number(r.rate) : null;
 }

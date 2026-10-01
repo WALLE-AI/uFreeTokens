@@ -76,7 +76,15 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
   onNavigateTab,
   onBackToModels
 }) => {
-  const [activeTab, setActiveTab] = useState<string>(initialTab);
+  // 受控于路由：initialTab 来自 /dashboard/:tab，切 tab 时通过 onNavigateTab 回写 URL。
+  const [activeTab, setActiveTabState] = useState<string>(initialTab);
+  useEffect(() => {
+    setActiveTabState(initialTab);
+  }, [initialTab]);
+  const setActiveTab = (tab: string) => {
+    setActiveTabState(tab);
+    onNavigateTab?.(tab);
+  };
 
   // credits tab 的真实数据（迭代2：/v1/usage 自助查询，需要已连接的 API Key）。
   const apiKey = useApiKey();

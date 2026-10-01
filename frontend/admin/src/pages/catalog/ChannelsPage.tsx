@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router';
-import { listChannels, listProviders } from '../../api/catalog';
-import { DataState, DataTable, FilterBar, KpiStrip, PageHeader, Pagination, Select, StatCard, StatusBadge, type ActiveFilter, type Column } from '../../components/ui';
+import { getCatalogCounts, listChannels } from '../../api/catalog';
+import { providerLabel, searchProviders } from '../../api/pickers';
+import { DataState, DataTable, FilterBar, KpiStrip, PageHeader, Pagination, RemoteSelect, Select, StatCard, StatusBadge, type ActiveFilter, type Column } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import type { ChannelSummary } from '../../types';
@@ -34,25 +35,18 @@ export default function ChannelsPage() {
     [qp.q, qp.status, providerId, qp.margin, qp.missing_cost, qp.dedicated, qp.sort, page, pageSize],
   );
 
+  // KPI：一次请求取全部计数（GET /catalog/counts）
   const kpi = useAsync(async (signal) => {
-    const [act, neg, noCost, ded] = await Promise.all([
-      listChannels({ status: 'active', page_size: 1 }, signal),
-      listChannels({ margin: 'negative', page_size: 1 }, signal),
-      listChannels({ missing_cost: true, page_size: 1 }, signal),
-      listChannels({ dedicated: true, page_size: 1 }, signal),
-    ]);
-    return { active: act.total, negative: neg.total, missingCost: noCost.total, dedicated: ded.total };
+    const c = (await getCatalogCounts(signal)).channels;
+    return { active: c.active, negative: c.negative_margin, missingCost: c.missing_cost, dedicated: c.dedicated };
   }, []);
 
-  const providers = useAsync((signal) => listProviders({ page_size: 100 }, signal), []);
-  const providerOptions = (providers.data?.data ?? []).map((p) => ({ value: String(p.id), label: `${p.name}（${p.code}）` }));
 
   const active: ActiveFilter[] = [];
   if (qp.q) active.push({ key: 'q', label: `搜索: ${qp.q}`, onRemove: () => setQP({ q: null }) });
   if (qp.status) active.push({ key: 'status', label: `状态: ${qp.status === 'active' ? '启用' : '停用'}`, onRemove: () => setQP({ status: null }) });
   if (providerId) {
-    const p = providers.data?.data.find((x) => x.id === providerId);
-    active.push({ key: 'provider', label: `供应商: ${p ? p.name : `#${providerId}`}`, onRemove: () => setQP({ provider_id: null }) });
+    active.push({ key: 'provider', label: `供应商 #${providerId}`, onRemove: () => setQP({ provider_id: null }) });
   }
   if (qp.margin === 'negative') active.push({ key: 'margin', label: '负毛利', onRemove: () => setQP({ margin: null }) });
   if (qp.missing_cost === 'true') active.push({ key: 'missing_cost', label: '未设成本价', onRemove: () => setQP({ missing_cost: null }) });
@@ -177,7 +171,14 @@ export default function ChannelsPage() {
                 { value: 'disabled', label: '停用' },
               ]}
             />
-            <Select value={qp.provider_id ?? ''} onChange={(e) => setQP({ provider_id: e.target.value || null })} placeholder="全部供应商" options={providerOptions} />
+            <RemoteSelect
+              value={qp.provider_id ?? ''}
+              onChange={(v) => setQP({ provider_id: v || null })}
+              load={searchProviders}
+              resolve={providerLabel}
+              placeholder="全部供应商"
+              clearable
+            />
             <Select
               value={qp.margin === 'negative' ? 'negative' : qp.missing_cost === 'true' ? 'missing_cost' : qp.dedicated === 'true' ? 'dedicated' : ''}
               onChange={(e) => {

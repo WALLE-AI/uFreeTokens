@@ -1,5 +1,6 @@
 import { formatCompact, formatMicroCompact, formatRatio } from '../../lib/money';
 import type { Metrics, UsageInterval, UsageOrderBy } from '../../types';
+import { startOfZonedDay, zoneOffset, zonedDate, zonedParts } from '../../lib/tz';
 
 // 统计页面共用的指标定义与时间范围工具（接口方案 §3.1 口径：requests 含失败，
 // tokens / 延迟只算成功请求）。
@@ -79,8 +80,8 @@ export function rangeBounds(key: RangeKey, custom?: { from?: string; to?: string
   const ago = (ms: number) => new Date(to.getTime() - ms).toISOString();
   switch (key) {
     case 'today': {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      return { from: d.toISOString(), to: to.toISOString() };
+      // "今天"按运营时区（ADMIN_TZ）的零点计算，与后端 ?tz= 分桶一致
+      return { from: new Date(startOfZonedDay(zonedDate(now))).toISOString(), to: to.toISOString() };
     }
     case '1h':
       return { from: ago(3600_000), to: to.toISOString() };
@@ -96,7 +97,7 @@ export function rangeBounds(key: RangeKey, custom?: { from?: string; to?: string
   }
 }
 
-// 自定义日期（YYYY-MM-DD）在后端按 UTC 解释，to 包含当天：换算成毫秒跨度用于前端校验
+// 自定义日期（YYYY-MM-DD）按 ADMIN_TZ 解释，to 包含当天：换算成毫秒跨度用于前端校验
 export function spanMs(from: string, to: string): number {
   const f = parseBound(from, false);
   const t = parseBound(to, true);
@@ -105,30 +106,37 @@ export function spanMs(from: string, to: string): number {
 
 function parseBound(v: string, end: boolean): number {
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
-    const t = Date.parse(`${v}T00:00:00Z`);
+    const t = startOfZonedDay(v);
     return end ? t + 86400_000 : t;
   }
   return Date.parse(v);
 }
 
-// fillBuckets 生成 [from, to) 内的全部时间桶（与后端 bucket 格式一致），
-// 用来补齐没有数据的天/小时，让柱状图的时间轴连续。
+// fillBuckets 生成 [from, to) 内的全部时间桶（与后端 ?tz=ADMIN_TZ 的 bucket 格式一致：
+// 日 → YYYY-MM-DD，小时 → YYYY-MM-DDTHH:00:00+08:00），用来补齐没有数据的天/小时，
+// 让柱状图的时间轴连续。
 export function fillBuckets(interval: UsageInterval, from: string, to: string): string[] {
   if (interval === 'none') return [];
-  const step = interval === 'hour' ? 3600_000 : 86400_000;
   const start = parseBound(from, false);
   const end = parseBound(to, true);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
   const out: string[] = [];
-  let t = interval === 'hour' ? Math.floor(start / step) * step : Date.UTC(new Date(start).getUTCFullYear(), new Date(start).getUTCMonth(), new Date(start).getUTCDate());
-  for (let i = 0; t < end && i < 24 * 91; t += step, i++) {
-    const iso = new Date(t).toISOString();
-    out.push(interval === 'hour' ? `${iso.slice(0, 13)}:00:00Z` : iso.slice(0, 10));
+  if (interval === 'hour') {
+    for (let t = Math.floor(start / 3600_000) * 3600_000, i = 0; t < end && i < 24 * 8; t += 3600_000, i++) {
+      const p = zonedParts(t);
+      out.push(`${p.year}-${p.month}-${p.day}T${p.hour}:00:00${zoneOffset(t)}`);
+    }
+    return out;
+  }
+  let day = zonedDate(start);
+  for (let i = 0; startOfZonedDay(day) < end && i < 92; i++) {
+    out.push(day);
+    day = zonedDate(startOfZonedDay(day) + 36 * 3600_000); // +36h 再取日期：跨过 DST 也能落到下一天
   }
   return out;
 }
 
-// 桶的简短显示：日 → 09-26；小时 → 09-26 14:00（UTC）
+// 桶的简短显示：日 → 09-26；小时 → 09-26 14:00（ADMIN_TZ）
 export function bucketLabel(bucket: string): string {
   if (bucket.length === 10) return bucket.slice(5);
   return `${bucket.slice(5, 10)} ${bucket.slice(11, 16)}`;

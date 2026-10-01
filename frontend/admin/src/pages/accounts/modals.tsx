@@ -1,14 +1,16 @@
 import { RadioCards } from '../../components/ui/index';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { adjustWallet, createAccount, createApiKey, grantCredit, updateAccount } from '../../api/accounts';
 import { listVirtualModels } from '../../api/catalog';
 import { ApiError, describeError } from '../../api/errors';
+import { newIdempotencyKey } from '../../api/client';
 import { Button, ConfirmDialog, Field, FormModal, Input, Money, MoneyInput, SearchInput, Select, Textarea, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { cn } from '../../lib/cn';
 import type { Account, ApiKeyCreated, GrantSource, Tier, WalletAdjustReceipt } from '../../types';
 import { GRANT_SOURCE_OPTIONS, LARGE_ADJUST_MICRO, TIER_OPTIONS, genRefId } from './shared';
+import { toApiTime } from '../../lib/tz';
 
 // ---------- 新建账户 ----------
 
@@ -202,7 +204,7 @@ export function AdjustWalletModal({
     setError(null);
     try {
       const r = await adjustWallet(account.id, {
-        amount: signed,
+        amount_micro: signed,
         ref_id: refId.trim(),
         reason: reason.trim(),
         expected_cash_balance_micro: cashMicro,
@@ -382,6 +384,9 @@ export function GrantCreditModal({ open, onClose, account, onDone }: { open: boo
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 每次打开弹窗生成一个幂等键，作为未填单号时的 ref_id
+  const autoRefId = useMemo(() => (open ? newIdempotencyKey() : ''), [open]);
+
   useEffect(() => {
     if (open) {
       setSource('compensation');
@@ -407,11 +412,12 @@ export function GrantCreditModal({ open, onClose, account, onDone }: { open: boo
     try {
       await grantCredit(account.id, {
         source,
-        amount,
+        amount_micro: amount,
         reason: reason.trim(),
         expires_at: expiresAt,
         model_scope: scope.length ? scope : undefined,
-        ref_id: refId.trim() || undefined,
+        // 没填单号时用本次弹窗生成的幂等键：同一弹窗里重试不会重复发放
+        ref_id: refId.trim() || autoRefId,
       });
       toast.success('赠送余额已发放');
       setConfirming(false);
@@ -484,7 +490,7 @@ export function GrantCreditModal({ open, onClose, account, onDone }: { open: boo
           <ModelMultiSelect value={scope} onChange={setScope} emptyHint="全部模型" />
         </Field>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="关联单号" hint="可选，留空自动生成">
+          <Field label="关联单号" hint="留空自动生成；同一账户同一来源的单号只能发放一次（防重复发放）">
             <Input mono value={refId} onChange={(e) => setRefId(e.target.value)} placeholder="PROMO-2026-10" />
           </Field>
           <Field label="原因" required error={reasonTooLong ? '原因最多 200 字' : undefined}>
@@ -528,6 +534,9 @@ export function CreateApiKeyModal({ open, onClose, account, onCreated }: { open:
   const [rpm, setRpm] = useState('');
   const [tpm, setTpm] = useState('');
   const [conc, setConc] = useState('');
+  const [budget, setBudget] = useState<number | null>(null);
+  const [budgetPeriod, setBudgetPeriod] = useState<'none' | 'daily' | 'monthly'>('none');
+  const [expiresOn, setExpiresOn] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -539,6 +548,9 @@ export function CreateApiKeyModal({ open, onClose, account, onCreated }: { open:
       setRpm('');
       setTpm('');
       setConc('');
+      setBudget(null);
+      setBudgetPeriod('none');
+      setExpiresOn('');
       setError(null);
     }
   }, [open]);
@@ -546,7 +558,11 @@ export function CreateApiKeyModal({ open, onClose, account, onCreated }: { open:
   const rpmV = parseLimit(rpm);
   const tpmV = parseLimit(tpm);
   const concV = parseLimit(conc);
-  const limitErr = rpmV === null || tpmV === null || concV === null;
+  // 过期日按运营时区当天结束（次日零点）失效
+  const expiresAt = expiresOn ? toApiTime(expiresOn, true) : undefined;
+  const expiryErr = !!expiresAt && Date.parse(expiresAt) <= Date.now();
+  const budgetErr = budget !== null && budget > 0 && budgetPeriod === 'none';
+  const limitErr = rpmV === null || tpmV === null || concV === null || expiryErr || budgetErr;
 
   const submit = async () => {
     setSubmitting(true);
@@ -558,6 +574,9 @@ export function CreateApiKeyModal({ open, onClose, account, onCreated }: { open:
         rpm_limit: rpmV ?? undefined,
         tpm_limit: tpmV ?? undefined,
         concurrency_limit: concV ?? undefined,
+        budget_limit_micro: budget && budget > 0 ? budget : undefined,
+        budget_period: budget && budget > 0 ? budgetPeriod : undefined,
+        expires_at: expiresAt,
       });
       onCreated(k);
     } catch (err) {
@@ -605,6 +624,24 @@ export function CreateApiKeyModal({ open, onClose, account, onCreated }: { open:
             </Field>
             <Field label="并发" error={concV === null ? '需为正整数' : undefined}>
               <Input mono value={conc} invalid={concV === null} onChange={(e) => setConc(e.target.value)} placeholder="不限" />
+            </Field>
+            <Field label="预算" hint="留空 = 不限">
+              <MoneyInput valueMicro={budget} onChange={setBudget} />
+            </Field>
+            <Field label="预算周期" error={budgetErr ? '设置预算时需选择周期' : undefined}>
+              <Select
+                className="w-full"
+                value={budgetPeriod}
+                onChange={(e) => setBudgetPeriod(e.target.value as 'none' | 'daily' | 'monthly')}
+                options={[
+                  { value: 'none', label: '不限' },
+                  { value: 'daily', label: '每天' },
+                  { value: 'monthly', label: '每月' },
+                ]}
+              />
+            </Field>
+            <Field label="过期日期" hint="留空 = 永不过期" error={expiryErr ? '需晚于今天' : undefined}>
+              <Input type="date" value={expiresOn} invalid={expiryErr} onChange={(e) => setExpiresOn(e.target.value)} />
             </Field>
           </div>
         )}

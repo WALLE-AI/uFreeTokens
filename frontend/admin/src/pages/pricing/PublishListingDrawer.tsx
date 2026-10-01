@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { AlertTriangle, Info } from 'lucide-react';
-import { listLatestFXRates, listProviderAccounts } from '../../api/catalog';
+import { listLatestFXRates } from '../../api/catalog';
 import { publishListing } from '../../api/pricing';
 import { Button, DetailDrawer, Field, Input, Select, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { cn } from '../../lib/cn';
 import type { ModelType, PendingListing, PublishListingResult, Tier } from '../../types';
+import { useEnums } from '../../hooks/useEnums';
 import { MarginText, errorDetail, friendlyError, meterLabel, unitLabel } from './shared';
+import { listAllProviderAccounts } from '../../api/pickers';
 
 // 待上架模型的"上架…"侧滑表单（UI_DESIGN.md §5.3）。
 //
@@ -23,8 +25,9 @@ const MODEL_TYPES: Array<{ value: ModelType; label: string }> = [
   { value: 'rerank', label: 'rerank 重排' },
 ];
 
-const CAPABILITIES = ['stream', 'tools', 'vision', 'json_mode', 'reasoning'];
-const TIERS: Tier[] = ['free', 'pro', 'enterprise'];
+// 字典取不到时的兜底值；正常情况下来自 GET /meta/enums。
+const FALLBACK_CAPABILITIES = ['stream', 'tools', 'vision', 'json_mode', 'reasoning'];
+const FALLBACK_TIERS: Tier[] = ['free', 'pro', 'enterprise'];
 
 export function PublishListingDrawer({
   listing,
@@ -36,6 +39,7 @@ export function PublishListingDrawer({
   onPublished: (res: PublishListingResult, name: string) => void;
 }) {
   const toast = useToast();
+  const enums = useEnums();
   const [name, setName] = useState('');
   const [family, setFamily] = useState('');
   const [type, setType] = useState<ModelType>('chat');
@@ -64,7 +68,7 @@ export function PublishListingDrawer({
 
   const providerId = listing?.provider_id;
   const accounts = useAsync(
-    (signal) => (providerId ? listProviderAccounts({ provider_id: providerId, page_size: 100 }, signal) : Promise.resolve(null)),
+    (signal) => (providerId ? listAllProviderAccounts(providerId, signal) : Promise.resolve(null)),
     [providerId],
   );
   const fx = useAsync((signal) => listLatestFXRates(signal), []);
@@ -175,10 +179,10 @@ export function PublishListingDrawer({
               </Field>
             </div>
             <Field label="能力">
-              <ChipGroup options={CAPABILITIES} value={caps} onToggle={(v) => setCaps((l) => toggle(l, v))} />
+              <ChipGroup options={enums?.capabilities ?? FALLBACK_CAPABILITIES} value={caps} onToggle={(v) => setCaps((l) => toggle(l, v))} />
             </Field>
             <Field label="可见分组" error={show(errors.tiers)}>
-              <ChipGroup options={TIERS} value={tiers} onToggle={(v) => setTiers((l) => toggle(l, v as Tier))} />
+              <ChipGroup options={(enums?.tiers as Tier[] | undefined) ?? FALLBACK_TIERS} value={tiers} onToggle={(v) => setTiers((l) => toggle(l, v as Tier))} />
             </Field>
           </section>
 

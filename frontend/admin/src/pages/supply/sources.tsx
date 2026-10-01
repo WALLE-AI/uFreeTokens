@@ -2,12 +2,12 @@ import { describeError } from '../../api/errors';
 import { Switch } from '../../components/ui/index';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { listProviders } from '../../api/catalog';
 import { createPriceSource, updatePriceSource } from '../../api/pricing';
-import { DataTable, Field, FormModal, Input, Select, useToast, type Column } from '../../components/ui';
-import { useAsync } from '../../hooks/useAsync';
+import { DataTable, Field, FormModal, Input, RemoteSelect, Select, Textarea, useToast, type Column } from '../../components/ui';
+import { useCan } from '../../api/auth';
 import { formatRelative } from '../../lib/time';
 import type { PriceSource, SourceKind, SourceLevel } from '../../types';
+import { providerLabel, searchProviders } from '../../api/pickers';
 
 // 价格源：供应商详情页与 /pricing/sources 共用。
 
@@ -38,6 +38,8 @@ export function PriceSourcesTable({
 }) {
   const toast = useToast();
   const [pending, setPending] = useState<number | null>(null);
+  const [editing, setEditing] = useState<PriceSource | null>(null);
+  const canEdit = useCan('pricing:write');
 
   const toggle = async (s: PriceSource, enabled: boolean) => {
     setPending(s.id);
@@ -107,7 +109,82 @@ export function PriceSourcesTable({
     },
   ];
 
-  return <DataTable columns={columns} rows={sources} rowKey={(s) => s.id} empty="还没有价格源" />;
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={sources}
+        rowKey={(s) => s.id}
+        rowActions={canEdit ? [{ label: '编辑配置', onClick: setEditing }] : []}
+        empty="还没有价格源"
+      />
+      <EditSourceModal
+        source={editing}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null);
+          onChanged();
+        }}
+      />
+    </>
+  );
+}
+
+// EditSourceModal 编辑价格源的 URL、调度与抓取配置（此前只能启停）。config 是明文 JSON，
+// 服务端会拒绝看起来像凭据的键（api_key、token、password…）。
+function EditSourceModal({ source, onClose, onSaved }: { source: PriceSource | null; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [url, setUrl] = useState('');
+  const [schedule, setSchedule] = useState('');
+  const [config, setConfig] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!source) return;
+    setUrl(source.url ?? '');
+    setSchedule(source.schedule ?? '');
+    setConfig(JSON.stringify(source.config ?? {}, null, 2));
+    setError(null);
+  }, [source]);
+
+  const submit = async () => {
+    if (!source) return;
+    let parsed: Record<string, unknown>;
+    try {
+      const v = JSON.parse(config || '{}');
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error('config 必须是 JSON 对象');
+      parsed = v as Record<string, unknown>;
+    } catch (e) {
+      setError(e instanceof Error ? `config 不是合法的 JSON：${e.message}` : 'config 不是合法的 JSON');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await updatePriceSource(source.id, { url: url.trim(), schedule: schedule.trim(), config: parsed });
+      toast.success(`已保存价格源 #${source.id}`);
+      onSaved();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <FormModal open={!!source} onClose={onClose} title={`编辑价格源 #${source?.id ?? ''}`} onSubmit={submit} submitting={submitting} error={error} width="lg">
+      <Field label="URL" htmlFor="src-url" hint="留空清除；必须是 http(s) 地址，不能带账号密码">
+        <Input id="src-url" mono value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/pricing" />
+      </Field>
+      <Field label="调度" htmlFor="src-schedule" hint="5 段 cron（如 0 */6 * * *），或 @hourly / @daily / @every 30m">
+        <Input id="src-schedule" mono value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="@every 6h" />
+      </Field>
+      <Field label="抓取配置（JSON）" htmlFor="src-config" hint="明文存储，不要放 API Key、Token、密码等凭据">
+        <Textarea id="src-config" rows={10} className="font-mono text-[11px]" value={config} onChange={(e) => setConfig(e.target.value)} />
+      </Field>
+    </FormModal>
+  );
 }
 
 export function CreateSourceModal({
@@ -122,7 +199,6 @@ export function CreateSourceModal({
   onSaved: () => void;
 }) {
   const toast = useToast();
-  const providers = useAsync((signal) => (providerId || !open ? Promise.resolve(null) : listProviders({ page_size: 100 }, signal)), [providerId, open]);
   const [provider, setProvider] = useState('');
   const [level, setLevel] = useState<SourceLevel>('L1');
   const [kind, setKind] = useState<SourceKind>('api');
@@ -177,12 +253,14 @@ export function CreateSourceModal({
     >
       {!providerId && (
         <Field label="供应商" hint="留空表示通用来源（如 OpenRouter / LiteLLM 数据集）">
-          <Select
+          <RemoteSelect
             className="w-full"
             value={provider}
             placeholder="通用（不绑定供应商）"
-            options={(providers.data?.data ?? []).map((p) => ({ value: String(p.id), label: `${p.name}（${p.code}）` }))}
-            onChange={(e) => setProvider(e.target.value)}
+            clearable
+            load={searchProviders}
+            resolve={providerLabel}
+            onChange={(v) => setProvider(v)}
           />
         </Field>
       )}

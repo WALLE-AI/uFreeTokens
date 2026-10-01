@@ -39,11 +39,14 @@ var discoveryHTTPClient = &http.Client{Timeout: 15 * time.Second}
 // 协议的 provider 有意义（SiliconFlow/DeepSeek/火山方舟/百炼等都实现了这个
 // 接口；anthropic/gemini 协议没有标准等价物，不是这里的缺陷）。
 func (s *Service) ListUpstreamModels(ctx context.Context, providerAccountID int64) ([]UpstreamModel, error) {
-	var baseURL, protocol string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT pa.base_url, p.protocol FROM provider_accounts pa JOIN providers p ON p.id = pa.provider_id WHERE pa.id = $1`,
+	var (
+		baseURL, protocol string
+		providerID        int64
+	)
+	if err := s.db(ctx).QueryRow(ctx,
+		`SELECT pa.base_url, p.protocol, p.id FROM provider_accounts pa JOIN providers p ON p.id = pa.provider_id WHERE pa.id = $1`,
 		providerAccountID,
-	).Scan(&baseURL, &protocol); err != nil {
+	).Scan(&baseURL, &protocol, &providerID); err != nil {
 		if isNoRows(err) {
 			return nil, ErrProviderAccountNotFound
 		}
@@ -53,8 +56,17 @@ func (s *Service) ListUpstreamModels(ctx context.Context, providerAccountID int6
 		return nil, fmt.Errorf("admin: %s 协议的上游没有标准 GET /models 接口，模型发现只支持 openai 协议", protocol)
 	}
 
+	if s.box == nil {
+		return nil, ErrKEKNotConfigured
+	}
+	// 带着解密后的密钥发请求之前，按当前策略重新校验一次 base_url——它可能是
+	// 在白名单收紧之前写入的。
+	if _, err := s.validateUpstreamURL(ctx, s.db(ctx), providerID, baseURL); err != nil {
+		return nil, err
+	}
+
 	var ciphertext, dek []byte
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT secret_ciphertext, secret_dek_wrapped FROM provider_keys
 		 WHERE provider_account_id = $1 AND status = 'active'
 		 ORDER BY weight DESC, created_at LIMIT 1`,
@@ -76,7 +88,7 @@ func (s *Service) ListUpstreamModels(ctx context.Context, providerAccountID int6
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
 
-	resp, err := discoveryHTTPClient.Do(req)
+	resp, err := s.upstreamHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("admin: call upstream /models: %w: %w", ErrUpstreamUnavailable, err)
 	}
@@ -109,4 +121,17 @@ func (s *Service) ListUpstreamModels(ctx context.Context, providerAccountID int6
 		out = append(out, UpstreamModel{ID: m.ID, OwnedBy: m.OwnedBy})
 	}
 	return out, nil
+}
+
+// BaseURLRecentlyChanged 报告上游账号的 base_url 是否在 window 内被修改过。
+// 刚改过地址的账号，带着解密密钥请求上游只允许超级管理员操作（见 app.listUpstreamModels）。
+func (s *Service) BaseURLRecentlyChanged(ctx context.Context, providerAccountID int64, window time.Duration) (bool, error) {
+	var changed *time.Time
+	if err := s.db(ctx).QueryRow(ctx, `SELECT base_url_changed_at FROM provider_accounts WHERE id = $1`, providerAccountID).Scan(&changed); err != nil {
+		if isNoRows(err) {
+			return false, ErrProviderAccountNotFound
+		}
+		return false, err
+	}
+	return changed != nil && time.Since(*changed) < window, nil
 }

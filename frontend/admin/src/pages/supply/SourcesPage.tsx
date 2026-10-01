@@ -21,6 +21,7 @@ import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import type { FXRate } from '../../types';
 import { CreateSourceModal, PriceSourcesTable } from './sources';
+import { Can } from '../../components/ui/Can';
 
 // /pricing/sources：价格源 & 汇率（UI_DESIGN.md §1.1 目录与定价分组）
 export default function SourcesPage() {
@@ -79,9 +80,9 @@ export default function SourcesPage() {
       <section>
         <SectionTitle
           actions={
-            <Button size="sm" variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setSettingFx({ quote: 'CNY' })}>
+            <Can perm="pricing:write"><Button size="sm" variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setSettingFx({ quote: 'CNY' })}>
               设置汇率
-            </Button>
+            </Button></Can>
           }
         >
           汇率

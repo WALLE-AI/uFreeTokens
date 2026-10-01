@@ -78,8 +78,11 @@ func scanRequestLogItem(row pgx.Row, extra ...any) (RequestLogItem, error) {
 // ListRequestLogs 默认最近 24 小时；不带 account_id 时时间窗最长 7 天，带时 30 天。
 func (s *Service) ListRequestLogs(ctx context.Context, in ListRequestLogsInput) ([]RequestLogItem, string, error) {
 	limit := in.Limit
-	if limit <= 0 || limit > 100 {
+	switch {
+	case limit <= 0:
 		limit = 50
+	case limit > 100:
+		limit = 100
 	}
 	now := time.Now()
 	if in.To.IsZero() {
@@ -136,7 +139,7 @@ func (s *Service) ListRequestLogs(ctx context.Context, in ListRequestLogsInput) 
 		where += fmt.Sprintf(" AND (rl.created_at, rl.request_id) < ($%d, $%d)", len(args)-1, len(args))
 	}
 	args = append(args, limit)
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT %s %s %s ORDER BY rl.created_at DESC, rl.request_id DESC LIMIT $%d`,
+	rows, err := s.db(ctx).Query(ctx, fmt.Sprintf(`SELECT %s %s %s ORDER BY rl.created_at DESC, rl.request_id DESC LIMIT $%d`,
 		requestLogListCols, statsFrom, where, len(args)), args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("admin: query request_logs: %w", err)
@@ -193,7 +196,7 @@ func (s *Service) GetRequestLog(ctx context.Context, requestID string, createdAt
 	}
 	var d RequestLogDetail
 	var ip *string
-	item, err := scanRequestLogItem(s.pool.QueryRow(ctx, `SELECT `+requestLogListCols+`,
+	item, err := scanRequestLogItem(s.db(ctx).QueryRow(ctx, `SELECT `+requestLogListCols+`,
 		   rl.cache_read_tokens, rl.cache_write_tokens, rl.reasoning_tokens, rl.attempt_trace, rl.sell_price_book_id, rl.cost_price_book_id,
 		   rl.promotion_ids, rl.upstream_cost, rl.fx_rate, host(rl.client_ip), rl.user_agent, rl.experiment_key, rl.variant_label,
 		   a.name, k.name, pa.name || ' / ' || c.upstream_model, p.code

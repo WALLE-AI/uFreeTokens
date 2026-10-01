@@ -1,0 +1,215 @@
+---
+title: 流式输出 (SSE)
+description: 在 /v1/chat/completions 上开启 stream，按 Server-Sent Events 逐块接收输出，并了解流式请求的用量与计费规则。
+section: guides
+order: 10
+---
+
+在 `POST /v1/chat/completions` 的请求体里设置 `"stream": true`，网关会以 `text/event-stream`（Server-Sent Events）的形式逐块返回模型输出，而不是等全部生成完再一次性返回。适合聊天界面、长文本生成等需要"边生成边展示"的场景。
+
+## 请求方式
+
+流式请求和普通请求的鉴权、参数完全一样，只多一个 `stream` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `stream` | boolean | 设为 `true` 开启流式输出 |
+| `stream_options.include_usage` | boolean | 可选。设为 `true` 时，流的最后会多一个只含 `usage` 的 chunk，见下文"用量 chunk" |
+
+<Callout type="info">
+
+只有目录中 `capabilities` 包含 `stream` 的模型才能流式调用。对不支持流式的模型发起 `stream: true` 请求，会因为找不到可用渠道而返回 `503 no_available_channel`。可在[模型列表](/docs/zh/models)或 `GET /v1/catalog` 中确认。
+
+</Callout>
+
+## 响应格式
+
+响应头：
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
+```
+
+响应体由若干个 `data:` 事件组成，每个事件之间用一个空行分隔，每个事件的数据是一个 OpenAI 兼容的 `chat.completion.chunk` JSON：
+
+```text
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{"content":"你好"}}]}
+
+data: {"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+```
+
+几点说明：
+
+- 每个 chunk 的 `id` 都被改写为本次请求的 Request ID（与响应头 `X-Request-Id` 相同），`model` 被改写为你请求的模型 ID。其余字段原样来自上游。
+- 文本增量在 `choices[0].delta.content` 中；最后一个内容 chunk 带 `finish_reason`（如 `stop`、`length`、`tool_calls`）。
+- 网关只转发 `data:` 行，上游的 `event:`、`id:`、注释等 SSE 元数据行不会转发。
+
+### 流的结束
+
+<Callout type="warning" title="网关不会发送 data: [DONE]">
+
+OpenAI 协议约定以 `data: [DONE]` 标记流结束。网关在读到上游的 `[DONE]` 后会直接结束响应（关闭连接），**不会**把 `[DONE]` 转发给客户端。请以"响应体读取结束"作为流结束的信号；同时兼容 `[DONE]` 也无妨（下面的示例都这样做了）。官方 OpenAI SDK 在响应体结束时会正常结束迭代，不受影响。
+
+</Callout>
+
+流一旦开始（已经返回 `200` 和第一个字节），网关就不会再切换渠道重试；如果上游在中途中断，流会直接结束，**不会**再发送一个错误事件。可以通过最后是否收到带 `finish_reason` 的 chunk 判断输出是否完整。
+
+## 用量 chunk
+
+为了准确计费，网关**总是**要求上游在流的末尾返回用量（向上游注入 `stream_options.include_usage=true`）。但这个只含用量的 chunk 是否转发给你，取决于你自己的请求：
+
+| 你的请求 | 你收到的流 |
+| --- | --- |
+| 没有带 `stream_options.include_usage`，或设为 `false` | 不包含用量 chunk，和直接请求上游时的行为一致 |
+| 带了 `"stream_options": {"include_usage": true}` | 在最后一个内容 chunk 之后多一个 `choices` 为空数组、带 `usage` 的 chunk |
+
+用量 chunk 示例：
+
+```json
+{"id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6","object":"chat.completion.chunk","model":"deepseek-ai/DeepSeek-V4-Flash","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":48,"total_tokens":60}}
+```
+
+无论你是否要求用量 chunk，计费都以上游返回的真实用量为准。
+
+## 中途断开与计费
+
+如果客户端在流结束前断开连接：
+
+- 上游已经返回了用量的，按真实用量结算。
+- 上游还没来得及返回用量的，网关按**已经转发给你的内容字节数**估算输出 token（约 4 字节 / token），且**不超过本次请求的预扣上限**；输入 token 按请求体大小估算。这类请求在平台记录中会被标记为估算用量（`usage_source` 为 `estimated`）。
+
+预扣上限取 `max_tokens`（或 `max_completion_tokens`）、模型最大输出长度、平台预扣上限三者中的最小值，详见[计费说明](/docs/zh/billing)。
+
+## 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -N {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "stream": true,
+    "stream_options": {"include_usage": true},
+    "messages": [{"role": "user", "content": "用三句话介绍一下 SSE"}]
+  }'
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+stream = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "用三句话介绍一下 SSE"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+
+for chunk in stream:
+    if chunk.choices:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+    if chunk.usage:
+        print(f"\n\n[usage] {chunk.usage}")
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "用三句话介绍一下 SSE" }],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+
+for await (const chunk of stream) {
+  const delta = chunk.choices[0]?.delta?.content;
+  if (delta) process.stdout.write(delta);
+  if (chunk.usage) console.log("\n\n[usage]", chunk.usage);
+}
+```
+
+</CodeTabs>
+
+`cURL` 的 `-N` 用于关闭输出缓冲，让每个 chunk 一到就打印出来。
+
+### 浏览器：fetch + ReadableStream
+
+不依赖 SDK，直接用 `fetch` 读取响应流并按 SSE 格式解析：
+
+```ts title="browser.ts"
+async function streamChat(apiKey: string, prompt: string, onDelta: (text: string) => void) {
+  const res = await fetch("{{BASE_URL}}/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "deepseek-ai/DeepSeek-V4-Flash",
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => null);
+    throw new Error(`${res.status} ${err?.error?.code ?? ""} request_id=${res.headers.get("X-Request-Id")}`);
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break; // 网关以关闭连接结束流
+    buffer += value;
+
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const event = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      for (const line of event.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return; // 兼容处理，网关目前不会发送
+        const chunk = JSON.parse(data);
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta) onDelta(delta);
+      }
+    }
+  }
+}
+```
+
+<Callout type="danger" title="不要在公开网页中暴露 API Key">
+
+在浏览器中直接调用意味着 API Key 对页面访问者可见，只适合用户自带 Key（BYOK）的工具或本地调试。此外，跨域调用需要平台为你的来源（Origin）开启 CORS，否则请通过你自己的后端转发。
+
+</Callout>
+
+## 相关
+
+- [对话补全 API 参考](/docs/zh/api/createChatCompletion)
+- [错误处理](/docs/zh/errors)
+- [计费说明](/docs/zh/billing)

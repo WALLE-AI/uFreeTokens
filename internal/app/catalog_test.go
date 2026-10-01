@@ -40,6 +40,7 @@ func TestCatalog_PublicEndpoint_ReturnsActiveFreeTierModelsWithSellPrice(t *test
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}

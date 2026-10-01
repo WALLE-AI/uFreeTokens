@@ -1,5 +1,6 @@
 import { request } from './client';
 import type {
+  BatchItemResult,
   BatchApproveResult,
   ChangeRequestDetail,
   ChangeRequestSummary,
@@ -41,7 +42,8 @@ export function approveChangeRequest(id: number, body: { reason?: string; confir
   return request<{ applied_book_id: number }>(`/price-change-requests/${id}/approve`, { method: 'POST', body });
 }
 
-export function rejectChangeRequest(id: number, body: { reason?: string } = {}) {
+// 驳回必须填写理由（后端 400）
+export function rejectChangeRequest(id: number, body: { reason: string }) {
   return request<{ status: string }>(`/price-change-requests/${id}/reject`, { method: 'POST', body });
 }
 
@@ -72,6 +74,11 @@ export interface PublishListingBody {
 
 export function publishListing(id: number, body: PublishListingBody) {
   return request<PublishListingResult>(`/pending-model-listings/${id}/publish`, { method: 'POST', body });
+}
+
+// 批量忽略：逐条独立处理，逐条返回结果
+export function batchDismissListings(ids: number[], reason?: string) {
+  return request<{ results: BatchItemResult[] }>('/pending-model-listings/batch-dismiss', { method: 'POST', body: { ids, reason: reason ?? '' } });
 }
 
 export function dismissListing(id: number, reason?: string) {

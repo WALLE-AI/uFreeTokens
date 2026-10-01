@@ -1,0 +1,129 @@
+---
+title: Embeddings
+description: Convert text to vectors with POST /v1/embeddings, with single or batched input, billed on input tokens only.
+section: guides
+order: 40
+translatedFrom: 5f542ef0b2f8
+---
+
+`POST /v1/embeddings` is compatible with the OpenAI Embeddings API. It turns text into vectors for semantic search, RAG, clustering and similarity. It shares the same authentication, rate limiting, pre-authorization and settlement pipeline as chat completions.
+
+## Choose an embedding model
+
+Only models whose catalog `type` is `embedding` work with this endpoint; calling it with a chat model returns `404 model_not_found`. Check the [model list](/docs/en/models), or filter like this:
+
+```bash title="List embedding models"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "embedding") | .name'
+```
+
+The examples below read the model ID from the `EMBEDDING_MODEL` environment variable:
+
+```bash
+export EMBEDDING_MODEL="<a model ID from the list above>"
+```
+
+## Request parameters
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | string | Yes | Embedding model ID |
+| `input` | string or string[] | Yes | Text to embed; pass an array to embed several texts in one request |
+| Other fields | — | No | E.g. `encoding_format`, `dimensions`. Passed to the upstream as-is; support depends on the model |
+
+## Response
+
+```json
+{
+  "object": "list",
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<the model ID you requested>",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, 0.0789]},
+    {"object": "embedding", "index": 1, "embedding": [0.0321, 0.0654, -0.0987]}
+  ],
+  "usage": {"prompt_tokens": 14, "total_tokens": 14}
+}
+```
+
+- `data[i].index` matches the position in the input array; the vector length depends on the model (truncated in the example).
+- The response `id` is rewritten to this request's Request ID and `model` to the model ID you requested; other fields come from the upstream.
+
+## Billing
+
+Embedding requests have **input** usage only — there are no output tokens:
+
+- You are billed for the upstream's `usage.prompt_tokens` at the model's input price.
+- Before the request, input tokens are estimated from the request body size and pre-authorized; settlement then charges the actual amount.
+- Failed requests are not charged.
+
+Prices are listed in the [model list](/docs/en/models); see [Billing](/docs/en/billing) for details.
+
+## Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/embeddings \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"$EMBEDDING_MODEL\",
+    \"input\": [\"The weather is nice today\", \"An API gateway handles routing and billing\"]
+  }"
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+
+resp = client.embeddings.create(
+    model=os.environ["EMBEDDING_MODEL"],
+    input=["The weather is nice today", "An API gateway handles routing and billing"],
+)
+
+for item in resp.data:
+    print(item.index, len(item.embedding))
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+
+const resp = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: ["The weather is nice today", "An API gateway handles routing and billing"],
+});
+
+for (const item of resp.data) console.log(item.index, item.embedding.length);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+<Callout type="tip" title="Batch your input">
+
+When embedding many texts, putting several into one `input` array uses fewer requests than sending them one by one (and is less likely to hit your RPM limit). Request body size and batch size are still subject to the upstream model's limits.
+
+</Callout>
+
+<Callout type="info">
+
+When `encoding_format` is not specified, the official Python SDK requests `base64` encoding by default and decodes it locally; this parameter is also passed through to the upstream. If an upstream does not support `base64`, pass `encoding_format="float"` explicitly.
+
+</Callout>
+
+## Related
+
+- [Embeddings API reference](/docs/en/api/createEmbedding)
+- [Billing](/docs/en/billing)
+- [Rate limits](/docs/en/rate-limits)

@@ -17,8 +17,3 @@ export interface ListAuditLogsParams {
 export function listAuditLogs(params: ListAuditLogsParams = {}, signal?: AbortSignal) {
   return request<Cursor<AuditLogEntry>>('/audit-logs', { query: { ...params }, signal });
 }
-
-// verifyToken 用最轻的只读接口验证候选令牌：401 说明令牌错误，其它错误原样抛出。
-export async function verifyToken(token: string): Promise<void> {
-  await request<Cursor<AuditLogEntry>>('/audit-logs', { query: { limit: 1 }, token });
-}

@@ -18,6 +18,7 @@ func TestAdminRouter_RejectsRequestsWithoutValidToken(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 
@@ -56,6 +57,7 @@ func TestAdminRouter_HealthzIsAlwaysOpen(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 
@@ -77,6 +79,7 @@ func TestAdminRouter_EmptyAdminTokenRejectsEvenTheCorrectSharedSecret(t *testing
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc})) // AdminToken 留空
 	defer adminSrv.Close()
 

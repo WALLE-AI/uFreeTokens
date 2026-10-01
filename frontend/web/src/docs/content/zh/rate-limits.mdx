@@ -1,0 +1,97 @@
+---
+title: 速率限制
+description: 网关对 API Key 的 RPM、TPM、并发限制，公开目录的按 IP 限流，以及触发限流时的响应与应对方式。
+section: guides
+order: 70
+---
+
+## 限制一览
+
+| 限制 | 作用对象 | 适用接口 | 超限时返回 |
+| --- | --- | --- | --- |
+| RPM（每分钟请求数） | 单个 API Key | `/v1/chat/completions`、`/v1/embeddings`、`/v1/messages` | `429 rate_limit_exceeded` |
+| TPM（每分钟 token 数） | 单个 API Key | 同上 | `429 rate_limit_exceeded` |
+| 并发数 | 单个 API Key | 同上 | `429 concurrency_limit_exceeded` |
+| 每 IP 每分钟 60 次 | 客户端 IP | `GET /v1/catalog`（免鉴权） | `429 rate_limit_exceeded` |
+
+`GET /v1/models` 和 `GET /v1/usage` 目前不做限流。
+
+## API Key 的限制额度
+
+RPM、TPM、并发三项限制都是**按 API Key 单独配置**的，由平台为每把 Key 设置：
+
+- 某一项**未设置**时，该项不限制。目前没有账户级或套餐级的默认值——限制完全取决于这把 Key 自身的配置。
+- 新建的 Key 默认三项都不设置。限制额度无法在自助控制台修改，如需调整请联系平台。
+- 可以在网站**个人中心**的 API Key 列表中查看每把 Key 的 RPM 限制（未设置时显示"不设上限"）。
+
+同一账户下的多把 Key 各自独立计数，互不影响。
+
+## 各项限制如何计算
+
+### RPM
+
+每个进入对话 / 嵌入 / Messages 接口并通过鉴权的请求都计 1 次，包括之后因模型不存在、余额不足等原因被拒绝的请求。
+
+### TPM
+
+TPM 在请求**开始前**按估算值扣减，而不是按实际用量：
+
+- 对话补全与 Messages：估算输入 token（按请求体大小，约 4 字节 / token）**加上**本次请求的输出预留量。输出预留量取 `max_tokens`（或 `max_completion_tokens`）、模型最大输出长度、平台预扣上限三者中的最小值。
+- 嵌入：只计估算的输入 token。
+
+扣减后不会按实际用量退还。TPM 按 60 秒的固定窗口计数（从窗口内第一次扣减开始计时），窗口到期后清零。如果单个请求的估算量本身就超过了 TPM 限制，这个请求无论何时发送都会被拒绝，需要减小请求体或 `max_tokens`。
+
+<Callout type="tip" title="TPM 紧张时设置合理的 max_tokens">
+
+不传 `max_tokens` 时，输出预留量会按模型的最大输出长度计算，单个请求就可能占用大量 TPM 额度。按实际需要设置 `max_tokens` 可以让同样的 TPM 额度容纳更多请求。
+
+</Callout>
+
+### 并发
+
+一个请求从通过 RPM 检查起占用 1 个并发名额，直到请求处理完毕（流式请求则直到流结束）才释放。
+
+## 超限响应
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 2
+X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
+
+{"error":{"message":"Too many requests.","type":"rate_limit_error","code":"rate_limit_exceeded","request_id":"01J9Z3K5V8Q2M4N6P8R0S2T4V6"}}
+```
+
+| 情形 | `code` | `message` | `Retry-After` |
+| --- | --- | --- | --- |
+| 超过 RPM | `rate_limit_exceeded` | `Too many requests.` | 有，为距离可再次请求的秒数（至少 1） |
+| 超过 TPM | `rate_limit_exceeded` | `Token-per-minute quota exceeded.` | 有，固定为 `60` |
+| 超过并发 | `concurrency_limit_exceeded` | `Too many concurrent requests.` | 无（名额何时释放取决于你其它请求何时结束） |
+| `/v1/catalog` 超过每 IP 每分钟 60 次 | `rate_limit_exceeded` | `Too many requests.` | 有 |
+
+网关不会返回 `X-RateLimit-*` 一类的剩余额度响应头。RPM 与 TPM 共用 `rate_limit_exceeded`，如需区分可参考 `message`，但程序逻辑上建议同样处理：等待 `Retry-After` 后重试。
+
+<Callout type="info" title="上游的限流不会以 429 返回">
+
+网关自身的限流才会返回 `429`。上游服务商的限流由网关内部处理（切换其它上游 Key 或渠道重试）；如果最终仍然失败，返回的是 `502 upstream_error`，而不是 `429`。
+
+</Callout>
+
+## 应对建议
+
+- 收到 `429 rate_limit_exceeded`：等待 `Retry-After` 秒后重试。
+- 收到 `429 concurrency_limit_exceeded`：降低客户端的并发度（例如用信号量或队列控制同时进行的请求数），或退避后重试。
+- 批量任务：在客户端主动限速，使请求速率略低于你的 RPM 限制；嵌入任务尽量把多条文本合并到一个请求的 `input` 数组中。
+- 重试的写法参见[错误处理](/docs/zh/errors)。
+
+<Callout type="info">
+
+限流依赖平台的 Redis 服务。如果 Redis 暂时不可用，网关会放行请求（不因限流组件故障而拒绝正常流量），此时 API Key 的限制暂时不生效。
+
+</Callout>
+
+## 相关
+
+- [错误处理](/docs/zh/errors)
+- [鉴权](/docs/zh/authentication)
+- [计费说明](/docs/zh/billing)

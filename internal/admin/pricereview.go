@@ -189,12 +189,12 @@ func (s *Service) ListChangeRequests(ctx context.Context, in ListChangeRequestsI
 	}
 	pr = pr.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM price_change_requests cr
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM price_change_requests cr
 		JOIN channels c ON c.id = cr.channel_id JOIN provider_accounts pa ON pa.id = c.provider_account_id
 		JOIN providers p ON p.id = pa.provider_id `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count price_change_requests: %w", err)
 	}
-	rows, err := s.pool.Query(ctx, changeRequestSelect+" "+where+" ORDER BY "+order+", cr.id LIMIT $5 OFFSET $6",
+	rows, err := s.db(ctx).Query(ctx, changeRequestSelect+" "+where+" ORDER BY "+order+", cr.id LIMIT $5 OFFSET $6",
 		append(args, pr.PageSize, pr.offset())...)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query price_change_requests: %w", err)
@@ -266,7 +266,7 @@ type ChangeRequestDetail struct {
 }
 
 func (s *Service) GetChangeRequest(ctx context.Context, id int64) (*ChangeRequestDetail, error) {
-	cr, diff, err := scanChangeRequest(s.pool.QueryRow(ctx, changeRequestSelect+" WHERE cr.id = $1", id))
+	cr, diff, err := scanChangeRequest(s.db(ctx).QueryRow(ctx, changeRequestSelect+" WHERE cr.id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrChangeRequestNotFound
 	}
@@ -289,7 +289,7 @@ func (s *Service) GetChangeRequest(ctx context.Context, id int64) (*ChangeReques
 	var specRaw []byte
 	var currentBookID *int64
 	var evidence []int64
-	if err := s.pool.QueryRow(ctx, `SELECT proposed_spec, current_book_id, evidence FROM price_change_requests WHERE id = $1`, id).
+	if err := s.db(ctx).QueryRow(ctx, `SELECT proposed_spec, current_book_id, evidence FROM price_change_requests WHERE id = $1`, id).
 		Scan(&specRaw, &currentBookID, &evidence); err != nil {
 		return nil, fmt.Errorf("admin: query proposed_spec: %w", err)
 	}
@@ -309,7 +309,7 @@ func (s *Service) GetChangeRequest(ctx context.Context, id int64) (*ChangeReques
 	}
 
 	if len(evidence) > 0 {
-		rows, err := s.pool.Query(ctx,
+		rows, err := s.db(ctx).Query(ctx,
 			`SELECT o.id, o.source_id, ps.level, ps.kind, ps.url, o.observed_at, left(COALESCE(o.raw_object, ''), 2048)
 			 FROM price_observations o JOIN price_sources ps ON ps.id = o.source_id WHERE o.id = ANY($1) ORDER BY o.observed_at DESC`, evidence)
 		if err != nil {
@@ -339,14 +339,19 @@ func (s *Service) GetChangeRequest(ctx context.Context, id int64) (*ChangeReques
 
 func (s *Service) getPriceBook(ctx context.Context, bookID int64) (*PriceBookInfo, error) {
 	var b PriceBookInfo
-	err := s.pool.QueryRow(ctx,
+	err := s.db(ctx).QueryRow(ctx,
 		`SELECT id, kind, tier, currency, effective_from, effective_to, created_by, note, created_at FROM price_books WHERE id = $1`, bookID,
 	).Scan(&b.ID, &b.Kind, &b.Tier, &b.Currency, &b.EffectiveFrom, &b.EffectiveTo, &b.CreatedBy, &b.Note, &b.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query price_book %d: %w", bookID, err)
 	}
-	if b.Components, err = s.loadComponents(ctx, bookID); err != nil {
+	comps, err := s.loadComponents(ctx, []int64{bookID})
+	if err != nil {
 		return nil, err
+	}
+	b.Components = comps[bookID]
+	if b.Components == nil {
+		b.Components = []PriceComponentInput{}
 	}
 	return &b, nil
 }
@@ -361,7 +366,7 @@ func (s *Service) changeImpact(ctx context.Context, channelID, vmID int64, curre
 	const windowDays = 7
 	tokens := map[string]int64{}
 	var in, out, cr, cw int64
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT COALESCE(sum(input_tokens),0), COALESCE(sum(output_tokens),0), COALESCE(sum(cache_read_tokens),0), COALESCE(sum(cache_write_tokens),0)
 		 FROM request_logs WHERE channel_id = $1 AND status = 'success' AND created_at >= now() - make_interval(days => $2)`,
 		channelID, windowDays).Scan(&in, &out, &cr, &cw); err != nil {
@@ -370,7 +375,7 @@ func (s *Service) changeImpact(ctx context.Context, channelID, vmID int64, curre
 	tokens["input"], tokens["output"], tokens["input_cache_read"], tokens["input_cache_write"] = in, out, cr, cw
 
 	var multiplier decimal.Decimal
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT pa.cost_multiplier FROM channels c JOIN provider_accounts pa ON pa.id = c.provider_account_id WHERE c.id = $1`, channelID,
 	).Scan(&multiplier); err != nil {
 		return nil, fmt.Errorf("admin: query cost_multiplier: %w", err)
@@ -491,10 +496,10 @@ func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListing
 	}
 	pr = pr.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pending_model_listings l `+where, args...).Scan(&total); err != nil {
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM pending_model_listings l `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count pending_model_listings: %w", err)
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT l.id, l.status, l.provider_id, p.code, p.name, l.upstream_model, l.source_id, ps.level, l.observed_spec,
 		   l.published_virtual_model_id, l.published_channel_id, l.first_observed_at, l.last_observed_at, l.decided_at
 		 FROM pending_model_listings l JOIN providers p ON p.id = l.provider_id JOIN price_sources ps ON ps.id = l.source_id `+where+
@@ -540,33 +545,51 @@ type TodoCounts struct {
 // 后三项需要算毛利（全量加载 active 渠道），调用方应做短时缓存。
 func (s *Service) GetTodoCounts(ctx context.Context) (*TodoCounts, error) {
 	var t TodoCounts
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM price_change_requests WHERE status = 'pending'),
 		        (SELECT count(*) FROM price_change_requests WHERE status = 'blocked'),
 		        (SELECT count(*) FROM pending_model_listings WHERE status = 'pending')`,
 	).Scan(&t.PriceChangesPending, &t.PriceChangesBlocked, &t.ListingsPending); err != nil {
 		return nil, fmt.Errorf("admin: query todo counts: %w", err)
 	}
-	all, err := s.queryChannels(ctx, "WHERE c.status = 'active'")
-	if err != nil {
-		return nil, err
+	// 负毛利 / 缺成本价 / 缺售价的计数直接用视图聚合（迁移 00023），不再加载全部渠道与模型。
+	if err := s.db(ctx).QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE margin_ratio < 0), count(*) FILTER (WHERE cost_book_id IS NULL)
+		 FROM v_admin_channel_margin WHERE status = 'active'`,
+	).Scan(&t.ChannelsNegativeMargin, &t.ChannelsMissingCost); err != nil {
+		return nil, fmt.Errorf("admin: count channel todos: %w", err)
 	}
-	for _, c := range all {
-		if c.MarginRatio != nil && c.MarginRatio.IsNegative() {
-			t.ChannelsNegativeMargin++
-		}
-		if c.CostPrice == nil {
-			t.ChannelsMissingCost++
-		}
-	}
-	vms, err := s.queryVirtualModels(ctx, "WHERE vm.status = 'active'")
-	if err != nil {
-		return nil, err
-	}
-	for _, v := range vms {
-		if v.SellPrice == nil {
-			t.ModelsMissingSellPrice++
-		}
+	if err := s.db(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM virtual_models vm JOIN v_admin_model_summary ms ON ms.virtual_model_id = vm.id
+		 WHERE vm.status = 'active' AND NOT ms.has_sell_price`,
+	).Scan(&t.ModelsMissingSellPrice); err != nil {
+		return nil, fmt.Errorf("admin: count model todos: %w", err)
 	}
 	return &t, nil
+}
+
+// ChangeRequestBrief 是批量审批前置检查需要的最小信息。
+type ChangeRequestBrief struct {
+	Status         string
+	MaxChangeRatio decimal.Decimal
+}
+
+// ChangeRequestBriefs 一次查出一批调价请求的状态与变化幅度（batch-approve 用），
+// 代替逐条 GetChangeRequest（每条约 8 条 SQL，含 7 天 request_logs 扫描）。
+func (s *Service) ChangeRequestBriefs(ctx context.Context, ids []int64) (map[int64]ChangeRequestBrief, error) {
+	rows, err := s.db(ctx).Query(ctx, `SELECT id, status, max_change_ratio FROM price_change_requests WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("admin: query change request briefs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]ChangeRequestBrief, len(ids))
+	for rows.Next() {
+		var id int64
+		var b ChangeRequestBrief
+		if err := rows.Scan(&id, &b.Status, &b.MaxChangeRatio); err != nil {
+			return nil, fmt.Errorf("admin: scan change request brief: %w", err)
+		}
+		out[id] = b
+	}
+	return out, rows.Err()
 }

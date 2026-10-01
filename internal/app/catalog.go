@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -143,4 +144,13 @@ func toCatalogPrice(book pricing.Book) *catalogPrice {
 		})
 	}
 	return &catalogPrice{Currency: book.Currency, Components: comps}
+}
+
+// requestIP 取 RemoteAddr 的主机部分（去掉端口），拿不到就原样返回。
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

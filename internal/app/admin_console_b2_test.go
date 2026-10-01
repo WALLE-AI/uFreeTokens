@@ -108,10 +108,11 @@ func TestAdminConsole_ListsAndDetails(t *testing.T) {
 }
 
 func TestAdminConsole_PatchWritesAuditAndGuardsLastChannel(t *testing.T) {
-	ac, done := newAdminTestServer(t, true)
+	ac, pool, done := newAdminTestServerWithPool(t, true)
 	defer done()
 	f := newB2Fixture(t, ac)
-	actor := map[string]string{"X-Actor-Name": url.QueryEscape("王五")}
+	ac.loginAs(pool, "王五", "operator")
+	var actor map[string]string
 
 	status, body := ac.do(http.MethodPatch, fmt.Sprintf("/channels/%d", f.channelID), map[string]any{"weight": 50, "priority": 3}, actor)
 	if status != http.StatusOK {

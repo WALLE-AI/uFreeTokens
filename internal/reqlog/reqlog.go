@@ -30,30 +30,32 @@ type AttemptTraceEntry struct {
 
 // Record 是一行 request_logs。字段命名与数据库列一一对应，方便对照 migrations/00007。
 type Record struct {
-	RequestID     string
-	CreatedAt     time.Time
-	AccountID     int64
-	APIKeyID      int64
-	VirtualModel  string
-	ChannelID     *int64 // 最终成功（或最后一次尝试）所用的渠道；从未路由成功时为 nil
-	ProviderKeyID *int64
-	Endpoint      string
-	IsStream      bool
-	Status        string // success / upstream_error / rejected
-	HTTPStatus    int
-	ErrorCode     string
-	Attempts      int
-	AttemptTrace  []AttemptTraceEntry
-	TTFTMillis    *int64
-	LatencyMillis int64
-	Usage         schema.Usage
-	SellBookID    *int64
-	PromotionIDs  []int64 // 命中并叠加应用的促销 ID，按应用顺序排列（见 internal/promotion 包注释）
-	ListAmount    *int64
-	ChargedAmount *int64
-	CostAmount    *int64 // 平台成本（微元，CNY）；nil = 没配成本价或成本价非 CNY，见 internal/relay.computeCostAmount
-	ClientIP      string
-	UserAgent     string
+	RequestID    string
+	CreatedAt    time.Time
+	AccountID    int64
+	APIKeyID     int64
+	VirtualModel string
+	// VirtualModelID 是模型 ID（0 = 未知）；统计按 ID 聚合，名称只作展示（迁移 00022）。
+	VirtualModelID int64
+	ChannelID      *int64 // 最终成功（或最后一次尝试）所用的渠道；从未路由成功时为 nil
+	ProviderKeyID  *int64
+	Endpoint       string
+	IsStream       bool
+	Status         string // success / upstream_error / rejected
+	HTTPStatus     int
+	ErrorCode      string
+	Attempts       int
+	AttemptTrace   []AttemptTraceEntry
+	TTFTMillis     *int64
+	LatencyMillis  int64
+	Usage          schema.Usage
+	SellBookID     *int64
+	PromotionIDs   []int64 // 命中并叠加应用的促销 ID，按应用顺序排列（见 internal/promotion 包注释）
+	ListAmount     *int64
+	ChargedAmount  *int64
+	CostAmount     *int64 // 平台成本（微元，CNY）；nil = 没配成本价或成本价非 CNY，见 internal/relay.computeCostAmount
+	ClientIP       string
+	UserAgent      string
 	// ExperimentKey/VariantLabel 是命中渠道的 A/B 实验分组标签（Phase 3，
 	// 见 catalog.Channel 的注释）；渠道没参与实验时都为空字符串。
 	ExperimentKey string
@@ -145,14 +147,14 @@ INSERT INTO request_logs (
     ttft_ms, latency_ms,
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens, usage_source,
     sell_price_book_id, promotion_ids, list_amount, charged_amount, cost_amount, client_ip, user_agent,
-    experiment_key, variant_label
+    experiment_key, variant_label, virtual_model_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14,
     $15, $16,
     $17, $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27, $28, $29,
-    $30, $31
+    $30, $31, $32
 )`
 
 func (w *Writer) insertBatch(records []Record) {
@@ -177,7 +179,7 @@ func (w *Writer) insertBatch(records []Record) {
 			r.TTFTMillis, r.LatencyMillis,
 			r.Usage.InputTokens, r.Usage.CacheReadTokens, r.Usage.CacheWriteTokens, r.Usage.OutputTokens, r.Usage.ReasoningTokens, source,
 			r.SellBookID, r.PromotionIDs, r.ListAmount, r.ChargedAmount, r.CostAmount, nullIfEmpty(r.ClientIP), nullIfEmpty(r.UserAgent),
-			nullIfEmpty(r.ExperimentKey), nullIfEmpty(r.VariantLabel),
+			nullIfEmpty(r.ExperimentKey), nullIfEmpty(r.VariantLabel), nullIfZero64(r.VirtualModelID),
 		)
 	}
 
@@ -202,4 +204,11 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullIfZero64(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
 }

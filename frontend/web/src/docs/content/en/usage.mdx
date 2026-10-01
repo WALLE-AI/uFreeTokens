@@ -1,0 +1,157 @@
+---
+title: Usage
+description: Query your account balance and cumulative usage with GET /v1/usage, and learn how to read the usage field in each API response.
+section: guides
+order: 50
+translatedFrom: b4884a404ef4
+---
+
+There are two ways to track your usage:
+
+- **Per request**: every API response includes a `usage` field with the tokens consumed by that request.
+- **Account totals**: `GET /v1/usage` returns your wallet balance and cumulative usage using your API key — handy in scripts and monitoring.
+
+## GET /v1/usage
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/usage \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+### Query parameters
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `since` | string | No | An RFC3339 timestamp such as `2026-10-01T00:00:00Z` or `2026-10-01T00:00:00+08:00`. Only requests at or after this time are counted; omit it to count all history. An invalid format returns `400 invalid_request` |
+
+<Callout type="warning" title="URL-encode the timestamp">
+
+Timestamps with a timezone offset contain `+`, which is decoded as a space if placed in the URL verbatim. URL-encode the parameter (e.g. cURL's `-G --data-urlencode`), or use a UTC timestamp ending in `Z`.
+
+</Callout>
+
+### Response
+
+```json
+{
+  "wallet": {
+    "cash_balance_micro": 5000000,
+    "bonus_balance_micro": 0,
+    "frozen_micro": 0
+  },
+  "usage": {
+    "total_requests": 12,
+    "total_input_tokens": 3400,
+    "total_output_tokens": 1800,
+    "total_charged_amount_micro": 15000
+  }
+}
+```
+
+All amounts are in **micro-yuan** (CNY): `1,000,000` micro-yuan = 1 yuan. In the example, the cash balance is 5 yuan and the total spend is 0.015 yuan.
+
+| Field | Description |
+| --- | --- |
+| `wallet.cash_balance_micro` | Cash balance |
+| `wallet.bonus_balance_micro` | Bonus (promotional) balance |
+| `wallet.frozen_micro` | Amount currently held (pre-authorized) by in-flight requests; settled or released when they finish |
+| `usage.total_requests` | Number of successful requests |
+| `usage.total_input_tokens` | Total input tokens of successful requests |
+| `usage.total_output_tokens` | Total output tokens of successful requests |
+| `usage.total_charged_amount_micro` | Total amount actually charged for successful requests (micro-yuan) |
+
+Keep in mind:
+
+- `wallet` is always the **current** balance and is not affected by `since`; `since` only applies to `usage`.
+- `usage` counts **successful requests only**. Failed requests are not charged and not counted.
+- The values are **cumulative totals**, not a time series. For a breakdown over time, sign in to the **personal center** on the website, which shows this month's daily spending trend and a per-request call log for the last 30 days (with model, tokens and cost).
+
+### Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl -G {{BASE_URL}}/v1/usage \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  --data-urlencode "since=2026-10-01T00:00:00+08:00"
+```
+
+```python title="Python"
+import os
+import requests
+
+resp = requests.get(
+    "{{BASE_URL}}/v1/usage",
+    headers={"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"},
+    params={"since": "2026-10-01T00:00:00+08:00"},  # requests URL-encodes this for you
+    timeout=10,
+)
+resp.raise_for_status()
+data = resp.json()
+
+wallet, usage = data["wallet"], data["usage"]
+print(f"Cash balance: {wallet['cash_balance_micro'] / 1_000_000:.2f} CNY")
+print(f"Spend in period: {usage['total_charged_amount_micro'] / 1_000_000:.4f} CNY over {usage['total_requests']} requests")
+```
+
+```ts title="TypeScript"
+const url = new URL("{{BASE_URL}}/v1/usage");
+url.searchParams.set("since", "2026-10-01T00:00:00+08:00"); // URL-encoded automatically
+
+const res = await fetch(url, {
+  headers: { Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}` },
+});
+if (!res.ok) throw new Error(`HTTP ${res.status}`);
+const { wallet, usage } = await res.json();
+
+console.log(`Cash balance: ${(wallet.cash_balance_micro / 1_000_000).toFixed(2)} CNY`);
+console.log(`Spend in period: ${(usage.total_charged_amount_micro / 1_000_000).toFixed(4)} CNY over ${usage.total_requests} requests`);
+```
+
+</CodeTabs>
+
+<Callout type="tip">
+
+Amounts are returned as integer micro-yuan to avoid floating-point errors. Keep using integer arithmetic for sums and comparisons, and convert to yuan only for display.
+
+</Callout>
+
+## Reading usage in responses
+
+### Chat completions (non-streaming)
+
+`/v1/chat/completions` responses contain the `usage` object returned by the upstream, passed through unchanged:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 48,
+    "total_tokens": 168
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `prompt_tokens` | Input tokens |
+| `completion_tokens` | Output tokens |
+| `total_tokens` | Sum of the two |
+| `prompt_tokens_details.cached_tokens` | Returned by some models: input tokens served from cache |
+| `completion_tokens_details.reasoning_tokens` | Returned by some models: reasoning (thinking) tokens |
+
+Which sub-fields appear in `usage` depends on the model and upstream. Billing is based on the usage reported by the upstream; see [Billing](/docs/en/billing) for how cached tokens are priced.
+
+### Streaming
+
+Streaming requests don't return usage by default. Add `"stream_options": {"include_usage": true}` to your request and the stream ends with an extra chunk that has an empty `choices` array and a `usage` object. See [Streaming](/docs/en/streaming).
+
+### Other endpoints
+
+- `/v1/embeddings`: `usage.prompt_tokens` — input only.
+- `/v1/messages`: `usage.input_tokens` and `usage.output_tokens` (Anthropic format).
+
+## Related
+
+- [Usage API reference](/docs/en/api/getUsage)
+- [Billing](/docs/en/billing)

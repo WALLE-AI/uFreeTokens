@@ -1,0 +1,183 @@
+---
+title: Anthropic SDK
+description: 把官方 Anthropic Python / Node.js SDK 指向 uFreeTokens，用 messages.create 做基础的非流式调用。
+section: integrations
+order: 20
+---
+
+## 工作方式
+
+网关的 `POST /v1/messages` 接受 Anthropic Messages API 形状的请求，返回 Anthropic 形状的响应，因此可以直接使用官方 Anthropic SDK。请求在网关内部与 `/v1/chat/completions` 走同一套鉴权、限流和计费，`model` 可以是平台上任何对话模型的 ID，不限于 Claude。
+
+本页只介绍基础的非流式 `messages.create` 调用。接口的完整行为见 [Anthropic 兼容接口](/docs/zh/anthropic-messages)。
+
+## 配置客户端
+
+需要注意两点：
+
+1. **鉴权**：网关只认 `Authorization: Bearer`，而 SDK 的 `api_key` / `apiKey` 参数会把 Key 放进 `x-api-key` 请求头，网关不识别，会返回 `401 invalid_api_key`。请改用 `auth_token`（Python）/ `authToken`（Node.js）传入 Key，SDK 会以 `Authorization: Bearer` 发送。
+2. **Base URL**：SDK 会自己在后面拼接 `/v1/messages`，所以 `base_url` 填网关根地址，**不要**带 `/v1`。
+
+<CodeTabs>
+
+```python title="Python"
+# pip install anthropic
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+```
+
+```ts title="Node.js"
+// npm install @anthropic-ai/sdk
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null, // 不读取环境变量 ANTHROPIC_API_KEY，避免发出 x-api-key 头
+});
+```
+
+</CodeTabs>
+
+<Callout type="warning" title="注意环境变量 ANTHROPIC_API_KEY">
+
+如果运行环境里设置了 `ANTHROPIC_API_KEY`，Python SDK 会在 `Authorization` 之外**额外**把它放进 `x-api-key` 头发出去——也就是把你在 Anthropic 官方的 Key 发给了网关。网关不会使用这个头，但为了安全，请在调用 uFreeTokens 的进程中不要设置 `ANTHROPIC_API_KEY`。Node.js SDK 传入 `apiKey: null` 即可避免。
+
+</Callout>
+
+## 发送消息
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+
+message = client.messages.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens=1024,
+    system="你是一个简洁的助手。",
+    messages=[{"role": "user", "content": "用三句话介绍一下 API 网关。"}],
+)
+print(message.content[0].text)
+print(message.stop_reason, message.usage)
+```
+
+```ts title="Node.js"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null,
+});
+
+const message = await client.messages.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  max_tokens: 1024,
+  system: "你是一个简洁的助手。",
+  messages: [{ role: "user", content: "用三句话介绍一下 API 网关。" }],
+});
+const block = message.content[0];
+if (block.type === "text") console.log(block.text);
+console.log(message.stop_reason, message.usage);
+```
+
+</CodeTabs>
+
+响应示例：
+
+```json
+{
+  "id": "...",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "..."}],
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 25, "output_tokens": 80}
+}
+```
+
+## 支持的参数
+
+| 参数 | 说明 |
+|---|---|
+| `model` | 模型 ID，必填 |
+| `messages` | 对话消息，`role` 为 `user` 或 `assistant`；`content` 可以是字符串或文本块数组 |
+| `system` | 系统提示，字符串或文本块数组 |
+| `max_tokens` | 最大输出 token 数 |
+| `temperature`、`top_p` | 采样参数 |
+| `stop_sequences` | 停止序列 |
+
+其它参数会被忽略。`content` 中只识别 `type` 为 `text` 的块，图片等其它类型的块会被丢弃。请求中带 `tools` 会返回 `400 invalid_request`。
+
+`stop_reason` 的取值为 `end_turn`（正常结束）或 `max_tokens`（达到输出上限）。
+
+## 错误处理
+
+`/v1/messages` 的错误响应使用 **OpenAI 兼容格式**（`{"error": {"code": ..., ...}}`），而不是 Anthropic 的错误格式。SDK 仍会按 HTTP 状态码抛出对应的异常，错误码需要从响应体里读取：
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="{{BASE_URL}}",
+    auth_token=os.environ["UFREETOKENS_API_KEY"],
+)
+
+try:
+    message = client.messages.create(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        max_tokens=256,
+        messages=[{"role": "user", "content": "你好"}],
+    )
+    print(message.content[0].text)
+except anthropic.APIStatusError as e:
+    err = (e.body or {}).get("error", {}) if isinstance(e.body, dict) else {}
+    print(f"HTTP {e.status_code} code={err.get('code')} request_id={err.get('request_id')}")
+```
+
+```ts title="Node.js"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "{{BASE_URL}}",
+  authToken: process.env.UFREETOKENS_API_KEY,
+  apiKey: null,
+});
+
+try {
+  const message = await client.messages.create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    max_tokens: 256,
+    messages: [{ role: "user", content: "你好" }],
+  });
+  console.log(message.content);
+} catch (err) {
+  if (err instanceof Anthropic.APIError) {
+    const body = err.error as { error?: { code?: string; request_id?: string } } | undefined;
+    console.log(`HTTP ${err.status} code=${body?.error?.code} request_id=${body?.error?.request_id}`);
+  } else {
+    throw err;
+  }
+}
+```
+
+</CodeTabs>
+
+错误码含义与 `/v1/chat/completions` 相同，见[错误处理](/docs/zh/errors)。

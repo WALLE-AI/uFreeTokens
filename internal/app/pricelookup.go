@@ -10,15 +10,33 @@ import (
 )
 
 // 两个已实现真实 HTTP 抓取的 L4/聚合来源（见 internal/pricesync 包文档）的
-// 规范地址——都是调用方一般会用的默认值，请求体里都可以覆盖。
+// 规范地址。地址只能由服务端配置（AdminDeps.ReferencePriceURLs），不接受请求体
+// 覆盖——否则这个接口就是一个"让服务端去请求任意 URL"的 SSRF 入口。
 const (
 	defaultLiteLLMDatasetURL   = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 	defaultOpenRouterModelsURL = "https://openrouter.ai/api/v1/models"
 )
 
+// ReferencePriceURLs 是参考价格查询的两个来源地址；零值字段用官方默认地址。
+type ReferencePriceURLs struct {
+	LiteLLMDataset   string
+	OpenRouterModels string
+}
+
+func (u ReferencePriceURLs) withDefaults() ReferencePriceURLs {
+	if u.LiteLLMDataset == "" {
+		u.LiteLLMDataset = defaultLiteLLMDatasetURL
+	}
+	if u.OpenRouterModels == "" {
+		u.OpenRouterModels = defaultOpenRouterModelsURL
+	}
+	return u
+}
+
 type referencePriceLookupRequest struct {
-	LiteLLMDatasetURL   string   `json:"litellm_dataset_url"`   // 留空用 defaultLiteLLMDatasetURL
-	OpenRouterModelsURL string   `json:"openrouter_models_url"` // 留空用 defaultOpenRouterModelsURL
+	// 旧调用方可能还会传这两个字段：只接受空值或与服务端配置相同的值。
+	LiteLLMDatasetURL   string   `json:"litellm_dataset_url"`
+	OpenRouterModelsURL string   `json:"openrouter_models_url"`
 	UpstreamModels      []string `json:"upstream_models"`
 }
 
@@ -56,13 +74,15 @@ func (h *adminHandlers) referencePriceLookup(w http.ResponseWriter, r *http.Requ
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "upstream_models must not be empty")
 		return
 	}
-	litellmURL := in.LiteLLMDatasetURL
-	if litellmURL == "" {
-		litellmURL = defaultLiteLLMDatasetURL
+	if len(in.UpstreamModels) > 1000 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "upstream_models must contain at most 1000 items")
+		return
 	}
-	openRouterURL := in.OpenRouterModelsURL
-	if openRouterURL == "" {
-		openRouterURL = defaultOpenRouterModelsURL
+	litellmURL, openRouterURL := h.refURLs.LiteLLMDataset, h.refURLs.OpenRouterModels
+	if (in.LiteLLMDatasetURL != "" && in.LiteLLMDatasetURL != litellmURL) ||
+		(in.OpenRouterModelsURL != "" && in.OpenRouterModelsURL != openRouterURL) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "reference source URLs are configured server-side and cannot be overridden")
+		return
 	}
 
 	openRouterByModel, openRouterErr := fetchObservationsByModel(r.Context(), pricesync.OpenRouterFetcher{}, openRouterURL)

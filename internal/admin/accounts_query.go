@@ -62,10 +62,10 @@ func (s *Service) ListAccounts(ctx context.Context, in ListAccountsInput) (*Page
 	args := []any{idQ, emailQ, nameQ, in.Status, in.Tier, in.Type}
 	pr := in.PageRequest.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM accounts a `+where, args...).Scan(&total); err != nil {
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM accounts a `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count accounts: %w", err)
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT a.id, a.type, a.name, a.status, a.tier, a.credit_limit, a.created_at,
 		   (SELECT u.email::text FROM account_members m JOIN users u ON u.id = m.user_id
 		      WHERE m.account_id = a.id AND m.role = 'owner' ORDER BY m.created_at LIMIT 1),
@@ -122,7 +122,7 @@ type AccountExtras struct {
 
 func (s *Service) GetAccountExtras(ctx context.Context, accountID int64) (*AccountExtras, error) {
 	out := &AccountExtras{Members: []AccountMember{}}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT u.id, u.email::text, u.email_verified, m.role, m.created_at
 		 FROM account_members m JOIN users u ON u.id = m.user_id WHERE m.account_id = $1 ORDER BY m.created_at`, accountID)
 	if err != nil {
@@ -140,7 +140,7 @@ func (s *Service) GetAccountExtras(ctx context.Context, accountID int64) (*Accou
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.pool.QueryRow(ctx,
+	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT count(*), COALESCE(sum(remaining), 0), min(expires_at)
 		 FROM credit_grants WHERE account_id = $1 AND remaining > 0 AND (expires_at IS NULL OR expires_at > now())`, accountID,
 	).Scan(&out.ActiveGrantsSummary.Count, &out.ActiveGrantsSummary.RemainingMicro, &out.ActiveGrantsSummary.NearestExpiresAt); err != nil {
@@ -177,8 +177,11 @@ var ErrInvalidCursor = errors.New("admin: invalid pagination cursor")
 // ListLedger 按 (created_at, id) 倒序游标分页，走 idx_ledger_entries_account。
 func (s *Service) ListLedger(ctx context.Context, in ListLedgerInput) ([]LedgerEntry, string, error) {
 	limit := in.Limit
-	if limit <= 0 || limit > 100 {
+	switch {
+	case limit <= 0:
 		limit = 50
+	case limit > 100:
+		limit = 100
 	}
 	var beforeAt time.Time
 	var beforeID int64
@@ -188,7 +191,7 @@ func (s *Service) ListLedger(ctx context.Context, in ListLedgerInput) ([]LedgerE
 			return nil, "", err
 		}
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id, grant_id, created_at
 		 FROM ledger_entries
 		 WHERE account_id = $1 AND ($2 = '' OR type = $2) AND ($3 = '' OR balance_kind = $3)
@@ -252,27 +255,33 @@ type CreditGrantInfo struct {
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
-// ListCreditGrants：activeOnly=true 时只返回未用完且未过期的赠款。
-func (s *Service) ListCreditGrants(ctx context.Context, accountID int64, activeOnly bool) ([]CreditGrantInfo, error) {
-	rows, err := s.pool.Query(ctx,
+// ListCreditGrants：activeOnly=true 时只返回未用完且未过期的赠款；按发放时间
+// 倒序最多返回 maxCreditGrants 条，超出时 truncated=true。
+func (s *Service) ListCreditGrants(ctx context.Context, accountID int64, activeOnly bool) (grants []CreditGrantInfo, truncated bool, err error) {
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT id, source, promotion_id, amount, remaining, model_scope, expires_at, created_at
 		 FROM credit_grants
 		 WHERE account_id = $1 AND (NOT $2 OR (remaining > 0 AND (expires_at IS NULL OR expires_at > now())))
-		 ORDER BY created_at DESC LIMIT 200`, accountID, activeOnly)
+		 ORDER BY created_at DESC LIMIT $3`, accountID, activeOnly, maxCreditGrants+1)
 	if err != nil {
-		return nil, fmt.Errorf("admin: query credit_grants: %w", err)
+		return nil, false, fmt.Errorf("admin: query credit_grants: %w", err)
 	}
 	defer rows.Close()
 	out := []CreditGrantInfo{}
 	for rows.Next() {
 		var g CreditGrantInfo
 		if err := rows.Scan(&g.ID, &g.Source, &g.PromotionID, &g.AmountMicro, &g.RemainingMicro, &g.ModelScope, &g.ExpiresAt, &g.CreatedAt); err != nil {
-			return nil, fmt.Errorf("admin: scan credit_grant: %w", err)
+			return nil, false, fmt.Errorf("admin: scan credit_grant: %w", err)
 		}
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if len(out) > maxCreditGrants {
+		out, truncated = out[:maxCreditGrants], true
+	}
+	return out, truncated, rows.Err()
 }
+
+const maxCreditGrants = 200
 
 // ---------- 全局 API Key 检索 ----------
 
@@ -288,6 +297,7 @@ type APIKeyListItem struct {
 type ListAPIKeysInput struct {
 	Q         string
 	AccountID int64
+	KeyID     int64
 	Status    string
 	PageRequest
 }
@@ -295,19 +305,22 @@ type ListAPIKeysInput struct {
 // SearchAPIKeys：q 匹配 Key 名称或展示前缀——运营拿到用户发来的 sk-uft-xxxx
 // 前缀就能定位是哪把 Key、属于哪个账户。
 func (s *Service) SearchAPIKeys(ctx context.Context, in ListAPIKeysInput) (*Page[APIKeyListItem], error) {
+	if err := validateEnum("status", in.Status, "active", "disabled", "revoked"); err != nil {
+		return nil, err
+	}
 	q := strings.TrimSpace(in.Q)
 	where := `WHERE ($1 = '' OR k.name ILIKE $2 OR k.display_prefix ILIKE $2 OR $1 LIKE k.display_prefix || '%')
-	  AND ($3 = 0 OR k.account_id = $3) AND ($4 = '' OR k.status = $4)`
-	args := []any{q, likePattern(q), in.AccountID, in.Status}
+	  AND ($3 = 0 OR k.account_id = $3) AND ($4 = '' OR k.status = $4) AND ($5 = 0 OR k.id = $5)`
+	args := []any{q, likePattern(q), in.AccountID, in.Status, in.KeyID}
 	pr := in.PageRequest.normalize()
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM api_keys k `+where, args...).Scan(&total); err != nil {
+	if err := s.db(ctx).QueryRow(ctx, `SELECT count(*) FROM api_keys k `+where, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("admin: count api_keys: %w", err)
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT k.id, k.account_id, k.name, k.display_prefix, k.status, k.allowed_models, k.rpm_limit, k.tpm_limit, k.concurrency_limit, k.created_at,
 		   a.name, k.last_used_at, k.expires_at, k.budget_limit, k.budget_period
-		 FROM api_keys k JOIN accounts a ON a.id = k.account_id `+where+` ORDER BY k.id DESC LIMIT $5 OFFSET $6`,
+		 FROM api_keys k JOIN accounts a ON a.id = k.account_id `+where+` ORDER BY k.id DESC LIMIT $6 OFFSET $7`,
 		append(args, pr.PageSize, pr.offset())...)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query api_keys: %w", err)

@@ -30,6 +30,7 @@ import { useAsync } from '../../hooks/useAsync';
 import { formatDateTime } from '../../lib/time';
 import type { ActiveStatus, ProviderAccountSummary, ProviderKey, UpstreamModel } from '../../types';
 import { upstreamErrorHint } from './common';
+import { Can } from '../../components/ui/Can';
 
 // ---------- 新建 / 编辑上游账号 ----------
 
@@ -334,9 +335,9 @@ export function AccountDrawer({
             <Button icon={<Plug className="w-3.5 h-3.5" />} onClick={() => onTest(a.id)}>
               测试连接
             </Button>
-            <Button variant="primary" className="ml-auto" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setAdding(true)}>
+            <Can perm="provider_key:write"><Button variant="primary" className="ml-auto" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setAdding(true)}>
               添加密钥
-            </Button>
+            </Button></Can>
           </div>
         )
       }

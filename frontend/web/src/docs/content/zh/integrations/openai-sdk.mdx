@@ -1,0 +1,250 @@
+---
+title: OpenAI SDK
+description: 用官方 OpenAI Python / Node.js SDK 调用 uFreeTokens：配置、流式输出、Embeddings 与错误处理。
+section: integrations
+order: 10
+---
+
+## 配置客户端
+
+uFreeTokens 兼容 OpenAI API，官方 SDK 只需要改两个参数：`base_url` 指向网关的 `/v1`，`api_key` 使用你的 uFreeTokens Key。
+
+<CodeTabs>
+
+```python title="Python"
+# pip install openai
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+)
+```
+
+```ts title="Node.js"
+// npm install openai
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{BASE_URL}}/v1",
+  apiKey: process.env.UFREETOKENS_API_KEY,
+});
+```
+
+</CodeTabs>
+
+SDK 会自动以 `Authorization: Bearer` 的形式发送 Key，这正是网关要求的鉴权方式。
+
+## 对话补全
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+resp = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[
+        {"role": "system", "content": "你是一个简洁的助手。"},
+        {"role": "user", "content": "解释一下什么是 API 网关。"},
+    ],
+    max_tokens=512,
+)
+print(resp.choices[0].message.content)
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const resp = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [
+    { role: "system", content: "你是一个简洁的助手。" },
+    { role: "user", content: "解释一下什么是 API 网关。" },
+  ],
+  max_tokens: 512,
+});
+console.log(resp.choices[0].message.content);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+设置 `max_tokens` 还能降低请求的预扣金额，见[计费与余额](/docs/zh/billing)。
+
+## 流式输出
+
+传入 `stream=True` 后逐块读取。如果你希望在流的最后拿到 token 用量，需要自己设置 `stream_options.include_usage`；这个只含 `usage` 的数据块的 `choices` 是空数组，读取内容前要先判断。
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+stream = client.chat.completions.create(
+    model="deepseek-ai/DeepSeek-V4-Flash",
+    messages=[{"role": "user", "content": "写一首关于秋天的短诗。"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+    if chunk.usage:
+        print("\n\nusage:", chunk.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "写一首关于秋天的短诗。" }],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+for await (const chunk of stream) {
+  const text = chunk.choices[0]?.delta?.content;
+  if (text) process.stdout.write(text);
+  if (chunk.usage) console.log("\n\nusage:", chunk.usage);
+}
+```
+
+</CodeTabs>
+
+<Callout type="info">
+
+中途停止读取（break 或关闭连接）时，网关会按已经发给你的内容估算计费，不会按输出上限收费。详见[流式输出](/docs/zh/streaming)。
+
+</Callout>
+
+## Embeddings
+
+`/v1/embeddings` 只接受类型为 `embedding` 的模型。先在 `GET /v1/catalog` 中找到 `type` 为 `embedding` 的模型 ID，放进环境变量 `EMBEDDING_MODEL`：
+
+<CodeTabs>
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+resp = client.embeddings.create(
+    model=os.environ["EMBEDDING_MODEL"],
+    input=["今天天气很好", "API 网关的作用"],
+)
+for item in resp.data:
+    print(item.index, len(item.embedding))
+print(resp.usage)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+const resp = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: ["今天天气很好", "API 网关的作用"],
+});
+for (const item of resp.data) console.log(item.index, item.embedding.length);
+console.log(resp.usage);
+```
+
+</CodeTabs>
+
+传入非 `embedding` 类型的模型会返回 `404 model_not_found`。更多说明见 [Embeddings](/docs/zh/embeddings)。
+
+## 列出可用模型
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+for m in client.models.list():
+    print(m.id)
+```
+
+## 错误处理
+
+网关的错误体是 OpenAI 兼容格式，SDK 会把它解析成异常对象：`code` 是稳定的错误码，`request_id` 用于排查问题。
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import openai
+from openai import OpenAI
+
+client = OpenAI(base_url="{{BASE_URL}}/v1", api_key=os.environ["UFREETOKENS_API_KEY"])
+
+try:
+    resp = client.chat.completions.create(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        messages=[{"role": "user", "content": "你好"}],
+    )
+    print(resp.choices[0].message.content)
+except openai.APIStatusError as e:
+    # e.code 是网关错误码，例如 insufficient_balance、model_not_found
+    print(f"HTTP {e.status_code} code={e.code} request_id={e.request_id}")
+    if e.code == "insufficient_balance":
+        print("余额不足")
+except openai.APIConnectionError as e:
+    print("网络错误：", e)
+```
+
+```ts title="Node.js"
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{BASE_URL}}/v1", apiKey: process.env.UFREETOKENS_API_KEY });
+
+try {
+  const resp = await client.chat.completions.create({
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    messages: [{ role: "user", content: "你好" }],
+  });
+  console.log(resp.choices[0].message.content);
+} catch (err) {
+  if (err instanceof OpenAI.APIError) {
+    // err.code 是网关错误码；err.requestID 取自 X-Request-Id 响应头
+    console.log(`HTTP ${err.status} code=${err.code} request_id=${err.requestID}`);
+    if (err.code === "insufficient_balance") console.log("余额不足");
+  } else {
+    throw err;
+  }
+}
+```
+
+</CodeTabs>
+
+### SDK 的自动重试
+
+OpenAI SDK 默认会对 429、5xx 和连接错误自动重试 2 次，并遵守 `Retry-After` 响应头；`402`、`401`、`404` 等不会重试。可以用 `max_retries`（Python）/ `maxRetries`（Node.js）调整：
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{BASE_URL}}/v1",
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    max_retries=5,
+)
+```
+
+常见错误码及处理建议见[错误处理](/docs/zh/errors)和[限流与并发](/docs/zh/rate-limits)。

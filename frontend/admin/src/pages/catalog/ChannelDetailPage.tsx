@@ -13,6 +13,7 @@ import { formatDateTime, formatRelative } from '../../lib/time';
 import type { ChannelDetail, PriceObservation, Tier } from '../../types';
 import { PriceBookHistory, PriceComponentsTable } from './PriceBookViews';
 import { MarginText, TIER_OPTIONS, currencySymbol, formatPrice, parseIdList } from './shared';
+import { Can } from '../../components/ui/Can';
 
 // 渠道详情（UI_DESIGN.md §3.2 详情模板）：路由配置、成本价、价格观测、待审调价、操作记录。
 
@@ -92,14 +93,14 @@ export default function ChannelDetailPage() {
             actions={
               <>
                 {c.status === 'active' ? (
-                  <Button onClick={() => setStatusConfirm('disable')}>停用渠道</Button>
+                  <Can perm="catalog:write"><Button onClick={() => setStatusConfirm('disable')}>停用渠道</Button></Can>
                 ) : (
                   <Button onClick={() => setStatusConfirm('enable')}>启用渠道</Button>
                 )}
-                <Button onClick={() => setEditingRouting(true)}>编辑路由</Button>
-                <Button variant="primary" onClick={() => setEditingCost(true)}>
+                <Can perm="catalog:write"><Button onClick={() => setEditingRouting(true)}>编辑路由</Button></Can>
+                <Can perm="pricing:write"><Button variant="primary" onClick={() => setEditingCost(true)}>
                   发布新成本价
-                </Button>
+                </Button></Can>
               </>
             }
           />
@@ -159,7 +160,7 @@ export default function ChannelDetailPage() {
                 <UsageTrend filter={{ channel_id: c.id }} defaultMetric="requests" />
               </Section>
 
-              <Section id="routing" title="路由配置" actions={<Button size="sm" onClick={() => setEditingRouting(true)}>编辑</Button>}>
+              <Section id="routing" title="路由配置" actions={<Can perm="catalog:write"><Button size="sm" onClick={() => setEditingRouting(true)}>编辑</Button></Can>}>
                 <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-xs">
                   <InfoGrid
                     items={[
@@ -190,7 +191,7 @@ export default function ChannelDetailPage() {
                 </div>
               </Section>
 
-              <Section id="cost" title="成本价" actions={<Button size="sm" variant="primary" onClick={() => setEditingCost(true)}>发布新成本价</Button>}>
+              <Section id="cost" title="成本价" actions={<Can perm="pricing:write"><Button size="sm" variant="primary" onClick={() => setEditingCost(true)}>发布新成本价</Button></Can>}>
                 <div className="space-y-3">
                   {currentCostBook ? (
                     <>
@@ -201,7 +202,7 @@ export default function ChannelDetailPage() {
                     <EmptyState
                       title="尚未设置成本价"
                       description="没有成本价就无法计算毛利，调价审批也没有对比基线"
-                      action={<Button variant="primary" onClick={() => setEditingCost(true)}>设置成本价</Button>}
+                      action={<Can perm="pricing:write"><Button variant="primary" onClick={() => setEditingCost(true)}>设置成本价</Button></Can>}
                     />
                   )}
                   <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold pt-2">历史版本</div>

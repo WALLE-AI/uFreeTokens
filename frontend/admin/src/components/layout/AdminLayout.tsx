@@ -5,7 +5,8 @@ import { AdminHeader } from './AdminHeader';
 import { AdminSidebar } from './AdminSidebar';
 import { ShortcutHelp } from './ShortcutHelp';
 import { CommandPalette, DataState, type Command } from '../ui';
-import { NAV_ITEMS } from '../../nav';
+import { visibleNavItems } from '../../nav';
+import { useAuth } from '../../api/auth';
 import { useGlobalHotkeys } from '../../hooks/useHotkeys';
 import { useTodoCounts } from '../../hooks/useTodoCounts';
 
@@ -37,9 +38,11 @@ export function AdminLayout() {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
+  const { me: authMe } = useAuth();
+
   useGlobalHotkeys({
     onGoto: (key) => {
-      const item = NAV_ITEMS.find((i) => i.gotoKey === key);
+      const item = visibleNavItems(authMe).find((i) => i.gotoKey === key);
       if (item) navigate(item.path);
     },
     onFocusSearch: () => {
@@ -52,7 +55,7 @@ export function AdminLayout() {
 
   const commands = useMemo<Command[]>(
     () => [
-      ...NAV_ITEMS.map((i) => {
+      ...visibleNavItems(authMe).map((i) => {
         const Icon = i.icon;
         return {
           id: `page:${i.path}`,

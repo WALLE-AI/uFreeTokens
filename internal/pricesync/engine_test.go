@@ -94,6 +94,7 @@ func seedFixture(t *testing.T, pool *pgxpool.Pool, adminSvc *admin.Service, leve
 func newEngine(t *testing.T, pool *pgxpool.Pool) (*Engine, *admin.Service) {
 	t.Helper()
 	adminSvc := admin.New(pool, wallet.New(pool), nil, []byte("pricesync-test-pepper"))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
 	return NewEngine(pool, adminSvc), adminSvc
 }
 
@@ -361,7 +362,7 @@ func TestEngine_ApproveAndReject(t *testing.T) {
 	}
 
 	t.Run("Reject", func(t *testing.T) {
-		if err := e.Reject(ctx, *pending.ChangeRequestID, DecisionMeta{By: 1}); err != nil {
+		if err := e.Reject(ctx, *pending.ChangeRequestID, DecisionMeta{By: 0, ByName: "system"}); err != nil {
 			t.Fatalf("Reject: %v", err)
 		}
 		var status string
@@ -372,7 +373,7 @@ func TestEngine_ApproveAndReject(t *testing.T) {
 			t.Errorf("status = %q, want rejected", status)
 		}
 		// 拒绝之后不能再操作。
-		if err := e.Reject(ctx, *pending.ChangeRequestID, DecisionMeta{By: 1}); err != ErrChangeRequestNotPending {
+		if err := e.Reject(ctx, *pending.ChangeRequestID, DecisionMeta{By: 0, ByName: "system"}); err != ErrChangeRequestNotPending {
 			t.Errorf("second Reject error = %v, want ErrChangeRequestNotPending", err)
 		}
 	})
@@ -386,7 +387,7 @@ func TestEngine_ApproveAndReject(t *testing.T) {
 	}
 
 	t.Run("Approve", func(t *testing.T) {
-		bookID, err := e.Approve(ctx, *pending2.ChangeRequestID, DecisionMeta{By: 1})
+		bookID, err := e.Approve(ctx, *pending2.ChangeRequestID, DecisionMeta{By: 0, ByName: "system"})
 		if err != nil {
 			t.Fatalf("Approve: %v", err)
 		}
@@ -403,12 +404,12 @@ func TestEngine_ApproveAndReject(t *testing.T) {
 			t.Errorf("status=%q applied_book_id=%d, want applied/%d", status, appliedBookID, bookID)
 		}
 
-		if _, err := e.Approve(ctx, *pending2.ChangeRequestID, DecisionMeta{By: 1}); err != ErrChangeRequestNotPending {
+		if _, err := e.Approve(ctx, *pending2.ChangeRequestID, DecisionMeta{By: 0, ByName: "system"}); err != ErrChangeRequestNotPending {
 			t.Errorf("second Approve error = %v, want ErrChangeRequestNotPending", err)
 		}
 	})
 
-	if _, err := e.Approve(ctx, -1, DecisionMeta{By: 1}); err != ErrChangeRequestNotFound {
+	if _, err := e.Approve(ctx, -1, DecisionMeta{By: 0, ByName: "system"}); err != ErrChangeRequestNotFound {
 		t.Errorf("Approve(-1) error = %v, want ErrChangeRequestNotFound", err)
 	}
 }

@@ -1,9 +1,14 @@
 // Command admin 是控制面入口：账户/API Key/Provider/渠道/虚拟模型/价格管理
 // （技术方案 §7 相关章节）。用户控制台、支付回调、促销管理尚未实现。
 //
-// 见 internal/app.NewAdminRouter 和 internal/admin 包文档：鉴权目前只到
-// "共享密钥"这一级，不是完整的多用户登录 + RBAC，只应该部署在内网/加一层
-// 反向代理。
+// 鉴权：管理员用 POST /auth/login 登录拿会话令牌，按角色权限访问接口（见
+// internal/adminauth、internal/app/admin_routes.go）。UFT_ADMIN_TOKEN（配置项
+// secrets.admin_token_env）是可选的应急共享令牌，身份为 system，生产环境建议
+// 在建好管理员账号后关闭。
+//
+// 子命令：
+//
+//	admin create-admin -email a@b.com -name 张三 -role super_admin   # 从环境变量 UFT_ADMIN_PASSWORD 读密码
 package main
 
 import (
@@ -11,13 +16,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
@@ -28,6 +37,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "create-admin" {
+		if err := createAdmin(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "admin create-admin:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "admin: fatal:", err)
 		os.Exit(1)
@@ -51,14 +67,15 @@ func run() error {
 		return fmt.Errorf("env %s is required (API key HMAC pepper)", cfg.Secrets.APIKeyPepperEnv)
 	}
 
-	// 管理接口的鉴权密钥是必需的，不像 KEK 那样缺失时降级——这组接口能创建账户、
-	// 调余额、加上游 Key、改价格，缺鉴权直接暴露等于把金库门打开，不应该允许
-	// 静默跳过（httpx.RequireBearerToken 对空字符串也会拒绝所有请求，这里提前
-	// 报错只是为了给一个更清楚的启动期错误信息，而不是让运维靠"发现全都 401"
-	// 才意识到没配置）。
+	// 应急共享令牌是可选的：为空时只能用管理员账号登录。设置了就打 WARN，
+	// 提醒运维它拥有全部权限、审计里只记为 system。
 	adminToken := os.Getenv(cfg.Secrets.AdminTokenEnv)
-	if adminToken == "" {
-		return fmt.Errorf("env %s is required (admin API bearer token)", cfg.Secrets.AdminTokenEnv)
+	if adminToken != "" && len(adminToken) < 24 {
+		return fmt.Errorf("env %s is too short (need >= 24 chars for the break-glass token)", cfg.Secrets.AdminTokenEnv)
+	}
+	trustedProxies, err := parsePrefixes(os.Getenv("UFT_ADMIN_TRUSTED_PROXIES"))
+	if err != nil {
+		return fmt.Errorf("parse UFT_ADMIN_TRUSTED_PROXIES: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -85,20 +102,56 @@ func run() error {
 
 	walletSvc := wallet.New(pg)
 	adminSvc := admin.New(pg, walletSvc, box, pepper)
+	// 上游地址策略：生产必须 https + 禁止内网地址；本地联调（上游是本机 mock）
+	// 可以用 UFT_ADMIN_ALLOW_PRIVATE_UPSTREAM=true 放开，启动时打 WARN。
+	if os.Getenv("UFT_ADMIN_ALLOW_PRIVATE_UPSTREAM") == "true" {
+		logger.Warn("upstream URL policy relaxed: http and private networks allowed (dev only)")
+		adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
+	}
 	priceSyncEngine := pricesync.NewEngine(pg, adminSvc)
+	authSvc := adminauth.New(pg, adminauth.Config{Box: box})
+	if adminToken != "" {
+		logger.Warn("break-glass admin token is enabled; it has full permissions and is audited as 'system'", "env", cfg.Secrets.AdminTokenEnv)
+	}
+	go purgeLoop(ctx, authSvc, adminSvc, logger)
 
 	// UFT_TEST_WEB_DIR 是手工联调用的开关（见 internal/app/staticweb.go）：
 	// 留空（默认）不开启，不接入 internal/config 的分层配置——这是本地调试
 	// 用的旁路开关，不是需要区分 dev/staging/prod 的正式参数。
 	testWebDir := os.Getenv("UFT_TEST_WEB_DIR")
 
-	router := app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, AdminToken: adminToken, TestWebDir: testWebDir})
+	// Redis 是可选依赖：用来读网关的熔断/冷却状态、吊销 Key 时清冷却。连不上时降级
+	// （健康页的运行时状态显示为未知），不阻止后台启动。
+	rdb, err := store.NewRedis(ctx, cfg.Redis)
+	if err != nil {
+		logger.Warn("redis unavailable; channel health runtime state and cooldown clearing disabled", "error", err)
+		rdb = nil
+	} else {
+		defer rdb.Close()
+	}
+
+	statsTZ, err := time.LoadLocation(envOr("UFT_ADMIN_STATS_TZ", "Asia/Shanghai"))
+	if err != nil {
+		return fmt.Errorf("load UFT_ADMIN_STATS_TZ: %w", err)
+	}
+	requireIfMatch := os.Getenv("UFT_ADMIN_REQUIRE_IF_MATCH") == "true"
+
+	router := app.NewAdminRouter(app.AdminDeps{
+		Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, Auth: authSvc,
+		AdminToken: adminToken, TrustedProxies: trustedProxies, TestWebDir: testWebDir,
+		Redis: rdb, StatsTZ: statsTZ, RequireIfMatch: requireIfMatch,
+	})
 
 	addr := ":8081"
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// 参考价格查询、上游模型发现会同步请求外部服务，留足余量。
+		WriteTimeout:   90 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 64 << 10,
 	}
 
 	errCh := make(chan error, 1)
@@ -119,4 +172,94 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// purgeLoop 每小时清理一次过期的管理员会话与 Idempotency-Key 记录。
+func purgeLoop(ctx context.Context, svc *adminauth.Service, adminSvc *admin.Service, logger *slog.Logger) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := svc.PurgeExpiredSessions(ctx); err != nil {
+				logger.Warn("purge admin sessions failed", "error", err)
+			} else if n > 0 {
+				logger.Info("purged expired admin sessions", "count", n)
+			}
+			if n, err := adminSvc.PurgeIdempotencyKeys(ctx); err != nil {
+				logger.Warn("purge idempotency keys failed", "error", err)
+			} else if n > 0 {
+				logger.Info("purged expired idempotency keys", "count", n)
+			}
+		}
+	}
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// parsePrefixes 解析逗号分隔的 CIDR 或单个 IP 列表。
+func parsePrefixes(v string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, "/") {
+			a, err := netip.ParseAddr(part)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
+// createAdmin 创建一个管理员（初始化第一个 super_admin 用）。密码从环境变量
+// UFT_ADMIN_PASSWORD 读，避免出现在 shell 历史和进程列表里。
+func createAdmin(args []string) error {
+	fs := flag.NewFlagSet("create-admin", flag.ContinueOnError)
+	configPath := fs.String("config", os.Getenv("UFT_CONFIG"), "path to config YAML (optional)")
+	email := fs.String("email", "", "admin email (required)")
+	name := fs.String("name", "", "display name (required)")
+	role := fs.String("role", "super_admin", "comma-separated roles: super_admin,operator,pricing,finance,support")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	password := os.Getenv("UFT_ADMIN_PASSWORD")
+	if *email == "" || *name == "" || password == "" {
+		return errors.New("-email, -name and env UFT_ADMIN_PASSWORD are required")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	ctx := context.Background()
+	pg, err := store.NewPostgres(ctx, cfg.Postgres)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pg.Close()
+	u, err := adminauth.New(pg, adminauth.Config{}).CreateAdmin(ctx, adminauth.CreateAdminInput{
+		Email: *email, Name: *name, Password: password, Roles: strings.Split(*role, ","),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("created admin #%d %s <%s> roles=%v\n", u.ID, u.Name, u.Email, u.Roles)
+	return nil
 }

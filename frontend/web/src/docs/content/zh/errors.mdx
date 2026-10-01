@@ -1,0 +1,214 @@
+---
+title: 错误处理
+description: 网关统一的错误响应格式、全部错误码，以及哪些错误可以重试、如何用指数退避安全地重试。
+section: guides
+order: 60
+---
+
+## 错误格式
+
+所有接口出错时都返回非 2xx 状态码和统一的 OpenAI 兼容错误体：
+
+```json
+{
+  "error": {
+    "message": "Insufficient balance.",
+    "type": "insufficient_quota",
+    "code": "insufficient_balance",
+    "request_id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6"
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `code` | 稳定的机器可读错误码，**程序应据此判断错误类型** |
+| `type` | 按 HTTP 状态码归类的错误类别（沿用 OpenAI 的分类习惯），见下表 |
+| `message` | 给人看的英文描述，措辞可能调整，**不要**用它做判断 |
+| `request_id` | 本次请求的 ID，与响应头 `X-Request-Id` 相同，排查问题时请提供，见 [Request ID](/docs/zh/request-id) |
+
+<Callout type="tip" title="按 code 判断，而不是 message">
+
+`message` 是给开发者阅读的提示，内容可能随版本变化。程序逻辑请基于 HTTP 状态码和 `error.code`。同一个状态码可能对应多个 `code`，例如 `503` 既可能是 `no_available_channel`（可重试），也可能是 `not_implemented`（不可重试）。
+
+</Callout>
+
+`type` 与 HTTP 状态码的对应关系：
+
+| HTTP 状态码 | `type` |
+| --- | --- |
+| 401 | `authentication_error` |
+| 402 | `insufficient_quota` |
+| 403 | `permission_error` |
+| 429 | `rate_limit_error` |
+| 500 / 502 / 503 | `api_error` |
+| 其它（如 400、404） | `invalid_request_error` |
+
+## 错误码一览
+
+<ErrorCodeTable />
+
+## 重试策略
+
+### 可以重试的错误
+
+| HTTP | `code` | 建议 |
+| --- | --- | --- |
+| 429 | `rate_limit_exceeded` | 有 `Retry-After` 响应头时等待对应秒数，否则指数退避 |
+| 429 | `concurrency_limit_exceeded` | 等待自己的其它请求结束，或指数退避；不带 `Retry-After` |
+| 502 | `upstream_error` | 指数退避后重试 |
+| 503 | `no_available_channel` | 指数退避后重试；如果持续出现，说明该模型当前无可用渠道（或该模型不支持你请求的能力，如 `stream`、`tools`），考虑换模型 |
+| 500 | `internal_error` | 可少量重试；持续出现请联系支持并提供 `request_id` |
+
+网关在返回 `502` / `503` 之前，已经在内部尝试过切换上游 Key 和渠道（单个请求最多 3 次尝试）。因此客户端重试应当**有上限、有退避**，避免在上游整体故障时放大流量。
+
+### 不要重试的错误
+
+| HTTP | 典型 `code` | 应该怎么做 |
+| --- | --- | --- |
+| 400 | `invalid_request`、`content_filtered` | 修正请求参数或内容 |
+| 401 | `invalid_api_key` | 检查 API Key 是否正确、是否已被吊销 |
+| 402 | `insufficient_balance` | 充值后再请求 |
+| 403 | `model_not_allowed`、`account_suspended` | 检查 Key 的模型白名单，或联系支持 |
+| 404 | `model_not_found` | 检查模型 ID，见[模型列表](/docs/zh/models) |
+| 503 | `not_implemented` | 该接口尚未开放 |
+
+### 指数退避 + 抖动
+
+推荐的退避公式：第 `n` 次重试前等待 `min(上限, 基数 × 2^n)` 秒内的一个随机值（"full jitter"）。随机化可以避免大量客户端在同一时刻集中重试。如果响应带有 `Retry-After` 头，以它为准。
+
+<Callout type="warning" title="流式请求只在开始前重试">
+
+错误只会在流开始之前以错误响应的形式返回。一旦收到 `200` 并开始接收内容，网关就不会再返回错误体；此时如果流中途中断，重新发起请求会产生一次新的计费。
+
+</Callout>
+
+## 重试封装示例
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import random
+import time
+
+import requests
+
+RETRYABLE_CODES = {
+    "rate_limit_exceeded",
+    "concurrency_limit_exceeded",
+    "upstream_error",
+    "no_available_channel",
+    "internal_error",
+}
+
+
+class APIError(Exception):
+    def __init__(self, status, code, message, request_id):
+        super().__init__(f"{status} {code}: {message} (request_id={request_id})")
+        self.status, self.code, self.request_id = status, code, request_id
+
+
+def post_with_retry(path, payload, max_retries=4, base=1.0, cap=30.0):
+    url = "{{BASE_URL}}" + path
+    headers = {"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"}
+
+    for attempt in range(max_retries + 1):
+        resp = requests.post(url, json=payload, headers=headers, timeout=120)
+        if resp.ok:
+            return resp.json()
+
+        try:
+            err = resp.json().get("error", {})
+        except ValueError:
+            err = {}
+        code = err.get("code", "unknown_error")
+        request_id = err.get("request_id") or resp.headers.get("X-Request-Id")
+
+        if code not in RETRYABLE_CODES or attempt == max_retries:
+            raise APIError(resp.status_code, code, err.get("message", ""), request_id)
+
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            delay = int(retry_after)
+        else:
+            delay = random.uniform(0, min(cap, base * 2 ** attempt))
+        time.sleep(delay)
+
+
+result = post_with_retry("/v1/chat/completions", {
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "messages": [{"role": "user", "content": "你好"}],
+})
+print(result["choices"][0]["message"]["content"])
+```
+
+```ts title="TypeScript"
+const RETRYABLE_CODES = new Set([
+  "rate_limit_exceeded",
+  "concurrency_limit_exceeded",
+  "upstream_error",
+  "no_available_channel",
+  "internal_error",
+]);
+
+class APIError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public requestId: string | null,
+  ) {
+    super(`${status} ${code}: ${message} (request_id=${requestId})`);
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function postWithRetry<T>(path: string, payload: unknown, maxRetries = 4, baseMs = 1000, capMs = 30_000): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`{{BASE_URL}}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return (await res.json()) as T;
+
+    const body = await res.json().catch(() => null);
+    const err = body?.error ?? {};
+    const code: string = err.code ?? "unknown_error";
+    const requestId = err.request_id ?? res.headers.get("X-Request-Id");
+
+    if (!RETRYABLE_CODES.has(code) || attempt >= maxRetries) {
+      throw new APIError(res.status, code, err.message ?? "", requestId);
+    }
+
+    const retryAfter = Number(res.headers.get("Retry-After"));
+    const delay = retryAfter > 0 ? retryAfter * 1000 : Math.random() * Math.min(capMs, baseMs * 2 ** attempt);
+    await sleep(delay);
+  }
+}
+
+const result = await postWithRetry<any>("/v1/chat/completions", {
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "你好" }],
+});
+console.log(result.choices[0].message.content);
+```
+
+</CodeTabs>
+
+<Callout type="info" title="使用官方 OpenAI SDK 时">
+
+OpenAI 官方 SDK 自带重试（默认对 429 和 5xx 重试 2 次，带退避并遵守 `Retry-After`），可以通过 `max_retries`（Python）/ `maxRetries`（Node）调整。SDK 按状态码重试，不区分 `code`，因此 `503 not_implemented` 也会被重试，但不会造成计费。
+
+</Callout>
+
+## 相关
+
+- [速率限制](/docs/zh/rate-limits)
+- [Request ID](/docs/zh/request-id)
+- [鉴权](/docs/zh/authentication)

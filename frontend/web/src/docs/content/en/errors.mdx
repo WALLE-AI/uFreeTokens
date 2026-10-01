@@ -1,0 +1,215 @@
+---
+title: Error handling
+description: The gateway's unified error format, every error code, which errors are retryable, and how to retry safely with exponential backoff.
+section: guides
+order: 60
+translatedFrom: e18810f3e891
+---
+
+## Error format
+
+Every endpoint signals errors with a non-2xx status code and the same OpenAI-compatible error body:
+
+```json
+{
+  "error": {
+    "message": "Insufficient balance.",
+    "type": "insufficient_quota",
+    "code": "insufficient_balance",
+    "request_id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `code` | Stable, machine-readable error code. **Branch on this in your code** |
+| `type` | Error category derived from the HTTP status (following OpenAI's conventions); see the table below |
+| `message` | Human-readable English description. Wording may change — **do not** branch on it |
+| `request_id` | This request's ID, same as the `X-Request-Id` header. Include it when reporting issues; see [Request ID](/docs/en/request-id) |
+
+<Callout type="tip" title="Branch on code, not message">
+
+`message` is meant for developers to read and may change between releases. Base your logic on the HTTP status and `error.code`. One status can map to several codes — for example `503` can be `no_available_channel` (retryable) or `not_implemented` (not retryable).
+
+</Callout>
+
+How `type` maps to HTTP status:
+
+| HTTP status | `type` |
+| --- | --- |
+| 401 | `authentication_error` |
+| 402 | `insufficient_quota` |
+| 403 | `permission_error` |
+| 429 | `rate_limit_error` |
+| 500 / 502 / 503 | `api_error` |
+| Anything else (e.g. 400, 404) | `invalid_request_error` |
+
+## Error codes
+
+<ErrorCodeTable />
+
+## Retry strategy
+
+### Retryable errors
+
+| HTTP | `code` | Recommendation |
+| --- | --- | --- |
+| 429 | `rate_limit_exceeded` | Wait for the `Retry-After` header if present; otherwise use exponential backoff |
+| 429 | `concurrency_limit_exceeded` | Wait for your other requests to finish, or back off exponentially. No `Retry-After` header |
+| 502 | `upstream_error` | Retry with exponential backoff |
+| 503 | `no_available_channel` | Retry with exponential backoff. If it persists, the model currently has no available channel (or doesn't support a capability you requested, such as `stream` or `tools`) — consider another model |
+| 500 | `internal_error` | A few retries are fine; if it persists, contact support with the `request_id` |
+
+Before returning `502` / `503`, the gateway has already tried other upstream keys and channels internally (up to 3 attempts per request). Client-side retries should therefore be **bounded and backed off**, so they don't amplify traffic during a broad upstream outage.
+
+### Do not retry
+
+| HTTP | Typical `code` | What to do |
+| --- | --- | --- |
+| 400 | `invalid_request`, `content_filtered` | Fix the request parameters or content |
+| 401 | `invalid_api_key` | Check that the API key is correct and has not been revoked |
+| 402 | `insufficient_balance` | Top up, then try again |
+| 403 | `model_not_allowed`, `account_suspended` | Check the key's model allowlist, or contact support |
+| 404 | `model_not_found` | Check the model ID; see the [model list](/docs/en/models) |
+| 503 | `not_implemented` | The endpoint is not available yet |
+
+### Exponential backoff with jitter
+
+Recommended formula: before retry number `n`, wait a random duration between 0 and `min(cap, base × 2^n)` seconds ("full jitter"). Randomization keeps many clients from retrying at the same instant. If the response has a `Retry-After` header, honor it instead.
+
+<Callout type="warning" title="Retry streaming requests only before they start">
+
+Errors are only returned as error responses before a stream starts. Once you've received `200` and content is flowing, the gateway will not send an error body; if the stream breaks mid-way, sending the request again is a new, separately billed request.
+
+</Callout>
+
+## Retry wrapper examples
+
+<CodeTabs>
+
+```python title="Python"
+import os
+import random
+import time
+
+import requests
+
+RETRYABLE_CODES = {
+    "rate_limit_exceeded",
+    "concurrency_limit_exceeded",
+    "upstream_error",
+    "no_available_channel",
+    "internal_error",
+}
+
+
+class APIError(Exception):
+    def __init__(self, status, code, message, request_id):
+        super().__init__(f"{status} {code}: {message} (request_id={request_id})")
+        self.status, self.code, self.request_id = status, code, request_id
+
+
+def post_with_retry(path, payload, max_retries=4, base=1.0, cap=30.0):
+    url = "{{BASE_URL}}" + path
+    headers = {"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"}
+
+    for attempt in range(max_retries + 1):
+        resp = requests.post(url, json=payload, headers=headers, timeout=120)
+        if resp.ok:
+            return resp.json()
+
+        try:
+            err = resp.json().get("error", {})
+        except ValueError:
+            err = {}
+        code = err.get("code", "unknown_error")
+        request_id = err.get("request_id") or resp.headers.get("X-Request-Id")
+
+        if code not in RETRYABLE_CODES or attempt == max_retries:
+            raise APIError(resp.status_code, code, err.get("message", ""), request_id)
+
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            delay = int(retry_after)
+        else:
+            delay = random.uniform(0, min(cap, base * 2 ** attempt))
+        time.sleep(delay)
+
+
+result = post_with_retry("/v1/chat/completions", {
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "messages": [{"role": "user", "content": "Hello"}],
+})
+print(result["choices"][0]["message"]["content"])
+```
+
+```ts title="TypeScript"
+const RETRYABLE_CODES = new Set([
+  "rate_limit_exceeded",
+  "concurrency_limit_exceeded",
+  "upstream_error",
+  "no_available_channel",
+  "internal_error",
+]);
+
+class APIError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public requestId: string | null,
+  ) {
+    super(`${status} ${code}: ${message} (request_id=${requestId})`);
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function postWithRetry<T>(path: string, payload: unknown, maxRetries = 4, baseMs = 1000, capMs = 30_000): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`{{BASE_URL}}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return (await res.json()) as T;
+
+    const body = await res.json().catch(() => null);
+    const err = body?.error ?? {};
+    const code: string = err.code ?? "unknown_error";
+    const requestId = err.request_id ?? res.headers.get("X-Request-Id");
+
+    if (!RETRYABLE_CODES.has(code) || attempt >= maxRetries) {
+      throw new APIError(res.status, code, err.message ?? "", requestId);
+    }
+
+    const retryAfter = Number(res.headers.get("Retry-After"));
+    const delay = retryAfter > 0 ? retryAfter * 1000 : Math.random() * Math.min(capMs, baseMs * 2 ** attempt);
+    await sleep(delay);
+  }
+}
+
+const result = await postWithRetry<any>("/v1/chat/completions", {
+  model: "deepseek-ai/DeepSeek-V4-Flash",
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(result.choices[0].message.content);
+```
+
+</CodeTabs>
+
+<Callout type="info" title="Using the official OpenAI SDKs">
+
+The official OpenAI SDKs retry on their own (by default 2 retries on 429 and 5xx, with backoff, honoring `Retry-After`); tune this with `max_retries` (Python) / `maxRetries` (Node). The SDKs retry by status code without looking at `code`, so `503 not_implemented` will be retried too — harmless, since it is never billed.
+
+</Callout>
+
+## Related
+
+- [Rate limits](/docs/en/rate-limits)
+- [Request ID](/docs/en/request-id)
+- [Authentication](/docs/en/authentication)

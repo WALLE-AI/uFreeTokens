@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
@@ -24,9 +25,12 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 	pool, box := testPool(t), testBox(t)
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	adminSvc := admin.New(pool, wallet.New(pool), box, []byte(testPepper))
-	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, AdminToken: testAdminToken}))
+	adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
+	adminSrv := httptest.NewServer(app.NewAdminRouter(app.AdminDeps{Logger: logger, Admin: adminSvc, Auth: adminauth.New(pool, adminauth.Config{MaxIPFailures: 1 << 30}), AdminToken: testAdminToken}))
 	defer adminSrv.Close()
 	ac := &adminClient{t: t, baseURL: adminSrv.URL}
+	// 审计的操作人来自登录会话；客户端自填的 X-Actor-* 头必须被忽略。
+	operator := ac.loginAs(pool, "张三", "finance")
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	var account struct{ ID int64 }
@@ -38,9 +42,9 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	req.Header.Set("Authorization", "Bearer "+ac.token)
 	req.Header.Set("X-Actor-ID", "77")
-	req.Header.Set("X-Actor-Name", url.QueryEscape("张三"))
+	req.Header.Set("X-Actor-Name", url.QueryEscape("伪造的名字"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("wallet adjust request: %v", err)
@@ -62,11 +66,11 @@ func TestAuditLog_RecordedOnWalletAdjustAndQueryableViaHTTP(t *testing.T) {
 	if entry.Action != "wallet.adjust" {
 		t.Errorf("Action = %q, want wallet.adjust", entry.Action)
 	}
-	if entry.ActorID != 77 {
-		t.Errorf("ActorID = %d, want 77 (from X-Actor-ID header)", entry.ActorID)
+	if entry.ActorID != operator.ID {
+		t.Errorf("ActorID = %d, want %d (the logged-in admin, not the X-Actor-ID header)", entry.ActorID, operator.ID)
 	}
 	if entry.ActorName != "张三" {
-		t.Errorf("ActorName = %q, want 张三 (URL-decoded X-Actor-Name header)", entry.ActorName)
+		t.Errorf("ActorName = %q, want 张三 (the logged-in admin's name)", entry.ActorName)
 	}
 	var after struct {
 		AmountMicro int64 `json:"amount_micro"`

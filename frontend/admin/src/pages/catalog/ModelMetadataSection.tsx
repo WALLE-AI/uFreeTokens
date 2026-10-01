@@ -5,6 +5,7 @@ import { errorMessage } from '../../api/errors';
 import { Button, Field, Input, Textarea, useToast } from '../../components/ui';
 import type { ModelScores, VirtualModelDetail } from '../../types';
 import { TagInput, formatContext, formatPrice } from './shared';
+import { Can } from '../../components/ui/Can';
 
 // 展示元数据编辑（UI_DESIGN.md §5.4 第 5 点）：左侧表单，右侧实时预览 web 模型库卡片。
 // scores 用三个数字输入框而不是自由 JSON，强制遵守 web 约定的
@@ -117,9 +118,9 @@ export function ModelMetadataSection({ model, onSaved }: { model: VirtualModelDe
           <Button disabled={!dirty || saving} onClick={() => setDraft(fromDetail(model))}>
             还原
           </Button>
-          <Button variant="primary" loading={saving} disabled={!dirty || scoreErrors.length > 0} onClick={save}>
+          <Can perm="catalog:write"><Button variant="primary" loading={saving} disabled={!dirty || scoreErrors.length > 0} onClick={save}>
             保存元数据
-          </Button>
+          </Button></Can>
         </div>
       </div>
 

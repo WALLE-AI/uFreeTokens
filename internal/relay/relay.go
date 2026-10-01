@@ -109,6 +109,7 @@ type requestMeta struct {
 	apiKeyID    int64
 	accountTier string
 	vmName      string
+	vmID        int64
 	isStream    bool
 	// clientWantsUsage 见 ChatCompletions 里的赋值处；只有流式请求会用到。
 	clientWantsUsage bool
@@ -229,7 +230,7 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	meta := requestMeta{
 		requestID: requestID, accountID: principal.AccountID, apiKeyID: principal.APIKeyID,
 		accountTier: principal.AccountTier,
-		vmName:      vm.Name, isStream: stream, clientWantsUsage: clientWantsUsage,
+		vmName:      vm.Name, vmID: vm.ID, isStream: stream, clientWantsUsage: clientWantsUsage,
 		clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 		logEndpoint: logEndpointChat,
 	}
@@ -598,7 +599,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
-		VirtualModel: meta.vmName, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
+		VirtualModel: meta.vmName, VirtualModelID: meta.vmID, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
 		Status: "success", HTTPStatus: httpStatus, Attempts: len(trace), AttemptTrace: trace,
 		TTFTMillis: &ttftMs, LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage: usage, ClientIP: meta.clientIP, UserAgent: meta.userAgent,
@@ -625,7 +626,7 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 func (s *Service) logFailure(meta requestMeta, trace []reqlog.AttemptTraceEntry, httpStatus int, errorCode string, attempts int) {
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
-		VirtualModel: meta.vmName, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
+		VirtualModel: meta.vmName, VirtualModelID: meta.vmID, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
 		Status: "upstream_error", HTTPStatus: httpStatus, ErrorCode: errorCode, Attempts: attempts, AttemptTrace: trace,
 		LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage:         schema.Usage{Source: schema.UsageSourceEstimated}, // 未产生任何计费用量

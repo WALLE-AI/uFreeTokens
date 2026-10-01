@@ -1,9 +1,9 @@
 package app
 
 import (
+	"context"
 	"net/http"
-	"strconv"
-	"time"
+	"strings"
 
 	"github.com/shopspring/decimal"
 
@@ -17,25 +17,24 @@ func (h *adminHandlers) createPriceSource(w http.ResponseWriter, r *http.Request
 	if !h.requirePriceSync(w, r) {
 		return
 	}
-	var body struct {
-		ProviderID *int64 `json:"provider_id"`
-		Level      string `json:"level"`
-		Kind       string `json:"kind"`
-		Fetcher    string `json:"fetcher"`
-		URL        string `json:"url"`
-	}
+	var body createPriceSourceRequest
 	if err := decodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	id, err := h.pricesync.CreateSource(r.Context(), pricesync.CreateSourceInput{
-		ProviderID: body.ProviderID, Level: pricesync.Level(body.Level), Kind: body.Kind, Fetcher: body.Fetcher, URL: body.URL,
+	id, err := audited(h, r, func(ctx context.Context) (int64, auditEntry, error) {
+		id, err := h.pricesync.CreateSource(ctx, pricesync.CreateSourceInput{
+			ProviderID: body.ProviderID, Level: pricesync.Level(body.Level), Kind: body.Kind, Fetcher: body.Fetcher, URL: body.URL,
+		})
+		if err != nil {
+			return 0, auditEntry{}, err
+		}
+		return id, auditEntry{"price_source.create", "price_source", idStr(id), nil, body}, nil
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	h.recordAudit(r, "price_source.create", "price_source", strconv.FormatInt(id, 10), nil, body)
 	httpx.WriteJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -73,16 +72,7 @@ func (h *adminHandlers) ingestPriceObservation(w http.ResponseWriter, r *http.Re
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid channel id")
 		return
 	}
-	var body struct {
-		SourceID      int64                `json:"source_id"`
-		Level         string               `json:"level"`
-		UpstreamModel string               `json:"upstream_model"`
-		Currency      string               `json:"currency"`
-		Components    []priceComponentJSON `json:"components"`
-		EffectiveFrom *time.Time           `json:"effective_from"`
-		ExpiresAt     *time.Time           `json:"expires_at"`
-		RawObject     string               `json:"raw_object"`
-	}
+	var body priceObservationRequest
 	if err := decodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
@@ -92,17 +82,26 @@ func (h *adminHandlers) ingestPriceObservation(w http.ResponseWriter, r *http.Re
 		components = append(components, c.toComponent())
 	}
 
-	result, err := h.pricesync.Ingest(r.Context(), pricesync.IngestInput{
-		ChannelID: channelID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
-		Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
-		RawObject: body.RawObject,
+	// 观测可能触发自动发布成本价，必须留审计（此前这条路径没有审计）。
+	out, err := audited(h, r, func(ctx context.Context) (ingestResultDTO, auditEntry, error) {
+		result, err := h.pricesync.Ingest(ctx, pricesync.IngestInput{
+			ChannelID: channelID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
+			Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
+			RawObject: body.RawObject,
+		})
+		if err != nil {
+			return ingestResultDTO{}, auditEntry{}, err
+		}
+		out := toIngestResultDTO(*result)
+		return out, auditEntry{"price_observation.ingest", "channel", idStr(channelID), nil,
+			map[string]any{"source_id": body.SourceID, "level": body.Level, "upstream_model": body.UpstreamModel, "result": out}}, nil
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
 	invalidateTodoCache()
-	httpx.WriteJSON(w, http.StatusCreated, toIngestResultDTO(*result))
+	httpx.WriteJSON(w, http.StatusCreated, out)
 }
 
 // ingestUnmappedPriceObservation 是技术方案 §7.16.3 Mapper 阶段的入口：不知道
@@ -117,16 +116,7 @@ func (h *adminHandlers) ingestUnmappedPriceObservation(w http.ResponseWriter, r 
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid provider id")
 		return
 	}
-	var body struct {
-		SourceID      int64                `json:"source_id"`
-		Level         string               `json:"level"`
-		UpstreamModel string               `json:"upstream_model"`
-		Currency      string               `json:"currency"`
-		Components    []priceComponentJSON `json:"components"`
-		EffectiveFrom *time.Time           `json:"effective_from"`
-		ExpiresAt     *time.Time           `json:"expires_at"`
-		RawObject     string               `json:"raw_object"`
-	}
+	var body unmappedObservationRequest
 	if err := decodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
@@ -136,17 +126,25 @@ func (h *adminHandlers) ingestUnmappedPriceObservation(w http.ResponseWriter, r 
 		components = append(components, c.toComponent())
 	}
 
-	result, err := h.pricesync.IngestUnmapped(r.Context(), pricesync.UnmappedObservationInput{
-		ProviderID: providerID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
-		Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
-		RawObject: body.RawObject,
+	out, err := audited(h, r, func(ctx context.Context) (unmappedIngestResultDTO, auditEntry, error) {
+		result, err := h.pricesync.IngestUnmapped(ctx, pricesync.UnmappedObservationInput{
+			ProviderID: providerID, SourceID: body.SourceID, Level: pricesync.Level(body.Level), UpstreamModel: body.UpstreamModel,
+			Spec:      pricesync.PriceSpec{Currency: body.Currency, Components: components, EffectiveFrom: body.EffectiveFrom, ExpiresAt: body.ExpiresAt},
+			RawObject: body.RawObject,
+		})
+		if err != nil {
+			return unmappedIngestResultDTO{}, auditEntry{}, err
+		}
+		out := toUnmappedIngestResultDTO(*result)
+		return out, auditEntry{"price_observation.ingest", "provider", idStr(providerID), nil,
+			map[string]any{"source_id": body.SourceID, "level": body.Level, "upstream_model": body.UpstreamModel, "result": out}}, nil
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
 	invalidateTodoCache()
-	httpx.WriteJSON(w, http.StatusCreated, toUnmappedIngestResultDTO(*result))
+	httpx.WriteJSON(w, http.StatusCreated, out)
 }
 
 func (h *adminHandlers) dismissPendingModelListing(w http.ResponseWriter, r *http.Request) {
@@ -159,21 +157,24 @@ func (h *adminHandlers) dismissPendingModelListing(w http.ResponseWriter, r *htt
 		return
 	}
 	// body 可选（旧调用方不传 body）：只有 reason 一个字段，写进审计。
-	var body struct {
-		Reason string `json:"reason"`
-	}
+	var body dismissListingRequest
 	if r.ContentLength != 0 {
 		if err := decodeJSON(r, &body); err != nil {
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 			return
 		}
 	}
-	if err := h.pricesync.DismissListing(r.Context(), id); err != nil {
+	if _, err := audited(h, r, func(ctx context.Context) (struct{}, auditEntry, error) {
+		if err := h.pricesync.DismissListing(ctx, id); err != nil {
+			return struct{}{}, auditEntry{}, err
+		}
+		return struct{}{}, auditEntry{"listing.dismiss", "pending_model_listing", idStr(id), map[string]string{"status": "pending"},
+			map[string]string{"status": "dismissed", "reason": body.Reason}}, nil
+	}); err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
 	invalidateTodoCache()
-	h.recordAudit(r, "listing.dismiss", "pending_model_listing", strconv.FormatInt(id, 10), nil, map[string]string{"status": "dismissed", "reason": body.Reason})
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "dismissed"})
 }
 
@@ -189,43 +190,37 @@ func (h *adminHandlers) publishPendingModelListing(w http.ResponseWriter, r *htt
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid listing id")
 		return
 	}
-	var body struct {
-		VirtualModel struct {
-			Name          string   `json:"name"`
-			Family        string   `json:"family"`
-			Type          string   `json:"type"`
-			ContextWindow int      `json:"context_window"`
-			MaxOutput     int      `json:"max_output"`
-			Capabilities  []string `json:"capabilities"`
-			VisibleTiers  []string `json:"visible_tiers"`
-		} `json:"virtual_model"`
-		ProviderAccountID int64           `json:"provider_account_id"`
-		SellMarkup        decimal.Decimal `json:"sell_markup"`
-	}
+	var body publishListingRequest
 	if err := decodeJSON(r, &body); err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	result, err := h.pricesync.PublishListing(r.Context(), id, pricesync.PublishListingInput{
-		VirtualModel: admin.CreateVirtualModelInput{
-			Name: body.VirtualModel.Name, Family: body.VirtualModel.Family, Type: body.VirtualModel.Type,
-			ContextWindow: body.VirtualModel.ContextWindow, MaxOutput: body.VirtualModel.MaxOutput,
-			Capabilities: body.VirtualModel.Capabilities, VisibleTiers: body.VirtualModel.VisibleTiers,
-		},
-		ProviderAccountID: body.ProviderAccountID, SellMarkup: body.SellMarkup,
+	out, err := audited(h, r, func(ctx context.Context) (publishListingResultDTO, auditEntry, error) {
+		result, err := h.pricesync.PublishListing(ctx, id, pricesync.PublishListingInput{
+			VirtualModel: admin.CreateVirtualModelInput{
+				Name: body.VirtualModel.Name, Family: body.VirtualModel.Family, Type: body.VirtualModel.Type,
+				ContextWindow: body.VirtualModel.ContextWindow, MaxOutput: body.VirtualModel.MaxOutput,
+				Capabilities: body.VirtualModel.Capabilities, VisibleTiers: body.VirtualModel.VisibleTiers,
+			},
+			ProviderAccountID: body.ProviderAccountID, SellMarkup: body.SellMarkup,
+		})
+		if err != nil {
+			return publishListingResultDTO{}, auditEntry{}, err
+		}
+		out := toPublishListingResultDTO(*result)
+		return out, auditEntry{"listing.publish", "pending_model_listing", idStr(id), map[string]string{"status": "pending"},
+			map[string]any{"request": body, "result": out}}, nil
 	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
-	out := toPublishListingResultDTO(*result)
 	invalidateTodoCache()
-	h.recordAudit(r, "listing.publish", "pending_model_listing", strconv.FormatInt(id, 10), nil, map[string]any{"request": body, "result": out})
 	httpx.WriteJSON(w, http.StatusCreated, out)
 }
 
-// decideChangeRequestBody 是审批/驳回的请求体。DecidedBy 保留以兼容旧调用方，
-// 但优先使用 X-Actor-ID（运营后台接口方案 §5.3）；ConfirmBlocked 只对批准有效。
+// decideChangeRequestBody 是审批/驳回的请求体。审批人一律取已认证的管理员身份；
+// DecidedBy 只为兼容旧调用方而保留解析，值被忽略。ConfirmBlocked 只对批准有效。
 type decideChangeRequestBody struct {
 	DecidedBy      int64  `json:"decided_by"`
 	Reason         string `json:"reason"`
@@ -233,11 +228,8 @@ type decideChangeRequestBody struct {
 }
 
 func (b decideChangeRequestBody) meta(r *http.Request) pricesync.DecisionMeta {
-	by := actorIDFromRequest(r)
-	if by == 0 {
-		by = b.DecidedBy
-	}
-	return pricesync.DecisionMeta{By: by, ByName: actorNameFromRequest(r), Reason: b.Reason, ConfirmBlocked: b.ConfirmBlocked}
+	p := actor(r)
+	return pricesync.DecisionMeta{By: p.AdminID, ByName: p.Name, Reason: b.Reason, ConfirmBlocked: b.ConfirmBlocked}
 }
 
 func (h *adminHandlers) approveChangeRequest(w http.ResponseWriter, r *http.Request) {
@@ -254,14 +246,19 @@ func (h *adminHandlers) approveChangeRequest(w http.ResponseWriter, r *http.Requ
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	bookID, err := h.pricesync.Approve(r.Context(), id, body.meta(r))
+	bookID, err := audited(h, r, func(ctx context.Context) (int64, auditEntry, error) {
+		bookID, err := h.pricesync.Approve(ctx, id, body.meta(r))
+		if err != nil {
+			return 0, auditEntry{}, err
+		}
+		return bookID, auditEntry{"price_change.approve", "price_change_request", idStr(id), nil,
+			map[string]any{"applied_book_id": bookID, "reason": body.Reason, "confirm_blocked": body.ConfirmBlocked}}, nil
+	})
 	if err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
 	invalidateTodoCache()
-	h.recordAudit(r, "price_change.approve", "price_change_request", strconv.FormatInt(id, 10), nil,
-		map[string]any{"applied_book_id": bookID, "reason": body.Reason, "confirm_blocked": body.ConfirmBlocked})
 	httpx.WriteJSON(w, http.StatusOK, map[string]int64{"applied_book_id": bookID})
 }
 
@@ -279,12 +276,20 @@ func (h *adminHandlers) rejectChangeRequest(w http.ResponseWriter, r *http.Reque
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
-	if err := h.pricesync.Reject(r.Context(), id, body.meta(r)); err != nil {
+	if strings.TrimSpace(body.Reason) == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "reason is required when rejecting a price change")
+		return
+	}
+	if _, err := audited(h, r, func(ctx context.Context) (struct{}, auditEntry, error) {
+		if err := h.pricesync.Reject(ctx, id, body.meta(r)); err != nil {
+			return struct{}{}, auditEntry{}, err
+		}
+		return struct{}{}, auditEntry{"price_change.reject", "price_change_request", idStr(id), nil,
+			map[string]any{"status": "rejected", "reason": body.Reason}}, nil
+	}); err != nil {
 		writeAdminError(w, r, h.log, err)
 		return
 	}
 	invalidateTodoCache()
-	h.recordAudit(r, "price_change.reject", "price_change_request", strconv.FormatInt(id, 10), nil,
-		map[string]any{"status": "rejected", "reason": body.Reason})
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }

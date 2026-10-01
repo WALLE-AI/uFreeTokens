@@ -11,19 +11,20 @@ import (
 )
 
 // AuditLogInput 对应一条 admin_audit_logs（技术方案 Phase 4 审计导出的数据来源）。
-// ActorID 目前只能是调用方自己声明的值（比如 HTTP 层从一个请求头读出来）——
-// cmd/admin 还没有鉴权（见包文档），没有真正的"当前登录管理员"概念，这里不
-// 假装有；ActorID=0 就是"未知/系统操作"，等真正的管理员登录实现了，
-// 调用方自然会传真实的 user id 进来，这个字段不需要跟着改。
+// ActorID/ActorName/SessionID 来自鉴权中间件解析出的管理员身份（internal/adminauth），
+// 不再读取客户端自填的请求头；ActorID=0 是 system（应急令牌、系统自动操作）。
 type AuditLogInput struct {
 	ActorID    int64
-	ActorName  string // X-Actor-Name 请求头（RBAC 落地前的过渡），空字符串存 NULL
+	ActorName  string // 写入时的管理员名称快照，空字符串存 NULL
+	SessionID  int64  // 0 存 NULL
 	Action     string // 例如 "wallet.adjust" / "provider_key.add" / "cost_price.set"
 	TargetType string // 例如 "account" / "provider_key" / "channel"
 	TargetID   string
 	Before     any // 变更前的快照，nil 表示不适用（比如创建类操作没有"之前"）
 	After      any
 	IP         string // 调用方 IP；空字符串存 NULL
+	UserAgent  string
+	RequestID  string
 }
 
 type AuditLogEntry struct {
@@ -39,10 +40,8 @@ type AuditLogEntry struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
-// RecordAudit 写一条审计记录。这里没有把它塞进被审计操作自己的数据库事务里
-// （比如 SetCostPrice 内部的事务）——是在 HTTP handler 层、操作成功之后单独
-// 调用的，简单但不是跨库原子的：操作成功了但审计写入失败的极小概率窗口是
-// 存在的，接受这个取舍（换来不用把审计关注点侵入每一个业务方法的内部事务）。
+// RecordAudit 写一条审计记录。ctx 里有环境事务（Service.RunInTx）时审计写在
+// 同一个事务里，与业务变更同成败；否则单独写入。
 func (s *Service) RecordAudit(ctx context.Context, in AuditLogInput) (int64, error) {
 	if in.Action == "" || in.TargetType == "" || in.TargetID == "" {
 		return 0, errors.New("admin: audit action, target_type and target_id are required")
@@ -55,12 +54,20 @@ func (s *Service) RecordAudit(ctx context.Context, in AuditLogInput) (int64, err
 	if err != nil {
 		return 0, fmt.Errorf("admin: marshal audit after: %w", err)
 	}
+	ua := in.UserAgent
+	if len(ua) > 256 {
+		ua = ua[:256]
+	}
+	var sessionID *int64
+	if in.SessionID != 0 {
+		sessionID = &in.SessionID
+	}
 
 	var id int64
-	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO admin_audit_logs (actor_id, actor_name, action, target_type, target_id, before, after, ip)
-		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, '')::inet) RETURNING id`,
-		in.ActorID, in.ActorName, in.Action, in.TargetType, in.TargetID, before, after, in.IP,
+	if err := s.db(ctx).QueryRow(ctx,
+		`INSERT INTO admin_audit_logs (actor_id, actor_name, action, target_type, target_id, before, after, ip, session_id, user_agent, request_id)
+		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, '')::inet, $9, NULLIF($10, ''), NULLIF($11, '')) RETURNING id`,
+		in.ActorID, in.ActorName, in.Action, in.TargetType, in.TargetID, before, after, in.IP, sessionID, ua, in.RequestID,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("admin: insert admin_audit_log: %w", err)
 	}
@@ -85,7 +92,7 @@ type ListAuditLogsInput struct {
 	Action     string
 	From, To   time.Time // 零值表示不限
 	Before     string
-	Limit      int // <=0 或 >500 时用默认值 100
+	Limit      int // <=0 时用默认值 100，>500 时截到 500
 }
 
 var ErrInvalidAuditCursor = errors.New("admin: invalid audit log cursor")
@@ -94,8 +101,11 @@ var ErrInvalidAuditCursor = errors.New("admin: invalid audit log cursor")
 // 游标；返回条数不足 Limit 时为空字符串（没有下一页）。
 func (s *Service) ListAuditLogs(ctx context.Context, in ListAuditLogsInput) ([]AuditLogEntry, string, error) {
 	limit := in.Limit
-	if limit <= 0 || limit > 500 {
+	switch {
+	case limit <= 0:
 		limit = 100
+	case limit > 500:
+		limit = 500
 	}
 	var beforeAt time.Time
 	var beforeID int64
@@ -105,7 +115,7 @@ func (s *Service) ListAuditLogs(ctx context.Context, in ListAuditLogsInput) ([]A
 			return nil, "", err
 		}
 	}
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT id, actor_id, COALESCE(actor_name, ''), action, target_type, target_id, before, after, COALESCE(host(ip), ''), created_at
 		 FROM admin_audit_logs
 		 WHERE ($1 = '' OR target_type = $1) AND ($2 = '' OR target_id = $2)

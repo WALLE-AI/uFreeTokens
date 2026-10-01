@@ -1,0 +1,120 @@
+---
+title: Billing
+description: CNY pricing, micro-yuan units, pre-authorization and settlement, cash vs. bonus balance, and estimated billing for interrupted streams.
+section: getting-started
+order: 40
+translatedFrom: 05246ad089fe
+---
+
+## Currency and units
+
+All models are priced in **Chinese yuan (CNY)**. The API represents money in two ways:
+
+| Where | Representation | Example |
+|---|---|---|
+| Catalog price `sell_price.components[].unit_price` | Decimal string, in yuan | `"1.5"` means ¥1.5 |
+| Balance and charge fields (names ending in `_micro`) | `int64` integer, in **micro-yuan** | `1500000` means ¥1.5 |
+
+Conversion: **1 yuan = 1,000,000 micro-yuan**. Divide by 1,000,000 for display; in code, always do arithmetic on integer micro-yuan to avoid floating-point errors.
+
+## Price components
+
+A model's price is made up of **meters**, listed in `sell_price.components` of `GET /v1/catalog`:
+
+| `meter` | Meaning |
+|---|---|
+| `input` | Input tokens |
+| `output` | Output tokens |
+| `input_cache_read` | Input tokens served from cache (priced separately on some models only) |
+| `input_cache_write` | Input tokens written to cache (priced separately on some models only) |
+| `output_reasoning` | Reasoning tokens (priced separately only when listed; otherwise counted as `output`) |
+| `request` | Per-request charges |
+
+| `unit` | Meaning |
+|---|---|
+| `per_1m_tokens` | Price per 1 million tokens |
+| `per_request` | Price per request |
+
+Meters that are not listed in a model's price are not charged.
+
+### Worked example
+
+For a model priced at ¥1.5 per million `input` tokens and ¥3 per million `output` tokens, a request with 1,000 input tokens and 500 output tokens costs:
+
+```text
+Input:  1,000 × 1.5 ÷ 1,000,000 = ¥0.0015
+Output:   500 × 3   ÷ 1,000,000 = ¥0.0015
+Total:  ¥0.003 = 3,000 micro-yuan
+```
+
+Meters are summed first, then the total is **rounded up to the nearest micro-yuan**. If the platform has configured a promotion for your account, such as a discount or free quota, the amount actually charged is reduced accordingly.
+
+## Pre-authorization and settlement
+
+Every billable request is charged in two phases:
+
+<Steps>
+
+<Step title="Pre-authorization (freeze)">
+
+When a request arrives, the gateway estimates the most it could cost and freezes that amount:
+
+- Input tokens: roughly estimated from the request body size (about 1 token per 4 bytes).
+- Output tokens: the smallest of the request's `max_tokens` / `max_completion_tokens`, the model's maximum output, and a platform cap (currently 8192).
+
+If your **available balance** cannot cover this amount, the request fails immediately with `402 insufficient_balance`. It is not forwarded upstream and nothing is charged.
+
+</Step>
+
+<Step title="Settlement">
+
+Once the upstream responds, the gateway charges for the **actual token usage** reported by the upstream and releases the frozen amount. The final charge is independent of the pre-authorized amount and can be lower or higher.
+
+If the upstream fails before any content is returned, the frozen amount is released in full and nothing is charged.
+
+</Step>
+
+</Steps>
+
+<Callout type="tip" title="Set max_tokens when your balance is low">
+
+The pre-authorized amount scales with the output limit. With a small balance, setting a reasonable `max_tokens` lowers the pre-authorization and avoids rejections.
+
+</Callout>
+
+## Balance breakdown
+
+Your balance has three parts, available from `GET /v1/usage` (see [Usage](/docs/en/usage)):
+
+| Field | Meaning |
+|---|---|
+| `cash_balance_micro` | Cash balance |
+| `bonus_balance_micro` | Bonus balance (credits), which may expire |
+| `frozen_micro` | Amount currently frozen by in-flight requests |
+
+```text
+available balance = cash balance + bonus balance − frozen amount
+```
+
+At settlement, **bonus balance is spent first** (credits that expire soonest go first), and only the remainder comes out of cash.
+
+Online top-up is not available on the website yet; newly registered accounts start with a balance of 0.
+
+## Where usage comes from: upstream-reported vs. estimated
+
+Normally, billing uses the usage reported by the upstream. When the upstream reports no usage, the gateway bills an **estimate** instead:
+
+| Situation | How it is estimated |
+|---|---|
+| A streaming request is interrupted (client disconnects or upstream drops) | Output tokens are estimated from the bytes already forwarded to you (about 1 token per 4 bytes), capped at the pre-authorized output limit; input tokens reuse the pre-authorization estimate |
+| A non-streaming response contains no `usage` | Billed at the pre-authorization estimate (estimated input + output limit) |
+
+For streaming requests you **do not** need to send `stream_options.include_usage` yourself: the gateway always asks the upstream for usage so it can bill. The final usage-only chunk is forwarded to you only if your own request sets `stream_options.include_usage: true`. See [Streaming](/docs/en/streaming).
+
+## Related errors
+
+| Status | Error code | Meaning |
+|---|---|---|
+| 402 | `insufficient_balance` | Available balance does not cover the pre-authorization; the request was not run and nothing was charged |
+| 502 | `upstream_error` | The upstream failed; the pre-authorization was released and nothing was charged |
+| 503 | `no_available_channel` | No upstream channel is available right now; the pre-authorization was released and nothing was charged |

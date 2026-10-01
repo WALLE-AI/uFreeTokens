@@ -1,0 +1,246 @@
+---
+title: 工具调用 (Function Calling)
+description: 在 /v1/chat/completions 中使用 tools 与 tool_choice 让模型调用你定义的函数，并完成"调用 → 回传结果 → 最终回答"的完整流程。
+section: guides
+order: 30
+---
+
+工具调用（Function Calling）让模型在回答时可以"请求调用"你定义的函数：模型返回函数名和 JSON 参数，由你的代码执行函数，再把结果交回模型生成最终回答。网关使用 OpenAI Chat Completions 的 `tools` / `tool_choice` 协议。
+
+## 网关如何处理工具调用
+
+- **按能力路由**：请求中带有非空的 `tools` 数组时，网关只会把请求路由到具备 `tools` 能力的渠道。如果该模型没有任何具备 `tools` 能力的可用渠道，返回 `503 no_available_channel`。
+- **原样透传**：`tools`、`tool_choice`、`parallel_tool_calls`、`role: "tool"` 的消息、响应中的 `tool_calls` 等字段，网关不做校验或改写，原样转发给上游、原样返回给你（只改写响应的 `id` 和 `model`）。工具定义是否合法、`tool_choice` 的哪些取值受支持、参数生成的质量，都取决于具体模型与上游。
+- **计费不变**：工具定义和工具结果都计入输入 token，模型生成的 `tool_calls` 计入输出 token，和普通对话相同。
+
+<Callout type="info" title="先确认模型支持工具调用">
+
+只有目录中 `capabilities` 包含 `tools` 的模型才能使用工具调用。可在[模型列表](/docs/zh/models)中查看，或用 `GET /v1/catalog` 筛选：
+
+```bash title="筛选支持 tools 的模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.capabilities | index("tools")) | .name'
+```
+
+</Callout>
+
+## 请求参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `tools` | array | 工具列表，每项形如 `{"type": "function", "function": {"name", "description", "parameters"}}`，`parameters` 是 JSON Schema |
+| `tool_choice` | string 或 object | 可选。`"auto"`（由模型决定）、`"none"`（不调用）、`"required"`（必须调用），或 `{"type": "function", "function": {"name": "..."}}` 指定某个函数。支持情况取决于模型 |
+
+## 完整流程
+
+<Steps>
+
+<Step title="发送带 tools 的请求">
+
+把用户问题和工具定义一起发给模型。
+
+</Step>
+
+<Step title="读取 tool_calls">
+
+如果模型决定调用工具，响应中 `choices[0].finish_reason` 为 `tool_calls`，`choices[0].message.tool_calls` 中包含函数名和 JSON 字符串形式的参数。
+
+</Step>
+
+<Step title="执行函数并回传结果">
+
+在你的代码中执行函数。然后把上一步模型返回的 assistant 消息（含 `tool_calls`）原样追加到 `messages`，再为每个调用追加一条 `role: "tool"` 的消息，`tool_call_id` 对应调用的 `id`，`content` 为函数结果（字符串）。
+
+</Step>
+
+<Step title="获取最终回答">
+
+带上完整的 `messages`（和同样的 `tools`）再请求一次，模型会基于工具结果生成最终回答。
+
+</Step>
+
+</Steps>
+
+第一次请求返回的响应大致如下：
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "object": "chat.completion",
+  "model": "deepseek-ai/DeepSeek-V4-Flash",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\": \"杭州\"}"}
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 156, "completion_tokens": 21, "total_tokens": 177}
+}
+```
+
+## 示例
+
+下面的示例完整演示两轮请求。`get_weather` 是本地的示例函数，返回固定数据。
+
+<CodeTabs>
+
+```python title="Python"
+import json
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+)
+MODEL = "deepseek-ai/DeepSeek-V4-Flash"
+
+def get_weather(city: str) -> dict:
+    # 示例函数：实际使用时替换为真实的天气查询
+    return {"city": city, "weather": "晴", "temperature_c": 26}
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "查询指定城市的当前天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "城市名，如 杭州"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+messages = [{"role": "user", "content": "杭州现在天气怎么样？"}]
+
+# 第 1 轮：模型决定是否调用工具
+first = client.chat.completions.create(model=MODEL, messages=messages, tools=tools, tool_choice="auto")
+msg = first.choices[0].message
+
+if msg.tool_calls:
+    messages.append(msg.model_dump(exclude_none=True))  # 原样追加 assistant 消息
+    for call in msg.tool_calls:
+        args = json.loads(call.function.arguments)
+        result = get_weather(**args)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": json.dumps(result, ensure_ascii=False),
+        })
+
+    # 第 2 轮：基于工具结果生成最终回答
+    final = client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+    print(final.choices[0].message.content)
+else:
+    print(msg.content)
+```
+
+```ts title="TypeScript"
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+});
+const MODEL = "deepseek-ai/DeepSeek-V4-Flash";
+
+function getWeather(city: string) {
+  // 示例函数：实际使用时替换为真实的天气查询
+  return { city, weather: "晴", temperature_c: 26 };
+}
+
+const tools: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "get_weather",
+      description: "查询指定城市的当前天气",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "城市名，如 杭州" } },
+        required: ["city"],
+      },
+    },
+  },
+];
+
+const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+  { role: "user", content: "杭州现在天气怎么样？" },
+];
+
+// 第 1 轮：模型决定是否调用工具
+const first = await client.chat.completions.create({ model: MODEL, messages, tools, tool_choice: "auto" });
+const msg = first.choices[0].message;
+
+if (msg.tool_calls?.length) {
+  messages.push(msg); // 原样追加 assistant 消息
+  for (const call of msg.tool_calls) {
+    if (call.type !== "function") continue;
+    const args = JSON.parse(call.function.arguments);
+    messages.push({
+      role: "tool",
+      tool_call_id: call.id,
+      content: JSON.stringify(getWeather(args.city)),
+    });
+  }
+
+  // 第 2 轮：基于工具结果生成最终回答
+  const final = await client.chat.completions.create({ model: MODEL, messages, tools });
+  console.log(final.choices[0].message.content);
+} else {
+  console.log(msg.content);
+}
+```
+
+```bash title="cURL（第 2 轮）"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "查询指定城市的当前天气",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+      }
+    }],
+    "messages": [
+      {"role": "user", "content": "杭州现在天气怎么样？"},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"杭州\"}"}}
+      ]},
+      {"role": "tool", "tool_call_id": "call_0", "content": "{\"city\": \"杭州\", \"weather\": \"晴\", \"temperature_c\": 26}"}
+    ]
+  }'
+```
+
+</CodeTabs>
+
+cURL 示例中的 `call_0` 需替换为第 1 轮响应中实际返回的 `tool_calls[].id`。
+
+## 注意事项
+
+- **流式调用**：工具调用同样可以和 `stream: true` 一起使用，`tool_calls` 会以增量形式出现在各个 chunk 的 `delta.tool_calls` 中，需要自行按 `index` 拼接 `arguments`。参见[流式输出](/docs/zh/streaming)。
+- **参数需要校验**：`arguments` 是模型生成的 JSON 字符串，可能不合法或缺少字段，执行前请自行解析和校验。
+- **Anthropic 兼容接口不支持工具**：`POST /v1/messages` 请求中带 `tools` 会返回 `400 invalid_request`，请使用 `/v1/chat/completions`。
+
+## 相关
+
+- [对话补全 API 参考](/docs/zh/api/createChatCompletion)
+- [模型列表](/docs/zh/models)
+- [错误处理](/docs/zh/errors)

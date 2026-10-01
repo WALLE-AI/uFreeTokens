@@ -1,0 +1,100 @@
+---
+title: 模型与模型 ID
+description: 模型 ID 的含义，以及公开目录 /v1/catalog 与 /v1/models 的区别。
+section: getting-started
+order: 30
+---
+
+## 模型 ID
+
+请求中的 `model` 字段填写平台上架的**模型 ID**，例如 `deepseek-ai/DeepSeek-V4-Flash`。模型 ID 区分大小写，必须与目录中的 `name`（或 `/v1/models` 中的 `id`）完全一致。
+
+同一个模型 ID 背后可能接入了多个上游渠道，由网关负责选择和故障切换；你只需要关心模型 ID 本身，以及它在目录中的售价。
+
+## 两个查询接口
+
+| | `GET /v1/catalog` | `GET /v1/models` |
+|---|---|---|
+| 鉴权 | 无需 Key | 需要 API Key |
+| 回答的问题 | 平台公开提供哪些模型、什么价格 | 我这把 Key 能调用哪些模型 ID |
+| 返回内容 | ID、类型、上下文长度、最大输出、能力、售价、介绍等 | 只有 OpenAI 格式的 `id` / `object` / `owned_by` |
+| 可见范围 | 对免费档（free）账户可见的模型，含已废弃（`status: "deprecated"`）的模型 | 对你账户等级可见、状态为可用的模型 |
+| 缓存与限流 | 响应头 `Cache-Control: public, max-age=60`；按客户端 IP 每分钟 60 次 | 按 Key 的常规限流 |
+
+### GET /v1/catalog
+
+公开目录不需要 Key，适合在你的应用里展示模型列表和价格：
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/catalog
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "name": "deepseek-ai/DeepSeek-V4-Flash",
+      "family": "deepseek",
+      "type": "chat",
+      "context_window": 128000,
+      "max_output": 8192,
+      "capabilities": ["stream", "tools"],
+      "sell_price": {
+        "currency": "CNY",
+        "components": [
+          {"meter": "input", "unit": "per_1m_tokens", "unit_price": "1.5"},
+          {"meter": "output", "unit": "per_1m_tokens", "unit_price": "3"}
+        ]
+      },
+      "display_name": "DeepSeek V4 Flash",
+      "provider_display": "DeepSeek",
+      "status": "active"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 模型 ID，调用时填入 `model` |
+| `type` | `chat`、`embedding` 等；`/v1/embeddings` 只接受 `embedding` 类型的模型 |
+| `context_window` / `max_output` | 上下文窗口与最大输出 token 数 |
+| `capabilities` | 模型支持的能力，例如 `stream`、`tools` |
+| `sell_price` | 售价，币种为 CNY，`unit_price` 是以字符串表示的十进制金额（单位：元），详见[计费与余额](/docs/zh/billing) |
+| `display_name`、`description`、`provider_display`、`tags`、`scores` | 展示用信息，可能缺失 |
+| `status` | `active` 可调用；`deprecated` 已废弃，只用于展示，调用会返回 `404 model_not_found` |
+
+数据最多有 60 秒的缓存延迟。超过 IP 限流时返回 `429 rate_limit_exceeded`，并带 `Retry-After` 响应头。
+
+### GET /v1/models
+
+返回当前 Key 所属账户可以调用的模型 ID，格式与 OpenAI 一致，可以直接用 SDK 的 `models.list()` 获取：
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/models \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY"
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "deepseek-ai/DeepSeek-V4-Flash", "object": "model", "created": 0, "owned_by": "ufreetokens"}
+  ]
+}
+```
+
+`created` 目前固定为 `0`，不代表真实的上架时间。
+
+## 账户等级与可见性
+
+每个模型都配置了对哪些账户等级可见。请求一个不存在、已废弃或对你的账户等级不可见的模型，都会统一返回 `404 model_not_found`，网关不区分这几种情况。
+
+如果某把 Key 被限制只能调用部分模型，请求其它模型会返回 `403 model_not_allowed`。
+
+## 实时模型列表
+
+下表直接读取 `GET /v1/catalog`，展示当前公开上架的模型：
+
+<LiveModelList />

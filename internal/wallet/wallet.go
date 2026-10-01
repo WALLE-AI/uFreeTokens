@@ -19,11 +19,15 @@ package wallet
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/WALLE-AI/uFreeTokens/internal/store"
+
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,10 +38,13 @@ var (
 	ErrReservationNotFound = errors.New("wallet: reservation not found")
 	// ErrReservationReleased 表示该 request_id 的冻结已经被释放，不能再结算。
 	ErrReservationReleased = errors.New("wallet: reservation already released")
-	// ErrDuplicateAdjustRef 表示同一账户已经用这个 refID 调过账。人工调账不能靠
-	// ledger_entries 的 UNIQUE 约束去重（grant_id 为 NULL，Postgres 视每个 NULL
-	// 互不相同），所以在 Adjust 里显式检查，防止运营重复提交导致重复入账。
+	// ErrDuplicateAdjustRef 表示同一账户已经用这个 refID 调过账。Adjust 里用
+	// "advisory lock + 检查"给出这个明确的错误；数据库层 ledger_entries 的
+	// UNIQUE NULLS NOT DISTINCT（迁移 00017）是最后一道防线。
 	ErrDuplicateAdjustRef = errors.New("wallet: this ref_id has already been used for an adjustment on this account")
+	// ErrDuplicateGrantRef 表示同一账户、同一来源已经用这个 refID 发过赠金——
+	// 重试/重复提交不会重复发放（credit_grants 的唯一索引，迁移 00017）。
+	ErrDuplicateGrantRef = errors.New("wallet: this ref_id has already been used for a credit grant on this account")
 	// ErrBalanceChanged 表示调账时给出的"预期现金余额"与实际不符：运营看到的余额
 	// 页面已经过时（期间有消费、充值或别人调过账），应该刷新后重新确认。
 	ErrBalanceChanged = errors.New("wallet: cash balance has changed since it was displayed; refresh and confirm again")
@@ -106,17 +113,21 @@ func (s *Service) Grant(ctx context.Context, in GrantInput) (grantID int64, bonu
 		return 0, 0, errors.New("wallet: grant requires a non-empty refID for audit purposes")
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return 0, 0, fmt.Errorf("wallet: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO credit_grants (account_id, source, amount, remaining, model_scope, expires_at)
-		 VALUES ($1, $2, $3, $3, $4, $5) RETURNING id`,
-		in.AccountID, in.Source, in.Amount, in.ModelScope, in.ExpiresAt,
+		`INSERT INTO credit_grants (account_id, source, amount, remaining, model_scope, expires_at, ref_id)
+		 VALUES ($1, $2, $3, $3, $4, $5, $6) RETURNING id`,
+		in.AccountID, in.Source, in.Amount, in.ModelScope, in.ExpiresAt, in.RefID,
 	).Scan(&grantID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_credit_grants_ref" {
+			return 0, 0, ErrDuplicateGrantRef
+		}
 		return 0, 0, fmt.Errorf("wallet: insert credit_grant: %w", err)
 	}
 
@@ -130,9 +141,9 @@ func (s *Service) Grant(ctx context.Context, in GrantInput) (grantID int64, bonu
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id)
-		 VALUES ($1, 'grant', $2, 'bonus', $3, $4, $5, 'promotion', $6)`,
-		in.AccountID, in.Amount, grantID, cashAfter, bonusAfter, in.RefID,
+		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id, journal_id)
+		 VALUES ($1, 'grant', $2, 'bonus', $3, $4, $5, 'promotion', $6, $7)`,
+		in.AccountID, in.Amount, grantID, cashAfter, bonusAfter, in.RefID, newJournalID(),
 	); err != nil {
 		return 0, 0, fmt.Errorf("wallet: insert grant ledger entry: %w", err)
 	}
@@ -149,7 +160,7 @@ func (s *Service) Grant(ctx context.Context, in GrantInput) (grantID int64, bonu
 // 保持"只有 internal/wallet 写 wallets 表"这条不变式（见包文档）。
 // 幂等：账户已经有钱包时直接返回，不报错。
 func (s *Service) CreateWallet(ctx context.Context, accountID int64) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.db(ctx).Exec(ctx,
 		`INSERT INTO wallets (account_id, cash_balance, bonus_balance, frozen)
 		 VALUES ($1, 0, 0, 0) ON CONFLICT (account_id) DO NOTHING`,
 		accountID,
@@ -184,7 +195,7 @@ func (s *Service) AdjustChecked(ctx context.Context, accountID int64, amount int
 		return nil, 0, fmt.Errorf("wallet: adjust requires a non-empty refID for audit purposes")
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return nil, 0, fmt.Errorf("wallet: begin tx: %w", err)
 	}
@@ -235,9 +246,9 @@ func (s *Service) AdjustChecked(ctx context.Context, accountID int64, amount int
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id)
-		 VALUES ($1, 'adjust', $2, 'cash', $3, $4, 'admin', $5)`,
-		accountID, amount, cashAfter, bonusAfter, refID,
+		`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id, journal_id)
+		 VALUES ($1, 'adjust', $2, 'cash', $3, $4, 'admin', $5, $6)`,
+		accountID, amount, cashAfter, bonusAfter, refID, newJournalID(),
 	); err != nil {
 		return nil, 0, fmt.Errorf("wallet: adjust: insert ledger entry: %w", err)
 	}
@@ -257,7 +268,7 @@ func (s *Service) Reserve(ctx context.Context, requestID string, accountID int64
 		return nil, fmt.Errorf("wallet: reserve amount must be >= 0, got %d", amount)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: begin tx: %w", err)
 	}
@@ -333,7 +344,7 @@ func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int
 		return nil, fmt.Errorf("wallet: settle amount must be >= 0, got %d", actualAmount)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: begin tx: %w", err)
 	}
@@ -397,20 +408,22 @@ func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int
 	// 每条都记同样的 cash_after/bonus_after（这是这次结算完成后的最终余额，
 	// 不是"扣这一笔之前"的快照；ledger_entries 的设计就是账户级别的 after 值，
 	// 不是逐来源的中间态）。
+	// 同一次结算写下的赠款流水与现金流水共享一个 journal_id（迁移 00022）。
+	journal := newJournalID()
 	for _, sp := range grantSpends {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id)
-			 VALUES ($1, 'consume', $2, 'bonus', $3, $4, $5, 'request', $6)`,
-			accountID, -sp.amount, sp.grantID, cashAfter, bonusAfter, requestID,
+			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, grant_id, cash_after, bonus_after, ref_type, ref_id, journal_id)
+			 VALUES ($1, 'consume', $2, 'bonus', $3, $4, $5, 'request', $6, $7)`,
+			accountID, -sp.amount, sp.grantID, cashAfter, bonusAfter, requestID, journal,
 		); err != nil {
 			return nil, fmt.Errorf("wallet: insert bonus ledger entry (grant=%d): %w", sp.grantID, err)
 		}
 	}
 	if cashPortion > 0 {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id)
-			 VALUES ($1, 'consume', $2, 'cash', $3, $4, 'request', $5)`,
-			accountID, -cashPortion, cashAfter, bonusAfter, requestID,
+			`INSERT INTO ledger_entries (account_id, type, amount, balance_kind, cash_after, bonus_after, ref_type, ref_id, journal_id)
+			 VALUES ($1, 'consume', $2, 'cash', $3, $4, 'request', $5, $6)`,
+			accountID, -cashPortion, cashAfter, bonusAfter, requestID, journal,
 		); err != nil {
 			return nil, fmt.Errorf("wallet: insert cash ledger entry: %w", err)
 		}
@@ -432,7 +445,7 @@ func (s *Service) Settle(ctx context.Context, requestID string, actualAmount int
 // Release 全额解冻一个尚未结算的 reservation（例如上游在首字节前失败，本次请求
 // 未产生任何费用）。幂等：对已释放/已结算的 request_id 重复调用直接返回 nil。
 func (s *Service) Release(ctx context.Context, requestID string) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := store.BeginOrJoin(ctx, s.pool)
 	if err != nil {
 		return fmt.Errorf("wallet: begin tx: %w", err)
 	}
@@ -477,7 +490,7 @@ func (s *Service) Release(ctx context.Context, requestID string) error {
 // 供 worker 定时调用；单次最多处理 limit 条（避免一次性扫出海量数据阻塞太久）。
 // 返回本次实际释放的记录数。
 func (s *Service) ReclaimExpired(ctx context.Context, limit int) (int, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db(ctx).Query(ctx,
 		`SELECT request_id FROM reservations WHERE status = 'held' AND expires_at < now() ORDER BY expires_at ASC LIMIT $1`,
 		limit,
 	)
@@ -609,4 +622,19 @@ func (s *Service) reservationStatus(ctx context.Context, tx pgx.Tx, requestID st
 		return "", fmt.Errorf("wallet: load reservation status: %w", err)
 	}
 	return status, nil
+}
+
+// db 返回 ctx 里的环境事务，没有时返回连接池（见 store.RunInTx）。
+func (s *Service) db(ctx context.Context) store.Querier { return store.Q(ctx, s.pool) }
+
+// newJournalID 生成一个 UUIDv4 字符串，作为同一笔业务（一次结算/调账/赠送）写下的
+// 全部流水的 journal_id。
+func newJournalID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("wallet: crypto/rand unavailable: %v", err))
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

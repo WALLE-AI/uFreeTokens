@@ -1,0 +1,38 @@
+---
+title: Changelog
+description: Developer-facing API and behavior changes to uFreeTokens, newest first.
+section: changelog
+order: 0
+translatedFrom: 168914c91c0a
+---
+
+## 2026-10-01
+
+- **Developer docs rebuilt**: the docs are now bilingual (Chinese and English), the API reference is generated from the endpoint definitions, and only endpoints that actually work today are documented.
+
+## 2026-09-27
+
+- **Website sign-up and self-service API keys**: register and sign in with email; create and revoke keys under **Personal center** → **API keys**. The full key is shown only once at creation, and revocation takes effect immediately.
+- **New `GET /v1/catalog`**: a public, no-auth model catalog with model type, context window, max output, capabilities and CNY prices. Responses are cached for 60 seconds and rate-limited per IP. Later the same day, the catalog also started listing deprecated models (`status: "deprecated"`), which cannot be called.
+- **`GET /v1/usage` gains a `since` parameter**: pass an RFC3339 timestamp to count only usage after that time; omit it to keep counting all history.
+- **Streaming billing fixes**:
+  - the gateway now asks the upstream for usage itself, so clients no longer need to set `stream_options.include_usage`;
+  - the final usage-only chunk is forwarded only when the client set `stream_options.include_usage: true` itself; otherwise the stream is identical to a plain streaming response;
+  - when a client disconnects mid-stream and the upstream reports no usage, output tokens are now estimated from the content already forwarded, instead of charging the full pre-authorized limit.
+- **Browser CORS**: `/v1` endpoints can enable CORS for an allowlist of origins. Allowed request headers are `Authorization`, `Content-Type` and `X-Request-Id`; `X-Request-Id` and `Retry-After` are exposed to the browser.
+- **Website uses live data**: the model library reads the live catalog; a **Connect API key** mode stores a key in browser localStorage; the Playground makes real streaming calls; the personal center shows real balances, usage and request logs.
+
+## 2026-09-26
+
+- **New `GET /v1/usage`**: query your account balance (cash, bonus, frozen) and cumulative requests, tokens and spend with an API key.
+- **New `POST /v1/embeddings`**: text embeddings, billed on input tokens.
+- **New `POST /v1/messages`**: an Anthropic Messages-compatible entry point sharing the same auth, rate limiting and billing as `/v1/chat/completions`. Tool calling is not supported yet, and errors use the OpenAI format.
+- **More upstreams**: the gateway can now serve models from Anthropic- and Gemini-protocol upstreams, still called through the same OpenAI format.
+
+## 2026-09-25
+
+- **First working release**: `POST /v1/chat/completions` (with streaming) and `GET /v1/models`, authenticated with `Authorization: Bearer sk-uft-...`.
+- **Two-phase billing**: a request pre-authorizes its maximum cost and settles on actual usage. Insufficient balance returns `402 insufficient_balance` without forwarding or charging. Bonus balance is spent before cash.
+- **Automatic retries**: when an upstream key or channel fails, the gateway retries on another key or channel before any content has been sent to the client.
+- **Per-key rate limits**: requests-per-minute, tokens-per-minute and concurrency limits. Exceeding them returns `429` (`rate_limit_exceeded` / `concurrency_limit_exceeded`) with a `Retry-After` header.
+- **Unified error format and request IDs**: every error uses the OpenAI-compatible `{"error": {...}}` shape, and every response carries `X-Request-Id`.
