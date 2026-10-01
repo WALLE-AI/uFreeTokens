@@ -10,6 +10,7 @@ import type {
   Offer,
   OfferStatus,
   Paginated,
+  ListingOrigin,
   PendingListing,
   PriceComparisonRow,
   PriceSource,
@@ -59,13 +60,13 @@ export function batchApproveChangeRequests(body: { ids: number[]; reason?: strin
 
 // ---------- 待上架 ----------
 
-export function listPendingListings(q: PageQuery & { status?: string; provider_id?: number } = {}, signal?: AbortSignal) {
+export function listPendingListings(q: PageQuery & { status?: string; provider_id?: number; origin?: ListingOrigin } = {}, signal?: AbortSignal) {
   return request<Paginated<PendingListing>>('/pending-model-listings', { query: { ...q }, signal });
 }
 
 export interface PublishListingBody {
+  // 虚拟模型名固定为上游原始模型名；已有同名虚拟模型时 virtual_model 与 sell_markup 都被忽略
   virtual_model: {
-    name: string;
     family: string;
     type: ModelType;
     context_window: number;

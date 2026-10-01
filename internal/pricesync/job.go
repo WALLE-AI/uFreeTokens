@@ -32,6 +32,8 @@ import (
 //	offer_provider     string    优惠情报记在哪个厂商名下（OpenRouter 填 "openrouter"）；
 //	                             为空时取 upstream_model 的 "提供商/" 前缀（models.dev）
 //	offer_providers    []string  只对这些提供商识别优惠（为空 = 全部）
+//	provider_code_map  {string: string}  优惠厂商名 -> 本平台 providers.code（如 "siliconflow-cn": "siliconflow"）；
+//	                             识别出的免费模型据此进对应供应商的"待上架"，平台没有该供应商时只留情报
 
 type parseFunc func(body []byte, src datasync.Source) ([]Observation, error)
 
@@ -76,10 +78,11 @@ func PriceFetchers() []string {
 }
 
 type jobConfig struct {
-	DiscoverListings bool     `json:"discover_listings"`
-	DetectOffers     bool     `json:"detect_offers"`
-	OfferProvider    string   `json:"offer_provider"`
-	OfferProviders   []string `json:"offer_providers"`
+	DiscoverListings bool              `json:"discover_listings"`
+	DetectOffers     bool              `json:"detect_offers"`
+	OfferProvider    string            `json:"offer_provider"`
+	OfferProviders   []string          `json:"offer_providers"`
+	ProviderCodeMap  map[string]string `json:"provider_code_map"`
 }
 
 // Job 把 Engine 接到 datasync 调度上。
@@ -144,7 +147,7 @@ func (j *Job) Run(ctx context.Context, env *datasync.Env, src datasync.Source) (
 	}
 
 	stats := map[string]int{}
-	var priceObs []offers.PriceObservation
+	var priceObs []detectItem
 	for _, o := range obs {
 		sortComponents(o.Spec.Components)
 		specJSON, err := json.Marshal(o.Spec)
@@ -177,7 +180,7 @@ func (j *Job) Run(ctx context.Context, env *datasync.Env, src datasync.Source) (
 				}
 			case cfg.DiscoverListings:
 				if _, err := j.Engine.IngestUnmapped(ctx, UnmappedObservationInput{ProviderID: *src.ProviderID, SourceID: src.ID,
-					Level: Level(src.Level), UpstreamModel: o.UpstreamModel, Spec: o.Spec, RawObject: o.RawObject}); err != nil {
+					Level: Level(src.Level), UpstreamModel: o.UpstreamModel, Spec: o.Spec, RawObject: o.RawObject, Meta: o.Meta}); err != nil {
 					return datasync.Result{}, fmt.Errorf("pricesync: ingest unmapped %s: %w", o.UpstreamModel, err)
 				}
 				stats["listings"]++
@@ -200,7 +203,7 @@ func (j *Job) Run(ctx context.Context, env *datasync.Env, src datasync.Source) (
 				pp := pricePoint(prev.spec)
 				po.Previous = &pp
 			}
-			priceObs = append(priceObs, po)
+			priceObs = append(priceObs, detectItem{price: po, obs: o})
 		}
 	}
 
@@ -209,11 +212,19 @@ func (j *Job) Run(ctx context.Context, env *datasync.Env, src datasync.Source) (
 		detail[k] = v
 	}
 	if cfg.DetectOffers && j.Offers != nil {
-		created, expired, err := j.detectOffers(ctx, src, cfg, priceObs, runStart)
+		ds, err := j.detectOffers(ctx, src, cfg, priceObs, runStart)
 		if err != nil {
 			return datasync.Result{}, err
 		}
-		detail["offers_created"], detail["offers_expired"] = created, expired
+		detail["offers_created"], detail["offers_expired"], detail["free_listings"] = ds.created, ds.expired, ds.freeListings
+		life, err := j.Engine.SyncFreeListings(ctx)
+		if err != nil {
+			return datasync.Result{}, err
+		}
+		detail["free_listings_expired"] = life.Expired
+		if len(life.RetiredChannels) > 0 || len(life.DeprecatedModels) > 0 {
+			detail["free_channels_retired"], detail["free_models_deprecated"] = life.RetiredChannels, life.DeprecatedModels
+		}
 	}
 	return datasync.Result{
 		ItemsFetched: len(obs), ItemsChanged: stats["market_changed"] + stats["change_requests"] + stats["listings"],
@@ -282,14 +293,27 @@ func (j *Job) lastFetchedCount(ctx context.Context, sourceID int64) (int, error)
 	return *n, nil
 }
 
-func (j *Job) detectOffers(ctx context.Context, src datasync.Source, cfg jobConfig, obs []offers.PriceObservation, runStart time.Time) (created int, expired int64, err error) {
-	byProvider := map[string][]offers.PriceObservation{}
-	for _, o := range obs {
-		provider, model := cfg.OfferProvider, o.Model
+// detectItem 是一个模型本次的价格点（识别优惠用）与完整观测（建免费待上架候选用）。
+type detectItem struct {
+	price offers.PriceObservation
+	obs   Observation
+}
+
+type detectStats struct {
+	created      int
+	expired      int64
+	freeListings int
+}
+
+func (j *Job) detectOffers(ctx context.Context, src datasync.Source, cfg jobConfig, items []detectItem, runStart time.Time) (detectStats, error) {
+	var st detectStats
+	byProvider := map[string][]detectItem{}
+	for _, it := range items {
+		provider, model := cfg.OfferProvider, it.price.Model
 		if provider == "" {
-			if src.ProviderCode != "" && !strings.Contains(o.Model, "/") {
+			if src.ProviderCode != "" && !strings.Contains(model, "/") {
 				provider = src.ProviderCode
-			} else if p, m, found := strings.Cut(o.Model, "/"); found {
+			} else if p, m, found := strings.Cut(model, "/"); found {
 				provider, model = p, m
 			} else {
 				continue
@@ -298,20 +322,62 @@ func (j *Job) detectOffers(ctx context.Context, src datasync.Source, cfg jobConf
 		if len(cfg.OfferProviders) > 0 && !slices.Contains(cfg.OfferProviders, provider) {
 			continue
 		}
-		o.Model = model
-		byProvider[provider] = append(byProvider[provider], o)
+		it.price.Model = model
+		byProvider[provider] = append(byProvider[provider], it)
 	}
 	for provider, list := range byProvider {
-		for _, c := range offers.DetectFromPrices(src.ID, provider, src.URL, list) {
-			if _, isNew, err := j.Offers.Upsert(ctx, c); err != nil {
-				return created, 0, err
-			} else if isNew {
-				created++
+		prices := make([]offers.PriceObservation, len(list))
+		byModel := make(map[string]Observation, len(list))
+		for i, it := range list {
+			prices[i] = it.price
+			byModel[it.price.Model] = it.obs
+		}
+		providerID, err := j.listingProviderID(ctx, src, cfg, provider)
+		if err != nil {
+			return st, err
+		}
+		for _, c := range offers.DetectFromPrices(src.ID, provider, src.URL, prices) {
+			offerID, isNew, err := j.Offers.Upsert(ctx, c)
+			if err != nil {
+				return st, err
+			}
+			if isNew {
+				st.created++
+			}
+			// 免费模型直通待上架：模型名用情报里的（即该供应商 API 认的模型 ID），价格与参数用完整观测。
+			if c.OfferType != offers.TypeFreeModel || providerID == 0 {
+				continue
+			}
+			o := byModel[c.UpstreamModel]
+			if _, ok, err := j.Engine.UpsertFreeListing(ctx, FreeListingInput{ProviderID: providerID, SourceID: src.ID,
+				UpstreamModel: c.UpstreamModel, Spec: o.Spec, Meta: o.Meta, OfferID: offerID}); err != nil {
+				return st, fmt.Errorf("pricesync: free listing %s/%s: %w", provider, c.UpstreamModel, err)
+			} else if ok {
+				st.freeListings++
 			}
 		}
 	}
-	expired, err = j.Offers.ExpireMissingFreeModels(ctx, src.ID, runStart)
-	return created, expired, err
+	var err error
+	if st.expired, err = j.Offers.ExpireMissingFreeModels(ctx, src.ID, runStart); err != nil {
+		return st, err
+	}
+	if _, err := j.Offers.ExpireEnded(ctx); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+// listingProviderID 把优惠厂商名映射到本平台供应商：来源绑定的供应商优先，其次 provider_code_map，
+// 最后按同名 code 查找；找不到返回 0（平台没接这家，免费模型只留情报）。
+func (j *Job) listingProviderID(ctx context.Context, src datasync.Source, cfg jobConfig, provider string) (int64, error) {
+	if src.ProviderID != nil && provider == src.ProviderCode {
+		return *src.ProviderID, nil
+	}
+	code := provider
+	if mapped, ok := cfg.ProviderCodeMap[provider]; ok {
+		code = mapped
+	}
+	return j.Engine.ProviderIDByCode(ctx, code)
 }
 
 // sortComponents 固定计量项顺序：OpenRouter / LiteLLM 的归一化按 map 遍历，顺序随机，

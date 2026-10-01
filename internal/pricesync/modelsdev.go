@@ -36,9 +36,30 @@ type modelsDevConfig struct {
 }
 
 type modelsDevModel struct {
-	ID     string                     `json:"id"`
-	Status string                     `json:"status"`
-	Cost   map[string]json.RawMessage `json:"cost"`
+	ID               string                     `json:"id"`
+	Name             string                     `json:"name"`
+	Status           string                     `json:"status"`
+	Cost             map[string]json.RawMessage `json:"cost"`
+	Attachment       bool                       `json:"attachment"`
+	Reasoning        bool                       `json:"reasoning"`
+	ToolCall         bool                       `json:"tool_call"`
+	StructuredOutput bool                       `json:"structured_output"`
+	Modalities       struct {
+		Input  []string `json:"input"`
+		Output []string `json:"output"`
+	} `json:"modalities"`
+	Limit struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+}
+
+func (m modelsDevModel) meta() *ModelMeta {
+	return metaOrNil(ModelMeta{
+		Name: m.Name, Type: typeFromModalities(m.Modalities.Output), ContextWindow: m.Limit.Context, MaxOutput: m.Limit.Output,
+		Capabilities:    capabilitiesFrom(m.ToolCall, slices.Contains(m.Modalities.Input, "image"), m.StructuredOutput, m.Reasoning),
+		InputModalities: m.Modalities.Input, OutputModalities: m.Modalities.Output, Source: "modelsdev",
+	})
 }
 
 type modelsDevProvider struct {
@@ -89,7 +110,7 @@ func normalizeModelsDevResponse(body []byte, cfg modelsDevConfig, plainIDs bool)
 			if len(components) == 0 {
 				continue
 			}
-			out = append(out, Observation{UpstreamModel: name, Spec: PriceSpec{Currency: "USD", Components: components}})
+			out = append(out, Observation{UpstreamModel: name, Spec: PriceSpec{Currency: "USD", Components: components}, Meta: m.meta()})
 		}
 	}
 	return out, skipped, nil

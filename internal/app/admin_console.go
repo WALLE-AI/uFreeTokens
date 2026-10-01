@@ -708,7 +708,8 @@ func (h *adminHandlers) listPendingListings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	q := &queryParser{r: r}
-	in := admin.ListPendingListingsInput{Status: q.enum("status", admin.EnumValues().ListingStatuses...), ProviderID: q.int64("provider_id"), PageRequest: q.page()}
+	in := admin.ListPendingListingsInput{Status: q.enum("status", admin.EnumValues().ListingStatuses...), ProviderID: q.int64("provider_id"),
+		Origin: q.enum("origin", "price_source", "free_offer"), PageRequest: q.page()}
 	if !q.ok(w) {
 		return
 	}

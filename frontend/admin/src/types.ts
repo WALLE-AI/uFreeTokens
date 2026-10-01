@@ -426,6 +426,9 @@ export interface Offer {
   decided_at: ISODateTime | null;
   first_seen_at: ISODateTime;
   last_seen_at: ISODateTime;
+  // 同供应商 + 上游模型的待上架候选（免费模型自动进待上架）
+  listing_id: number | null;
+  listing_status: ListingStatus | null;
 }
 
 // ---------- 比价看板 ----------
@@ -589,7 +592,20 @@ export interface BatchApproveResult {
   error?: { code: string; message: string };
 }
 
-export type ListingStatus = 'pending' | 'dismissed' | 'published';
+export type ListingStatus = 'pending' | 'dismissed' | 'published' | 'expired';
+export type ListingOrigin = 'price_source' | 'free_offer';
+
+// admin.ListingMeta：来源接口随价格给出的模型参数（预填上架表单）
+export interface ListingMeta {
+  name?: string;
+  type?: ModelType;
+  context_window?: number;
+  max_output?: number;
+  capabilities?: string[] | null;
+  input_modalities?: string[] | null;
+  output_modalities?: string[] | null;
+  source?: string;
+}
 
 // admin.PendingListing
 export interface PendingListing {
@@ -602,13 +618,26 @@ export interface PendingListing {
   source_id: number;
   source_level: SourceLevel;
   observed_spec: PriceSpec;
+  observed_meta: ListingMeta | null;
   suggested: {
     name: string;
     family: string;
     currency: string;
     input_price: DecimalString | null;
     output_price: DecimalString | null;
+    type: ModelType | ''; // 以下来自 observed_meta，来源没给时为空 / 0
+    context_window: number;
+    max_output: number;
+    capabilities: string[] | null;
   };
+  origin: ListingOrigin;
+  offer_id: number | null;
+  free: boolean; // 观测单价全为 0
+  attached: boolean; // 上架时复用了已有同名虚拟模型（只挂渠道，售价不变）
+  retired_at: ISODateTime | null; // 上游免费结束、系统自动停用渠道的时间
+  // 与上游模型同名的已有虚拟模型（虚拟模型名 = 上游原始模型名）；在用时上架只挂渠道
+  existing_virtual_model_id: number | null;
+  existing_virtual_model_status: 'active' | 'hidden' | 'deprecated' | null;
   published_virtual_model_id: number | null;
   published_channel_id: number | null;
   first_observed_at: ISODateTime;
@@ -621,7 +650,7 @@ export interface PublishListingResult {
   virtual_model_id: number;
   channel_id: number;
   cost_book_id: number;
-  sell_book_id: number;
+  sell_book_id: number; // 挂到已有虚拟模型时为 0（售价不变）
 }
 
 // POST /pricesync/reference-price-lookup 的返回（USD / 百万 token）

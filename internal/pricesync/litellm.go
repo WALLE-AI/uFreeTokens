@@ -101,6 +101,7 @@ func normalizeLiteLLMResponse(body []byte) (observations []Observation, skipped 
 		observations = append(observations, Observation{
 			UpstreamModel: modelName,
 			Spec:          PriceSpec{Currency: "USD", Components: components},
+			Meta:          litellmMeta(raw),
 		})
 	}
 	return observations, skipped, nil
@@ -127,4 +128,31 @@ func normalizeLiteLLM(entry map[string]json.RawMessage) ([]Component, error) {
 		})
 	}
 	return out, nil
+}
+
+// litellmModeTypes 把 LiteLLM 的 mode 映射到本平台的模型类型。
+var litellmModeTypes = map[string]string{
+	"chat": "chat", "completion": "chat", "responses": "chat", "embedding": "embedding", "rerank": "rerank",
+	"image_generation": "image", "audio_transcription": "audio", "audio_speech": "audio",
+}
+
+// litellmMeta 提取模型参数；条目字段类型不规整时（社区数据集偶有字符串数字）只丢掉参数，不影响价格。
+func litellmMeta(raw json.RawMessage) *ModelMeta {
+	var e struct {
+		MaxInputTokens  int    `json:"max_input_tokens"`
+		MaxOutputTokens int    `json:"max_output_tokens"`
+		Mode            string `json:"mode"`
+		FunctionCalling bool   `json:"supports_function_calling"`
+		Vision          bool   `json:"supports_vision"`
+		ResponseSchema  bool   `json:"supports_response_schema"`
+		Reasoning       bool   `json:"supports_reasoning"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil
+	}
+	m := ModelMeta{Type: litellmModeTypes[e.Mode], ContextWindow: e.MaxInputTokens, MaxOutput: e.MaxOutputTokens, Source: "litellm_dataset"}
+	if m.Type == "chat" {
+		m.Capabilities = capabilitiesFrom(e.FunctionCalling, e.Vision, e.ResponseSchema, e.Reasoning)
+	}
+	return metaOrNil(m)
 }

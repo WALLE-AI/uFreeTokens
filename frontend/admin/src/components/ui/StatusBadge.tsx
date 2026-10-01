@@ -89,6 +89,7 @@ export const STATUS_DICT: Record<StatusKind, Record<string, StatusDef>> = {
     pending: { label: '待处理', tone: 'purple' },
     published: { label: '已上架', tone: 'green' },
     dismissed: { label: '已忽略', tone: 'gray' },
+    expired: { label: '免费已结束', tone: 'gray' },
   },
   request: {
     success: { label: '成功', tone: 'green' },

@@ -51,6 +51,7 @@ package pricesync
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -87,6 +88,16 @@ type PriceSpec struct {
 	ExpiresAt     *time.Time // 模型下线时间 / 限时价格结束时间
 }
 
+// isFree：有计量项且全部单价为 0。
+func (s PriceSpec) isFree() bool {
+	for _, c := range s.Components {
+		if !c.UnitPrice.IsZero() {
+			return false
+		}
+	}
+	return len(s.Components) > 0
+}
+
 // Component 对应 PriceSpec 里的一个计量项，字段含义和 internal/pricing.Component
 // 一致（这里独立定义一份，而不是直接复用 pricing.Component，是因为二者的生命
 // 周期不同：pricing.Component 是"已经生效、用于实时计价"的表示，Component
@@ -106,7 +117,61 @@ type Component struct {
 type Observation struct {
 	UpstreamModel string
 	Spec          PriceSpec
-	RawObject     string // 原始内容/证据，供审计；本阶段直接存文本，不接对象存储
+	RawObject     string     // 原始内容/证据，供审计；本阶段直接存文本，不接对象存储
+	Meta          *ModelMeta // 来源顺带给出的模型参数；不参与 spec_hash，只用于预填"待上架"表单
+}
+
+// ModelMeta 是来源接口里与价格一起给出的模型基础参数（OpenRouter / models.dev / LiteLLM 都有）。
+// 零值字段表示来源没给。Type / Capabilities 已映射到本平台的枚举（admin.EnumValues）。
+type ModelMeta struct {
+	Name             string   `json:"name,omitempty"` // 来源里的展示名
+	Type             string   `json:"type,omitempty"` // chat / embedding / image / audio / rerank
+	ContextWindow    int      `json:"context_window,omitempty"`
+	MaxOutput        int      `json:"max_output,omitempty"`
+	Capabilities     []string `json:"capabilities,omitempty"`
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
+	Source           string   `json:"source,omitempty"` // 给出这些参数的抓取器名
+}
+
+// metaOrNil：一个字段都没有时返回 nil，免得存一条空对象。
+func metaOrNil(m ModelMeta) *ModelMeta {
+	if m.Name == "" && m.Type == "" && m.ContextWindow == 0 && m.MaxOutput == 0 && len(m.Capabilities) == 0 &&
+		len(m.InputModalities) == 0 && len(m.OutputModalities) == 0 {
+		return nil
+	}
+	return &m
+}
+
+// capabilitiesFrom 按固定顺序（与 admin.EnumValues().Capabilities 一致）收集能力，stream 默认都有。
+func capabilitiesFrom(tools, vision, jsonMode, reasoning bool) []string {
+	caps := []string{"stream"}
+	for _, c := range []struct {
+		on   bool
+		name string
+	}{{tools, "tools"}, {vision, "vision"}, {jsonMode, "json_mode"}, {reasoning, "reasoning"}} {
+		if c.on {
+			caps = append(caps, c.name)
+		}
+	}
+	return caps
+}
+
+// typeFromModalities 由输入 / 输出模态推断模型类型：输出含 image 的算 image，输出只有 audio 的算 audio，
+// 输出含 embedding 的算 embedding，其余（输出 text）算 chat。
+func typeFromModalities(out []string) string {
+	has := func(v string) bool { return slices.Contains(out, v) }
+	switch {
+	case len(out) == 0:
+		return ""
+	case has("embedding") || has("embeddings"):
+		return "embedding"
+	case has("image") && !has("text"):
+		return "image"
+	case has("audio") && !has("text"):
+		return "audio"
+	}
+	return "chat"
 }
 
 // Fetcher 每个来源一个实现，只负责"取数 + 归一化"，不做任何决策（校验/比较/

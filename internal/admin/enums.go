@@ -83,7 +83,7 @@ func EnumValues() Enums {
 		OfferStatuses:       []string{"new", "confirmed", "ignored", "expired", "adopted"},
 		ModelAliasStatus:    ModelAliasStatuses,
 		DataSourceStatus:    []string{"running", "ok", "unchanged", "failed", "rejected"},
-		ListingStatuses:     []string{"pending", "published", "dismissed"},
+		ListingStatuses:     []string{"pending", "published", "dismissed", "expired"},
 		MemberRoles:         []string{"owner", "admin", "developer", "billing", "viewer"},
 		BenchmarkCategories: benchmarkCategories,
 		BenchmarkStatuses:   benchmarkStatuses,

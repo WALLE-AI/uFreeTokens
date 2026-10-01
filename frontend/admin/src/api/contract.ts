@@ -52,6 +52,7 @@ export type ContractChecks = [
   Expect<MissingKeys<T.ChangeRequestDetail, G.ChangeRequestDetail>>,
   Expect<MissingKeys<T.BatchApproveResult, G.BatchApproveResult>>,
   Expect<MissingKeys<T.PendingListing, G.PendingListing>>,
+  Expect<MissingKeys<T.ListingMeta, G.ListingMeta>>,
   Expect<MissingKeys<T.PublishListingResult, G.PublishListingResultDTO>>,
   Expect<MissingKeys<T.ReferencePrice, G.ReferencePriceLookupResult>>,
   Expect<MissingKeys<T.ReferencePriceLookupResult, G.ReferencePriceLookupResponse>>,

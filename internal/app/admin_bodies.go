@@ -120,10 +120,11 @@ type dismissListingRequest struct {
 	Reason string `json:"reason"`
 }
 
-// publishListingRequest 是 publishPendingModelListing 的请求体。
+// publishListingRequest 是 publishPendingModelListing 的请求体。虚拟模型名固定为上游原始模型名，
+// virtual_model.name 仅为兼容旧调用方保留、被忽略；已有同名虚拟模型时 virtual_model 与 sell_markup 都被忽略。
 type publishListingRequest struct {
 	VirtualModel struct {
-		Name          string   `json:"name"`
+		Name          string   `json:"name,omitempty"`
 		Family        string   `json:"family"`
 		Type          string   `json:"type"`
 		ContextWindow int      `json:"context_window"`

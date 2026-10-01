@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import { AlertTriangle, Info } from 'lucide-react';
+import { AlertTriangle, Gift, Info } from 'lucide-react';
 import { listLatestFXRates } from '../../api/catalog';
 import { publishListing } from '../../api/pricing';
 import { Button, DetailDrawer, Field, Input, Select, useToast } from '../../components/ui';
@@ -16,6 +16,11 @@ import { listAllProviderAccounts } from '../../api/pickers';
 // 售价口径与后端 pricesync.PublishListing 一致：售价(CNY) = 观测单价 × 汇率 ×
 // 上游账号 cost_multiplier × (1 + 加价率)，后端四舍五入到 6 位小数。非 CNY 观测
 // 缺汇率时后端会拒绝上架（400），这里同样禁止提交。
+//
+// 虚拟模型名 = 上游原始模型名（不可改）。已有同名虚拟模型在用时，上架只挂一个新渠道、写成本价，售价不变；
+// 否则新建虚拟模型并按加价率发布售价。
+// 免费模型（观测单价全为 0）售价恒为 0，不需要加价率与汇率；上游免费结束后系统会自动停用渠道。
+// 类型 / 上下文 / 最大输出 / 能力按来源给出的模型参数（observed_meta）预填。
 
 const MODEL_TYPES: Array<{ value: ModelType; label: string }> = [
   { value: 'chat', label: 'chat 对话' },
@@ -29,6 +34,12 @@ const MODEL_TYPES: Array<{ value: ModelType; label: string }> = [
 const FALLBACK_CAPABILITIES = ['stream', 'tools', 'vision', 'json_mode', 'reasoning'];
 const FALLBACK_TIERS: Tier[] = ['free', 'pro', 'enterprise'];
 
+const META_SOURCE_LABELS: Record<string, string> = {
+  openrouter_models: 'OpenRouter',
+  modelsdev: 'models.dev',
+  litellm_dataset: 'LiteLLM',
+};
+
 export function PublishListingDrawer({
   listing,
   onClose,
@@ -40,7 +51,6 @@ export function PublishListingDrawer({
 }) {
   const toast = useToast();
   const enums = useEnums();
-  const [name, setName] = useState('');
   const [family, setFamily] = useState('');
   const [type, setType] = useState<ModelType>('chat');
   const [contextWindow, setContextWindow] = useState('');
@@ -54,12 +64,12 @@ export function PublishListingDrawer({
 
   useEffect(() => {
     if (!listing) return;
-    setName(listing.suggested.name);
-    setFamily(listing.suggested.family);
-    setType('chat');
-    setContextWindow('');
-    setMaxOutput('');
-    setCaps(['stream']);
+    const s = listing.suggested;
+    setFamily(s.family);
+    setType(s.type || 'chat');
+    setContextWindow(s.context_window > 0 ? String(s.context_window) : '');
+    setMaxOutput(s.max_output > 0 ? String(s.max_output) : '');
+    setCaps(s.capabilities?.length ? s.capabilities : ['stream']);
     setTiers(['free', 'pro', 'enterprise']);
     setAccountId('');
     setMarkupPct(30);
@@ -86,30 +96,37 @@ export function PublishListingDrawer({
     return r ? Number(r.rate) : null;
   }, [fx.data, currency]);
   const multiplier = account ? Number(account.cost_multiplier) : 1;
-  const factor = 1 + markupPct / 100;
+  const free = !!listing?.free;
+  // 已有同名、在用的虚拟模型：只挂渠道，不新建、不改售价（deprecated 的会被重新启用并重新定价）
+  const attach = !!listing?.existing_virtual_model_id && listing.existing_virtual_model_status !== 'deprecated';
+  // 免费模型售价恒为 0，加价率无意义
+  const factor = free ? 1 : 1 + markupPct / 100;
+  // 挂到已有虚拟模型不发布售价；免费模型售价为 0：两种情况都不需要汇率
+  const needFx = !attach && !free;
 
   // 每个计量项：原币种成本 → CNY 成本（×汇率×倍率）→ 售价（CNY 成本 × (1+加价率)）
   const rows = (listing?.observed_spec.components ?? []).map((c) => {
     const price = Number(c.unit_price);
-    const costCNY = fxRate === null ? null : price * fxRate * multiplier;
+    const costCNY = price === 0 ? 0 : fxRate === null ? null : price * fxRate * multiplier;
     const sell = costCNY === null ? null : costCNY * factor;
     const margin = costCNY === null || !sell ? null : 1 - costCNY / sell;
     return { c, price, costCNY, sell, margin };
   });
   const worstMargin = rows.reduce<number | null>((acc, r) => (r.margin === null ? acc : acc === null ? r.margin : Math.min(acc, r.margin)), null);
-  const negative = worstMargin !== null && worstMargin < 0;
+  const negative = !attach && worstMargin !== null && worstMargin < 0;
 
   const ctx = Number(contextWindow);
   const maxOut = Number(maxOutput);
   const errors = {
-    name: !name.trim() ? '必填' : null,
-    family: !family.trim() ? '必填' : null,
-    context: !(ctx > 0) ? '请填写正整数（观测数据里没有上下文窗口）' : null,
-    maxOut: !(maxOut > 0) ? '请填写正整数' : maxOut > ctx && ctx > 0 ? '不能大于上下文窗口' : null,
+    family: !attach && !family.trim() ? '必填' : null,
+    context: !attach && !(ctx > 0) ? '请填写正整数（来源没有给出上下文窗口）' : null,
+    maxOut: attach ? null : !(maxOut > 0) ? '请填写正整数' : maxOut > ctx && ctx > 0 ? '不能大于上下文窗口' : null,
     account: !accountId ? '请选择上游账号' : null,
-    tiers: tiers.length === 0 ? '至少选择一个可见分组' : null,
+    tiers: !attach && tiers.length === 0 ? '至少选择一个可见分组' : null,
   };
-  const invalid = Object.values(errors).some(Boolean) || negative || fxRate === null;
+  const invalid = Object.values(errors).some(Boolean) || negative || (needFx && fxRate === null);
+  const meta = listing?.observed_meta;
+  const metaSource = meta?.source ? (META_SOURCE_LABELS[meta.source] ?? meta.source) : null;
 
   const submit = async () => {
     setTouched(true);
@@ -118,7 +135,6 @@ export function PublishListingDrawer({
     try {
       const res = await publishListing(listing.id, {
         virtual_model: {
-          name: name.trim(),
           family: family.trim(),
           type,
           context_window: Math.trunc(ctx),
@@ -127,9 +143,9 @@ export function PublishListingDrawer({
           visible_tiers: tiers,
         },
         provider_account_id: Number(accountId),
-        sell_markup: (markupPct / 100).toFixed(4),
+        sell_markup: free ? '0' : (markupPct / 100).toFixed(4),
       });
-      onPublished(res, name.trim());
+      onPublished(res, listing.upstream_model);
     } catch (err) {
       toast.error(friendlyError(err, '上架失败'), errorDetail(err));
     } finally {
@@ -159,10 +175,49 @@ export function PublishListingDrawer({
     >
       {listing && (
         <div className="space-y-5">
+          {free && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-800 flex gap-2">
+              <Gift className="w-4 h-4 shrink-0" />
+              <div>
+                <b>免费模型</b>：上游成本为 0，新建虚拟模型时售价同为 0，用户可免费调用。
+                {listing.origin === 'free_offer' && (
+                  <>
+                    上游免费结束（
+                    {listing.offer_id ? (
+                      <Link to={`/pricing/offers?status=all&id=${listing.offer_id}`} className="underline">
+                        优惠情报 #{listing.offer_id}
+                      </Link>
+                    ) : (
+                      '优惠情报'
+                    )}
+                    过期）后，系统会自动停用该渠道，避免继续 0 元售卖已收费的上游。
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {attach ? (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-900 flex gap-2">
+              <Info className="w-4 h-4 shrink-0" />
+              <div>
+                已有同名虚拟模型{' '}
+                <Link to={`/models/${listing.existing_virtual_model_id}`} className="underline font-mono">
+                  {listing.upstream_model}
+                </Link>
+                ：本次只在它下面新增一个渠道并写入成本价，<b>售价保持不变</b>。
+              </div>
+            </div>
+          ) : (
           <section className="space-y-3">
             <h4 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">虚拟模型</h4>
-            <Field label="模型名（对外 API 的 model 字段）" required error={show(errors.name)} hint="上架后不可修改">
-              <Input mono value={name} invalid={!!show(errors.name)} onChange={(e) => setName(e.target.value)} />
+            {metaSource && (
+              <p className="text-[11px] text-gray-500 flex items-center gap-1">
+                <Info className="w-3.5 h-3.5" /> 类型、上下文、最大输出、能力已按 {metaSource} 给出的参数预填，请核对。
+              </p>
+            )}
+            <Field label="模型名（对外 API 的 model 字段）" hint="固定为上游原始模型名">
+              <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg font-mono text-xs text-gray-700 break-all">{listing.upstream_model}</div>
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="系列 family" required error={show(errors.family)}>
@@ -185,6 +240,7 @@ export function PublishListingDrawer({
               <ChipGroup options={(enums?.tiers as Tier[] | undefined) ?? FALLBACK_TIERS} value={tiers} onToggle={(v) => setTiers((l) => toggle(l, v as Tier))} />
             </Field>
           </section>
+          )}
 
           <section className="space-y-3">
             <h4 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">路由与定价</h4>
@@ -206,6 +262,7 @@ export function PublishListingDrawer({
                 />
               )}
             </Field>
+            {!attach && !free && (
             <Field label={`加价率 ${markupPct}%`} hint="售价 = CNY 成本（观测单价 × 汇率 × 账号倍率）× (1 + 加价率)">
               <input
                 type="range"
@@ -223,6 +280,7 @@ export function PublishListingDrawer({
                 <span>200%</span>
               </div>
             </Field>
+            )}
 
             <div className="border border-gray-200 rounded-xl overflow-hidden">
               <table className="w-full text-xs">
@@ -231,8 +289,8 @@ export function PublishListingDrawer({
                     <th className="px-3 py-2 text-left">计量</th>
                     <th className="px-3 py-2 text-right">观测单价</th>
                     <th className="px-3 py-2 text-right">真实成本 CNY</th>
-                    <th className="px-3 py-2 text-right">售价 CNY</th>
-                    <th className="px-3 py-2 text-right">毛利率</th>
+                    {!attach && <th className="px-3 py-2 text-right">售价 CNY</th>}
+                    {!attach && <th className="px-3 py-2 text-right">毛利率</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -245,10 +303,12 @@ export function PublishListingDrawer({
                         {r.c.unit_price} <span className="text-[10px]">{currency}</span>
                       </td>
                       <td className="px-3 py-2 text-right font-mono">{r.costCNY === null ? '—' : `¥${fmt(r.costCNY)}`}</td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-900 font-medium">{r.sell === null ? '—' : `¥${fmt(r.sell)}`}</td>
-                      <td className="px-3 py-2 text-right">
-                        <MarginText ratio={r.margin} />
-                      </td>
+                      {!attach && <td className="px-3 py-2 text-right font-mono text-gray-900 font-medium">{r.sell === null ? '—' : `¥${fmt(r.sell)}`}</td>}
+                      {!attach && (
+                        <td className="px-3 py-2 text-right">
+                          <MarginText ratio={r.margin} />
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -258,7 +318,7 @@ export function PublishListingDrawer({
               真实成本 = 观测单价 × 汇率{currency !== 'CNY' && fxRate !== null ? `（${currency}→CNY ${fxRate}）` : ''} × 账号成本倍率（×{multiplier}）。
             </p>
 
-            {fxRate === null && !fx.loading && (
+            {needFx && fxRate === null && !fx.loading && (
               <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex gap-2">
                 <Info className="w-4 h-4 shrink-0" />
                 <div>
@@ -280,10 +340,11 @@ export function PublishListingDrawer({
             )}
           </section>
 
+          {!attach && (
           <section className="space-y-2">
             <h4 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">用户在模型库里看到的卡片</h4>
             <ModelCardPreview
-              name={name || listing.upstream_model}
+              name={listing.upstream_model}
               provider={listing.provider_name}
               contextWindow={ctx > 0 ? ctx : null}
               type={type}
@@ -291,6 +352,7 @@ export function PublishListingDrawer({
               output={rows.find((r) => r.c.meter === 'output')?.sell ?? null}
             />
           </section>
+          )}
         </div>
       )}
     </DetailDrawer>

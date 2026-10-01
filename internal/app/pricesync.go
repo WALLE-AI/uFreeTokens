@@ -212,7 +212,7 @@ func (h *adminHandlers) publishPendingModelListing(w http.ResponseWriter, r *htt
 				ContextWindow: body.VirtualModel.ContextWindow, MaxOutput: body.VirtualModel.MaxOutput,
 				Capabilities: body.VirtualModel.Capabilities, VisibleTiers: body.VirtualModel.VisibleTiers,
 			},
-			ProviderAccountID: body.ProviderAccountID, SellMarkup: body.SellMarkup,
+			ProviderAccountID: body.ProviderAccountID, SellMarkup: body.SellMarkup, DecidedByName: actor(r).Name,
 		})
 		if err != nil {
 			return publishListingResultDTO{}, auditEntry{}, err

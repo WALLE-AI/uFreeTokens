@@ -62,6 +62,9 @@ type Offer struct {
 	DecidedAt          *time.Time       `json:"decided_at"`
 	FirstSeenAt        time.Time        `json:"first_seen_at"`
 	LastSeenAt         time.Time        `json:"last_seen_at"`
+	// 同一供应商 + 上游模型的待上架候选（免费模型会自动进待上架）；平台没有该供应商或还没有候选时为 nil。
+	ListingID     *int64  `json:"listing_id"`
+	ListingStatus *string `json:"listing_status"`
 }
 
 // Candidate 是检测器产出的一条待入库情报。
@@ -211,14 +214,19 @@ type ListInput struct {
 
 const offerCols = `o.id, o.source_id, ps.name, o.provider_code, o.upstream_model, o.offer_type, o.discount_ratio, o.quota, o.limits,
 	o.starts_at, o.ends_at, o.conditions, o.evidence_url, o.evidence_excerpt, o.detection, o.status, o.adopted_promotion_id,
-	o.decided_by_name, o.decided_at, o.first_seen_at, o.last_seen_at`
+	o.decided_by_name, o.decided_at, o.first_seen_at, o.last_seen_at, pl.id, pl.status`
+
+// offerFrom 带上数据源名与对应的待上架候选（按供应商 code + 模型名匹配，一对一）。
+const offerFrom = ` FROM upstream_offers o LEFT JOIN price_sources ps ON ps.id = o.source_id
+	LEFT JOIN LATERAL (SELECT l.id, l.status FROM pending_model_listings l JOIN providers p ON p.id = l.provider_id
+	                   WHERE p.code = o.provider_code AND l.upstream_model = o.upstream_model LIMIT 1) pl ON true `
 
 func scanOffer(row pgx.Row) (*Offer, error) {
 	o := &Offer{}
 	var quota, limits []byte
 	if err := row.Scan(&o.ID, &o.SourceID, &o.SourceName, &o.ProviderCode, &o.UpstreamModel, &o.OfferType, &o.DiscountRatio,
 		&quota, &limits, &o.StartsAt, &o.EndsAt, &o.Conditions, &o.EvidenceURL, &o.EvidenceExcerpt, &o.Detection, &o.Status,
-		&o.AdoptedPromotionID, &o.DecidedByName, &o.DecidedAt, &o.FirstSeenAt, &o.LastSeenAt); err != nil {
+		&o.AdoptedPromotionID, &o.DecidedByName, &o.DecidedAt, &o.FirstSeenAt, &o.LastSeenAt, &o.ListingID, &o.ListingStatus); err != nil {
 		return nil, err
 	}
 	if len(quota) > 0 {
@@ -243,7 +251,7 @@ func (s *Store) List(ctx context.Context, in ListInput) ([]Offer, int, error) {
 		return nil, 0, fmt.Errorf("offers: count: %w", err)
 	}
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT `+offerCols+` FROM upstream_offers o LEFT JOIN price_sources ps ON ps.id = o.source_id `+where+
+		`SELECT `+offerCols+offerFrom+where+
 			` ORDER BY o.first_seen_at DESC, o.id DESC LIMIT $5 OFFSET $6`, append(args, in.Limit, in.Offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("offers: list: %w", err)
@@ -262,7 +270,7 @@ func (s *Store) List(ctx context.Context, in ListInput) ([]Offer, int, error) {
 
 func (s *Store) Get(ctx context.Context, id int64) (*Offer, error) {
 	o, err := scanOffer(s.db(ctx).QueryRow(ctx,
-		`SELECT `+offerCols+` FROM upstream_offers o LEFT JOIN price_sources ps ON ps.id = o.source_id WHERE o.id = $1`, id))
+		`SELECT `+offerCols+offerFrom+`WHERE o.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -323,7 +331,7 @@ var ErrAdoptInvalid = errors.New("offers: invalid adopt request")
 func (s *Store) Adopt(ctx context.Context, id int64, in AdoptInput) (promotionID int64, err error) {
 	err = store.RunInTx(ctx, s.pool, func(ctx context.Context) error {
 		o, err := scanOffer(s.db(ctx).QueryRow(ctx,
-			`SELECT `+offerCols+` FROM upstream_offers o LEFT JOIN price_sources ps ON ps.id = o.source_id WHERE o.id = $1 FOR UPDATE OF o`, id))
+			`SELECT `+offerCols+offerFrom+`WHERE o.id = $1 FOR UPDATE OF o`, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'react-router';
-import { Check, ExternalLink, EyeOff, Radar, RotateCcw, RotateCw, Sparkles } from 'lucide-react';
+import { Link, useNavigate } from 'react-router';
+import { Check, ExternalLink, EyeOff, Radar, RotateCcw, RotateCw, Sparkles, Upload } from 'lucide-react';
 import { newIdempotencyKey } from '../../api/client';
 import { adoptUpstreamOffer, getUpstreamOffer, listUpstreamOffers, setUpstreamOfferStatus, type AdoptOfferBody } from '../../api/pricing';
 import { channelLabel, searchChannels, searchProviderCodes, searchVirtualModelNames } from '../../api/pickers';
@@ -37,6 +37,7 @@ import { PriceSyncDisabledCard, errorDetail, friendlyError, isNotConfigured } fr
 
 // 优惠雷达（外部数据采集技术方案 §3.2 / §3.3）：数据源观测到的上游免费模型、折扣、限时活动等情报。
 // 情报只进情报库，不自动生效；运营确认后可"采用"为一条促销（成本面仅记录，售价面立即参与计费）。
+// 免费模型（平台已接入该供应商时）会自动进"待上架模型"，卡片上直接"去上架"，不必再走采用。
 // URL：?status=new|confirmed|adopted|ignored|expired|all &offer_type= &provider_code= &q= &page= &id=（打开详情）
 
 const STATUS_TABS = [
@@ -65,6 +66,8 @@ const DETECTION_LABELS: Record<string, { label: string; hint: string }> = {
 };
 
 const PAGE_SIZE = 20;
+
+const LISTING_STATUS_LABELS: Record<string, string> = { published: '已上架', dismissed: '已忽略', expired: '免费已结束', pending: '待上架' };
 
 function trimNum(n: number, digits = 2): string {
   return String(Number(n.toFixed(digits)));
@@ -304,8 +307,20 @@ function OfferActions({
   onAdopt: () => void;
 }) {
   const canAdopt = o.status === 'new' || o.status === 'confirmed';
+  const navigate = useNavigate();
+  const toListing = o.listing_id && o.listing_status === 'pending';
   return (
     <Can perm="pricing:write">
+      {toListing && (
+        <Button
+          size="sm"
+          variant="dark"
+          icon={<Upload className="w-3.5 h-3.5" />}
+          onClick={() => navigate(`/pricing/listings?origin=free_offer&id=${o.listing_id}`)}
+        >
+          去上架
+        </Button>
+      )}
       {(o.status === 'new' || o.status === 'confirmed') && (
         <Button size="sm" variant="ghost" disabled={busy} icon={<EyeOff className="w-3.5 h-3.5" />} onClick={() => onStatus('ignored')}>
           忽略
@@ -322,7 +337,7 @@ function OfferActions({
         </Button>
       )}
       {canAdopt && (
-        <Button size="sm" variant="dark" disabled={busy} icon={<Sparkles className="w-3.5 h-3.5" />} onClick={onAdopt}>
+        <Button size="sm" variant={toListing ? 'ghost' : 'dark'} disabled={busy} icon={<Sparkles className="w-3.5 h-3.5" />} onClick={onAdopt}>
           采用…
         </Button>
       )}
@@ -394,6 +409,11 @@ function OfferCard({
           详情
         </button>
         {o.status === 'adopted' && o.adopted_promotion_id && <span className="text-[11px] text-emerald-700">已生成促销 #{o.adopted_promotion_id}</span>}
+        {o.listing_id && o.listing_status && o.listing_status !== 'pending' && (
+          <Link to={`/pricing/listings?status=${o.listing_status}`} className="text-[11px] text-emerald-700 hover:underline">
+            待上架候选 #{o.listing_id} · {LISTING_STATUS_LABELS[o.listing_status]}
+          </Link>
+        )}
         {o.decided_by_name && o.status !== 'new' && (
           <span className="text-[11px] text-gray-400" title={formatDateTime(o.decided_at)}>
             {o.decided_by_name} · {formatRelative(o.decided_at)}

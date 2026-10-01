@@ -35,6 +35,7 @@ type UnmappedObservationInput struct {
 	UpstreamModel string
 	Spec          PriceSpec
 	RawObject     string
+	Meta          *ModelMeta
 }
 
 // UnmappedIngestResult 汇总 IngestUnmapped 实际做了什么：如果找到了匹配的
@@ -71,22 +72,166 @@ func (e *Engine) IngestUnmapped(ctx context.Context, in UnmappedObservationInput
 		return &UnmappedIngestResult{MappedResults: results}, nil
 	}
 
-	specJSON, err := json.Marshal(in.Spec)
+	listingID, err := e.upsertListing(ctx, in.ProviderID, in.UpstreamModel, in.SourceID, in.Spec, in.Meta, nil)
 	if err != nil {
-		return nil, fmt.Errorf("pricesync: marshal spec: %w", err)
+		return nil, err
+	}
+	return &UnmappedIngestResult{ListingID: &listingID}, nil
+}
+
+// upsertListing 新建 / 刷新一条待上架候选。offerID 非 nil 表示免费模型候选（origin=free_offer）：
+// 已过期的候选重新变回 pending（上游又免费了）；dismissed / published 的不动状态。
+// 没带参数的观测不覆盖已有参数（同一模型可能先后被带参数和不带参数的来源报告）。
+func (e *Engine) upsertListing(ctx context.Context, providerID int64, upstreamModel string, sourceID int64, spec PriceSpec, meta *ModelMeta, offerID *int64) (int64, error) {
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return 0, fmt.Errorf("pricesync: marshal spec: %w", err)
+	}
+	var metaJSON []byte
+	if meta != nil {
+		if metaJSON, err = json.Marshal(meta); err != nil {
+			return 0, fmt.Errorf("pricesync: marshal meta: %w", err)
+		}
+	}
+	origin := "price_source"
+	if offerID != nil {
+		origin = "free_offer"
 	}
 	var listingID int64
 	if err := e.db(ctx).QueryRow(ctx,
-		`INSERT INTO pending_model_listings (provider_id, upstream_model, source_id, observed_spec)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO pending_model_listings (provider_id, upstream_model, source_id, observed_spec, observed_meta, origin, offer_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (provider_id, upstream_model) DO UPDATE
-		   SET observed_spec = EXCLUDED.observed_spec, source_id = EXCLUDED.source_id, last_observed_at = now()
+		   SET observed_spec = EXCLUDED.observed_spec, source_id = EXCLUDED.source_id, last_observed_at = now(),
+		       observed_meta = COALESCE(EXCLUDED.observed_meta, pending_model_listings.observed_meta),
+		       origin = CASE WHEN EXCLUDED.offer_id IS NULL THEN pending_model_listings.origin ELSE 'free_offer' END,
+		       offer_id = COALESCE(EXCLUDED.offer_id, pending_model_listings.offer_id),
+		       status = CASE WHEN pending_model_listings.status = 'expired' AND EXCLUDED.offer_id IS NOT NULL
+		                     THEN 'pending' ELSE pending_model_listings.status END
 		 RETURNING id`,
-		in.ProviderID, in.UpstreamModel, in.SourceID, specJSON,
+		providerID, upstreamModel, sourceID, specJSON, metaJSON, origin, offerID,
 	).Scan(&listingID); err != nil {
-		return nil, fmt.Errorf("pricesync: upsert pending_model_listing: %w", err)
+		return 0, fmt.Errorf("pricesync: upsert pending_model_listing: %w", err)
 	}
-	return &UnmappedIngestResult{ListingID: &listingID}, nil
+	return listingID, nil
+}
+
+// FreeListingInput 是一条被识别为免费的上游模型（offers 已经为它写了 free_model 情报）。
+type FreeListingInput struct {
+	ProviderID    int64
+	SourceID      int64
+	UpstreamModel string
+	Spec          PriceSpec
+	Meta          *ModelMeta
+	OfferID       int64
+}
+
+// UpsertFreeListing 让免费模型直接进待上架队列（不受来源 discover_listings 开关限制——免费模型
+// 数量有限，不会像聚合来源那样刷出几百条）。平台上已经有该模型的渠道时不建候选，返回 ok=false。
+func (e *Engine) UpsertFreeListing(ctx context.Context, in FreeListingInput) (listingID int64, ok bool, err error) {
+	channels, err := e.resolveChannels(ctx, in.ProviderID, in.UpstreamModel)
+	if err != nil || len(channels) > 0 {
+		return 0, false, err
+	}
+	offerID := in.OfferID
+	listingID, err = e.upsertListing(ctx, in.ProviderID, in.UpstreamModel, in.SourceID, in.Spec, in.Meta, &offerID)
+	return listingID, err == nil, err
+}
+
+// ProviderIDByCode 把优惠情报里的厂商 code 映射成本平台 providers.id；平台没有这个供应商时返回 0。
+func (e *Engine) ProviderIDByCode(ctx context.Context, code string) (int64, error) {
+	var id int64
+	err := e.db(ctx).QueryRow(ctx, `SELECT id FROM providers WHERE code = $1`, code).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("pricesync: load provider by code: %w", err)
+	}
+	return id, nil
+}
+
+// freeOfferGone：候选关联的免费情报已过期，且同一厂商 + 模型没有其它仍有效的免费情报
+// （同一个免费模型可能被多个来源报告，只要还有一个来源说它免费，就不算结束）。
+const freeOfferGone = `EXISTS (SELECT 1 FROM upstream_offers o WHERE o.id = l.offer_id AND o.status = 'expired')
+	AND NOT EXISTS (SELECT 1 FROM upstream_offers o JOIN upstream_offers o2
+	                  ON o2.provider_code = o.provider_code AND o2.upstream_model = o.upstream_model
+	                WHERE o.id = l.offer_id AND o2.offer_type = 'free_model' AND o2.status IN ('new','confirmed','adopted'))`
+
+// FreeLifecycleResult 汇总 SyncFreeListings 做了什么。
+type FreeLifecycleResult struct {
+	Expired          int64   // 还没上架就不再免费、置为 expired 的候选
+	RetiredChannels  []int64 // 已上架、因免费结束被停用的渠道
+	DeprecatedModels []int64 // 随之被标为 deprecated 的虚拟模型（由候选新建、且已没有其它可用渠道）
+}
+
+// SyncFreeListings 处理免费模型的生命周期。上游免费结束（情报 expired）后：
+//   - 待上架的候选置为 expired，不再出现在待办里（上游重新免费时 upsertListing 会把它变回 pending）；
+//   - 已上架的停用对应渠道——否则会继续以 0 元售价卖一个已经收费的上游，或路由到已下线的 :free 模型；
+//     候选新建的虚拟模型若已没有其它可用渠道，一并标为 deprecated；挂到已有虚拟模型的只停渠道。
+//
+// 每条候选只处理一次（retired_at 标记）：运营之后手动恢复的渠道不会再被停掉。幂等，每次抓取后调用。
+func (e *Engine) SyncFreeListings(ctx context.Context) (*FreeLifecycleResult, error) {
+	res := &FreeLifecycleResult{}
+	err := store.RunInTx(ctx, e.pool, func(ctx context.Context) error {
+		tag, err := e.db(ctx).Exec(ctx,
+			`UPDATE pending_model_listings l SET status = 'expired', decided_at = now()
+			 WHERE l.origin = 'free_offer' AND l.status = 'pending' AND `+freeOfferGone)
+		if err != nil {
+			return fmt.Errorf("pricesync: expire free listings: %w", err)
+		}
+		res.Expired = tag.RowsAffected()
+
+		type retired struct {
+			channelID int64
+			vmID      *int64
+			attached  bool
+		}
+		rows, err := e.db(ctx).Query(ctx,
+			`UPDATE pending_model_listings l SET retired_at = now()
+			 WHERE l.origin = 'free_offer' AND l.status = 'published' AND l.retired_at IS NULL
+			   AND l.published_channel_id IS NOT NULL AND `+freeOfferGone+`
+			 RETURNING l.published_channel_id, l.published_virtual_model_id, l.attached`)
+		if err != nil {
+			return fmt.Errorf("pricesync: retire free listings: %w", err)
+		}
+		list, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (retired, error) {
+			var r retired
+			err := row.Scan(&r.channelID, &r.vmID, &r.attached)
+			return r, err
+		})
+		if err != nil {
+			return fmt.Errorf("pricesync: scan retired listings: %w", err)
+		}
+		for _, r := range list {
+			tag, err := e.db(ctx).Exec(ctx,
+				`UPDATE channels SET status = 'disabled', version = version + 1, updated_at = now() WHERE id = $1 AND status = 'active'`, r.channelID)
+			if err != nil {
+				return fmt.Errorf("pricesync: disable channel %d: %w", r.channelID, err)
+			}
+			if tag.RowsAffected() > 0 {
+				res.RetiredChannels = append(res.RetiredChannels, r.channelID)
+			}
+			if r.attached || r.vmID == nil {
+				continue
+			}
+			tag, err = e.db(ctx).Exec(ctx,
+				`UPDATE virtual_models SET status = 'deprecated', version = version + 1, updated_at = now()
+				 WHERE id = $1 AND status = 'active'
+				   AND NOT EXISTS (SELECT 1 FROM channels WHERE virtual_model_id = $1 AND status = 'active')`, *r.vmID)
+			if err != nil {
+				return fmt.Errorf("pricesync: deprecate virtual model %d: %w", *r.vmID, err)
+			}
+			if tag.RowsAffected() > 0 {
+				res.DeprecatedModels = append(res.DeprecatedModels, *r.vmID)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // resolveChannels 查找某个 provider 下、以 upstream_model 命名的所有活跃渠道
@@ -184,13 +329,17 @@ func (e *Engine) DismissListing(ctx context.Context, listingID int64) error {
 // 观测里自动推断，需要人工决定（技术方案 §7.16.3："人工确认后发布"）：
 // 虚拟模型怎么命名/归到哪个能力档位、走哪个 provider_account（带真实凭据）、
 // 加多少毛利率。
+//
+// 虚拟模型名一律等于上游原始模型名（VirtualModel.Name 被忽略）。已有同名虚拟模型时不新建：
+// 新渠道直接挂上去、只发布成本价，售价不变（VirtualModel 其余字段与 SellMarkup 也被忽略）。
 type PublishListingInput struct {
 	VirtualModel      admin.CreateVirtualModelInput
 	ProviderAccountID int64
 	SellMarkup        decimal.Decimal // 售价(CNY) = 成本 × 汇率 × cost_multiplier × (1 + SellMarkup)；0.3 = 加价 30%
+	DecidedByName     string          // 免费候选上架时，把关联的优惠情报标为"已确认"所记的处理人
 }
 
-// PublishListingResult 是一键上架实际创建出来的东西。
+// PublishListingResult 是一键上架实际创建出来的东西。复用已有同名虚拟模型时 SellBookID 为 0（没有发布售价）。
 type PublishListingResult struct {
 	VirtualModelID int64
 	ChannelID      int64
@@ -225,9 +374,10 @@ func (e *Engine) publishListingTx(ctx context.Context, listingID int64, in Publi
 	var status string
 	var upstreamModel string
 	var specJSON []byte
+	var offerID *int64
 	err := e.db(ctx).QueryRow(ctx,
-		`SELECT status, upstream_model, observed_spec FROM pending_model_listings WHERE id = $1 FOR UPDATE`, listingID,
-	).Scan(&status, &upstreamModel, &specJSON)
+		`SELECT status, upstream_model, observed_spec, offer_id FROM pending_model_listings WHERE id = $1 FOR UPDATE`, listingID,
+	).Scan(&status, &upstreamModel, &specJSON, &offerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrListingNotFound
 	}
@@ -245,17 +395,40 @@ func (e *Engine) publishListingTx(ctx context.Context, listingID int64, in Publi
 	// 售价以人民币发布，必须先把观测到的成本折成 CNY（汇率 × 上游账号的合同倍率）
 	// 再加价——否则一个 USD 报价的模型会按"美元数字当人民币"上架，直接亏本。
 	// 两项查询都放在创建任何对象之前：缺汇率时整体失败，不留下半上架的虚拟模型。
+	// 虚拟模型名 = 上游原始模型名。同名虚拟模型在用（active / hidden）时复用：只挂渠道、不动售价；
+	// 已废弃的（比如上次免费结束被系统废弃）重新启用，并按本次观测重新定价。
+	var vmID int64
+	var vmStatus string
+	err = e.db(ctx).QueryRow(ctx, `SELECT id, status FROM virtual_models WHERE name = $1 FOR UPDATE`, upstreamModel).Scan(&vmID, &vmStatus)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("pricesync: load virtual model %q: %w", upstreamModel, err)
+	}
+	reuse := vmID != 0 && vmStatus != "deprecated"
+
+	// 不发布售价（复用已有虚拟模型）或成本全为 0（免费模型，售价恒为 0）时用不到汇率，缺了也放行。
 	costToCNY, err := e.costToCNYFactor(ctx, spec.Currency, in.ProviderAccountID)
-	if err != nil {
+	if err != nil && !(errors.Is(err, ErrMissingFXRate) && (reuse || spec.isFree())) {
 		return nil, err
 	}
 
-	vm, err := e.publisher.CreateVirtualModel(ctx, in.VirtualModel)
-	if err != nil {
-		return nil, fmt.Errorf("pricesync: create virtual model: %w", err)
+	switch {
+	case reuse:
+	case vmID != 0:
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE virtual_models SET status = 'active', version = version + 1, updated_at = now() WHERE id = $1`, vmID); err != nil {
+			return nil, fmt.Errorf("pricesync: reactivate virtual model: %w", err)
+		}
+	default:
+		vmIn := in.VirtualModel
+		vmIn.Name = upstreamModel
+		vm, err := e.publisher.CreateVirtualModel(ctx, vmIn)
+		if err != nil {
+			return nil, fmt.Errorf("pricesync: create virtual model: %w", err)
+		}
+		vmID = vm.ID
 	}
 	ch, err := e.publisher.CreateChannel(ctx, admin.CreateChannelInput{
-		VirtualModelID: vm.ID, ProviderAccountID: in.ProviderAccountID, UpstreamModel: upstreamModel,
+		VirtualModelID: vmID, ProviderAccountID: in.ProviderAccountID, UpstreamModel: upstreamModel,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pricesync: create channel: %w", err)
@@ -269,29 +442,47 @@ func (e *Engine) publishListingTx(ctx context.Context, listingID int64, in Publi
 		return nil, fmt.Errorf("pricesync: publish cost price: %w", err)
 	}
 
+	result := &PublishListingResult{VirtualModelID: vmID, ChannelID: ch.ID, CostBookID: costBookID}
+	if !reuse {
+		if result.SellBookID, err = e.publishMarkupSellPrice(ctx, vmID, costComponents, costToCNY, in.SellMarkup); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := e.db(ctx).Exec(ctx,
+		`UPDATE pending_model_listings
+		 SET status = 'published', published_virtual_model_id = $2, published_channel_id = $3, attached = $4, decided_at = now()
+		 WHERE id = $1`,
+		listingID, vmID, ch.ID, reuse,
+	); err != nil {
+		return nil, fmt.Errorf("pricesync: mark pending_model_listing published: %w", err)
+	}
+	// 免费候选：上架即视为运营已核实这条免费情报。
+	if offerID != nil {
+		if _, err := e.db(ctx).Exec(ctx,
+			`UPDATE upstream_offers SET status = 'confirmed', decided_by_name = NULLIF($2, ''), decided_at = now()
+			 WHERE id = $1 AND status = 'new'`, *offerID, in.DecidedByName); err != nil {
+			return nil, fmt.Errorf("pricesync: confirm free offer: %w", err)
+		}
+	}
+	return result, nil
+}
+
+// publishMarkupSellPrice 按 成本 × 折人民币系数 × (1+markup) 发布售价。免费模型成本为 0，售价也就是 0。
+func (e *Engine) publishMarkupSellPrice(ctx context.Context, vmID int64, costComponents []admin.PriceComponentInput, costToCNY, markup decimal.Decimal) (int64, error) {
 	sellComponents := make([]admin.PriceComponentInput, len(costComponents))
-	markupFactor := decimal.NewFromInt(1).Add(in.SellMarkup)
+	markupFactor := decimal.NewFromInt(1).Add(markup)
 	for i, c := range costComponents {
 		sellComponents[i] = c
 		sellComponents[i].UnitPrice = c.UnitPrice.Mul(costToCNY).Mul(markupFactor).Round(6)
 	}
 	sellBookID, err := e.publisher.SetSellPrice(ctx, admin.SetSellPriceInput{
-		VirtualModelID: vm.ID, Components: sellComponents,
+		VirtualModelID: vmID, Components: sellComponents,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("pricesync: publish sell price: %w", err)
+		return 0, fmt.Errorf("pricesync: publish sell price: %w", err)
 	}
-
-	if _, err := e.db(ctx).Exec(ctx,
-		`UPDATE pending_model_listings
-		 SET status = 'published', published_virtual_model_id = $2, published_channel_id = $3, decided_at = now()
-		 WHERE id = $1`,
-		listingID, vm.ID, ch.ID,
-	); err != nil {
-		return nil, fmt.Errorf("pricesync: mark pending_model_listing published: %w", err)
-	}
-
-	return &PublishListingResult{VirtualModelID: vm.ID, ChannelID: ch.ID, CostBookID: costBookID, SellBookID: sellBookID}, nil
+	return sellBookID, nil
 }
 
 // ErrMissingFXRate 表示观测价格的币种没有可用的人民币汇率，无法折算售价。

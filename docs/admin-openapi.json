@@ -4390,8 +4390,56 @@
         ],
         "type": "object"
       },
+      "ListingMeta": {
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "input_modalities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_output": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_modalities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
       "ListingSuggestion": {
         "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context_window": {
+            "type": "integer"
+          },
           "currency": {
             "type": "string"
           },
@@ -4409,6 +4457,9 @@
               }
             ]
           },
+          "max_output": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -4422,14 +4473,21 @@
                 "type": "null"
               }
             ]
+          },
+          "type": {
+            "type": "string"
           }
         },
         "required": [
+          "capabilities",
+          "context_window",
           "currency",
           "family",
           "input_price",
+          "max_output",
           "name",
-          "output_price"
+          "output_price",
+          "type"
         ],
         "type": "object"
       },
@@ -5176,6 +5234,26 @@
             "type": "string"
           },
           "limits": {},
+          "listing_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "listing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "offer_type": {
             "type": "string"
           },
@@ -5242,6 +5320,8 @@
           "id",
           "last_seen_at",
           "limits",
+          "listing_id",
+          "listing_status",
           "offer_type",
           "provider_code",
           "quota",
@@ -5540,6 +5620,9 @@
       },
       "PendingListing": {
         "properties": {
+          "attached": {
+            "type": "boolean"
+          },
           "decided_at": {
             "anyOf": [
               {
@@ -5551,9 +5634,32 @@
               }
             ]
           },
+          "existing_virtual_model_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "existing_virtual_model_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "first_observed_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "free": {
+            "type": "boolean"
           },
           "id": {
             "type": "integer"
@@ -5562,8 +5668,31 @@
             "format": "date-time",
             "type": "string"
           },
+          "observed_meta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ListingMeta"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "observed_spec": {
             "$ref": "#/components/schemas/SpecJSON"
+          },
+          "offer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "type": "string"
           },
           "provider_code": {
             "type": "string"
@@ -5594,6 +5723,17 @@
               }
             ]
           },
+          "retired_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source_id": {
             "type": "integer"
           },
@@ -5611,16 +5751,24 @@
           }
         },
         "required": [
+          "attached",
           "decided_at",
+          "existing_virtual_model_id",
+          "existing_virtual_model_status",
           "first_observed_at",
+          "free",
           "id",
           "last_observed_at",
+          "observed_meta",
           "observed_spec",
+          "offer_id",
+          "origin",
           "provider_code",
           "provider_id",
           "provider_name",
           "published_channel_id",
           "published_virtual_model_id",
+          "retired_at",
           "source_id",
           "source_level",
           "status",
@@ -7090,7 +7238,6 @@
               "context_window",
               "family",
               "max_output",
-              "name",
               "type",
               "visible_tiers"
             ],

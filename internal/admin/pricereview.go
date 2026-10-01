@@ -433,35 +433,65 @@ func (s *Service) changeImpact(ctx context.Context, channelID, vmID int64, curre
 
 // ---------- 待上架队列 ----------
 
+// ListingSuggestion 是上架表单的预填值：名称 / 系列按上游模型名推断，类型、上下文、最大输出、
+// 能力取自来源给出的模型参数（observed_meta），来源没给的为零值，需要运营补填。
 type ListingSuggestion struct {
-	Name        string           `json:"name"`
-	Family      string           `json:"family"`
-	Currency    string           `json:"currency"`
-	InputPrice  *decimal.Decimal `json:"input_price"`
-	OutputPrice *decimal.Decimal `json:"output_price"`
+	Name          string           `json:"name"`
+	Family        string           `json:"family"`
+	Currency      string           `json:"currency"`
+	InputPrice    *decimal.Decimal `json:"input_price"`
+	OutputPrice   *decimal.Decimal `json:"output_price"`
+	Type          string           `json:"type"`
+	ContextWindow int              `json:"context_window"`
+	MaxOutput     int              `json:"max_output"`
+	Capabilities  []string         `json:"capabilities"`
+}
+
+// ListingMeta 对应 pending_model_listings.observed_meta（pricesync.ModelMeta 的 JSON 形状）。
+type ListingMeta struct {
+	Name             string   `json:"name,omitempty"`
+	Type             string   `json:"type,omitempty"`
+	ContextWindow    int      `json:"context_window,omitempty"`
+	MaxOutput        int      `json:"max_output,omitempty"`
+	Capabilities     []string `json:"capabilities,omitempty"`
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
+	Source           string   `json:"source,omitempty"`
 }
 
 type PendingListing struct {
-	ID                      int64             `json:"id"`
-	Status                  string            `json:"status"`
-	ProviderID              int64             `json:"provider_id"`
-	ProviderCode            string            `json:"provider_code"`
-	ProviderName            string            `json:"provider_name"`
-	UpstreamModel           string            `json:"upstream_model"`
-	SourceID                int64             `json:"source_id"`
-	SourceLevel             string            `json:"source_level"`
-	ObservedSpec            SpecJSON          `json:"observed_spec"`
-	Suggested               ListingSuggestion `json:"suggested"`
-	PublishedVirtualModelID *int64            `json:"published_virtual_model_id"`
-	PublishedChannelID      *int64            `json:"published_channel_id"`
-	FirstObservedAt         time.Time         `json:"first_observed_at"`
-	LastObservedAt          time.Time         `json:"last_observed_at"`
-	DecidedAt               *time.Time        `json:"decided_at"`
+	ID            int64             `json:"id"`
+	Status        string            `json:"status"`
+	ProviderID    int64             `json:"provider_id"`
+	ProviderCode  string            `json:"provider_code"`
+	ProviderName  string            `json:"provider_name"`
+	UpstreamModel string            `json:"upstream_model"`
+	SourceID      int64             `json:"source_id"`
+	SourceLevel   string            `json:"source_level"`
+	ObservedSpec  SpecJSON          `json:"observed_spec"`
+	ObservedMeta  *ListingMeta      `json:"observed_meta"`
+	Suggested     ListingSuggestion `json:"suggested"`
+	// Origin：price_source = 价格源发现的新模型；free_offer = 优惠识别出的免费模型（OfferID 为对应情报）。
+	Origin    string     `json:"origin"`
+	OfferID   *int64     `json:"offer_id"`
+	Free      bool       `json:"free"`       // 观测到的计量项单价全为 0
+	Attached  bool       `json:"attached"`   // 上架时复用了已有同名虚拟模型（只挂渠道，售价不变）
+	RetiredAt *time.Time `json:"retired_at"` // 上游免费结束、系统自动停用渠道的时间
+	// 与上游模型同名的已有虚拟模型（虚拟模型名 = 上游原始模型名）。在用时上架只会挂一个新渠道、售价不变；
+	// deprecated 时上架会重新启用并按观测重新定价。
+	ExistingVirtualModelID     *int64     `json:"existing_virtual_model_id"`
+	ExistingVirtualModelStatus *string    `json:"existing_virtual_model_status"`
+	PublishedVirtualModelID    *int64     `json:"published_virtual_model_id"`
+	PublishedChannelID         *int64     `json:"published_channel_id"`
+	FirstObservedAt            time.Time  `json:"first_observed_at"`
+	LastObservedAt             time.Time  `json:"last_observed_at"`
+	DecidedAt                  *time.Time `json:"decided_at"`
 }
 
 type ListPendingListingsInput struct {
 	Status     string // 默认 pending；all = 全部
 	ProviderID int64
+	Origin     string // price_source / free_offer；空 = 全部
 	PageRequest
 }
 
@@ -480,6 +510,15 @@ func suggestFamily(upstreamModel, providerCode string) string {
 	return providerCode
 }
 
+func (s storedSpec) isFree() bool {
+	for _, c := range s.Components {
+		if !c.UnitPrice.IsZero() {
+			return false
+		}
+	}
+	return len(s.Components) > 0
+}
+
 func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListingsInput) (*Page[PendingListing], error) {
 	status := in.Status
 	if status == "" {
@@ -488,8 +527,8 @@ func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListing
 	if status == "all" {
 		status = ""
 	}
-	where := `WHERE ($1 = '' OR l.status = $1) AND ($2 = 0 OR l.provider_id = $2)`
-	args := []any{status, in.ProviderID}
+	where := `WHERE ($1 = '' OR l.status = $1) AND ($2 = 0 OR l.provider_id = $2) AND ($3 = '' OR l.origin = $3)`
+	args := []any{status, in.ProviderID, in.Origin}
 	pr := in.PageRequest
 	if pr.PageSize == 0 {
 		pr.PageSize = 100
@@ -500,10 +539,12 @@ func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListing
 		return nil, fmt.Errorf("admin: count pending_model_listings: %w", err)
 	}
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT l.id, l.status, l.provider_id, p.code, p.name, l.upstream_model, l.source_id, ps.level, l.observed_spec,
+		`SELECT l.id, l.status, l.provider_id, p.code, p.name, l.upstream_model, l.source_id, ps.level, l.observed_spec, l.observed_meta,
+		   l.origin, l.offer_id, l.attached, l.retired_at, vm.id, vm.status,
 		   l.published_virtual_model_id, l.published_channel_id, l.first_observed_at, l.last_observed_at, l.decided_at
-		 FROM pending_model_listings l JOIN providers p ON p.id = l.provider_id JOIN price_sources ps ON ps.id = l.source_id `+where+
-			` ORDER BY l.first_observed_at, l.id LIMIT $3 OFFSET $4`, append(args, pr.PageSize, pr.offset())...)
+		 FROM pending_model_listings l JOIN providers p ON p.id = l.provider_id JOIN price_sources ps ON ps.id = l.source_id
+		 LEFT JOIN virtual_models vm ON vm.name = l.upstream_model `+where+
+			` ORDER BY l.first_observed_at, l.id LIMIT $4 OFFSET $5`, append(args, pr.PageSize, pr.offset())...)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query pending_model_listings: %w", err)
 	}
@@ -511,8 +552,9 @@ func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListing
 	out := []PendingListing{}
 	for rows.Next() {
 		var l PendingListing
-		var specRaw []byte
-		if err := rows.Scan(&l.ID, &l.Status, &l.ProviderID, &l.ProviderCode, &l.ProviderName, &l.UpstreamModel, &l.SourceID, &l.SourceLevel, &specRaw,
+		var specRaw, metaRaw []byte
+		if err := rows.Scan(&l.ID, &l.Status, &l.ProviderID, &l.ProviderCode, &l.ProviderName, &l.UpstreamModel, &l.SourceID, &l.SourceLevel, &specRaw, &metaRaw,
+			&l.Origin, &l.OfferID, &l.Attached, &l.RetiredAt, &l.ExistingVirtualModelID, &l.ExistingVirtualModelStatus,
 			&l.PublishedVirtualModelID, &l.PublishedChannelID, &l.FirstObservedAt, &l.LastObservedAt, &l.DecidedAt); err != nil {
 			return nil, fmt.Errorf("admin: scan pending_model_listing: %w", err)
 		}
@@ -521,9 +563,24 @@ func (s *Service) ListPendingListings(ctx context.Context, in ListPendingListing
 			return nil, fmt.Errorf("admin: decode observed_spec: %w", err)
 		}
 		l.ObservedSpec = spec.toJSON()
+		l.Free = spec.isFree()
 		l.Suggested = ListingSuggestion{
 			Name: l.UpstreamModel, Family: suggestFamily(l.UpstreamModel, l.ProviderCode), Currency: spec.Currency,
-			InputPrice: spec.baseUnitPrice("input"), OutputPrice: spec.baseUnitPrice("output"),
+			InputPrice: spec.baseUnitPrice("input"), OutputPrice: spec.baseUnitPrice("output"), Capabilities: []string{},
+		}
+		if len(metaRaw) > 0 {
+			var m ListingMeta
+			if err := json.Unmarshal(metaRaw, &m); err != nil {
+				return nil, fmt.Errorf("admin: decode observed_meta: %w", err)
+			}
+			l.ObservedMeta = &m
+			l.Suggested.Type, l.Suggested.ContextWindow, l.Suggested.MaxOutput = m.Type, m.ContextWindow, m.MaxOutput
+			if m.MaxOutput > m.ContextWindow && m.ContextWindow > 0 {
+				l.Suggested.MaxOutput = m.ContextWindow
+			}
+			if len(m.Capabilities) > 0 {
+				l.Suggested.Capabilities = m.Capabilities
+			}
 		}
 		out = append(out, l)
 	}

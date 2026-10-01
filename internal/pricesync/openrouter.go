@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -75,8 +76,41 @@ func (f OpenRouterFetcher) Fetch(ctx context.Context, src Source) ([]Observation
 
 // openRouterModel 是 GET /api/v1/models 响应里我们关心的字段子集。
 type openRouterModel struct {
-	ID      string                     `json:"id"`
-	Pricing map[string]json.RawMessage `json:"pricing"`
+	ID            string                     `json:"id"`
+	Name          string                     `json:"name"`
+	ContextLength int                        `json:"context_length"`
+	Pricing       map[string]json.RawMessage `json:"pricing"`
+	Architecture  struct {
+		InputModalities  []string `json:"input_modalities"`
+		OutputModalities []string `json:"output_modalities"`
+	} `json:"architecture"`
+	TopProvider struct {
+		ContextLength       int `json:"context_length"`
+		MaxCompletionTokens int `json:"max_completion_tokens"`
+	} `json:"top_provider"`
+	SupportedParameters []string `json:"supported_parameters"`
+}
+
+// meta 提取模型参数（预填待上架表单用）：上下文优先取 top_provider（实际路由到的那家），
+// 能力由 supported_parameters 与输入模态推断。
+func (m openRouterModel) meta() *ModelMeta {
+	ctx := m.TopProvider.ContextLength
+	if ctx == 0 {
+		ctx = m.ContextLength
+	}
+	params := m.SupportedParameters
+	has := func(v string) bool { return slices.Contains(params, v) }
+	var caps []string
+	if len(params) > 0 || len(m.Architecture.InputModalities) > 0 {
+		caps = capabilitiesFrom(has("tools"), slices.Contains(m.Architecture.InputModalities, "image"),
+			has("response_format") || has("structured_outputs"), has("reasoning") || has("include_reasoning"))
+	}
+	return metaOrNil(ModelMeta{
+		Name: m.Name, Type: typeFromModalities(m.Architecture.OutputModalities), ContextWindow: ctx,
+		MaxOutput: m.TopProvider.MaxCompletionTokens, Capabilities: caps,
+		InputModalities: m.Architecture.InputModalities, OutputModalities: m.Architecture.OutputModalities,
+		Source: "openrouter_models",
+	})
 }
 
 type openRouterModelsResponse struct {
@@ -104,6 +138,7 @@ func normalizeOpenRouterResponse(body []byte) (observations []Observation, skipp
 		observations = append(observations, Observation{
 			UpstreamModel: m.ID,
 			Spec:          PriceSpec{Currency: "USD", Components: components},
+			Meta:          m.meta(),
 		})
 	}
 	return observations, skipped, nil

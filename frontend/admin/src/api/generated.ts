@@ -848,12 +848,27 @@ export interface ListData_UpstreamModel {
   data: UpstreamModel[] | null;
 }
 
+export interface ListingMeta {
+  name?: string;
+  type?: string;
+  context_window?: number;
+  max_output?: number;
+  capabilities?: string[] | null;
+  input_modalities?: string[] | null;
+  output_modalities?: string[] | null;
+  source?: string;
+}
+
 export interface ListingSuggestion {
   name: string;
   family: string;
   currency: string;
   input_price: string | null;
   output_price: string | null;
+  type: string;
+  context_window: number;
+  max_output: number;
+  capabilities: string[] | null;
 }
 
 export interface LoginRequest {
@@ -987,6 +1002,8 @@ export interface Offer {
   decided_at: string | null;
   first_seen_at: string;
   last_seen_at: string;
+  listing_id: number | null;
+  listing_status: string | null;
 }
 
 export interface Page_APIKeyListItem {
@@ -1076,7 +1093,15 @@ export interface PendingListing {
   source_id: number;
   source_level: string;
   observed_spec: SpecJSON;
+  observed_meta: ListingMeta | null;
   suggested: ListingSuggestion;
+  origin: string;
+  offer_id: number | null;
+  free: boolean;
+  attached: boolean;
+  retired_at: string | null;
+  existing_virtual_model_id: number | null;
+  existing_virtual_model_status: string | null;
   published_virtual_model_id: number | null;
   published_channel_id: number | null;
   first_observed_at: string;
@@ -1363,7 +1388,7 @@ export interface PublicAppsResponse {
 }
 
 export interface PublishListingRequest {
-  virtual_model: { name: string; family: string; type: string; context_window: number; max_output: number; capabilities: string[] | null; visible_tiers: string[] | null; };
+  virtual_model: { name?: string; family: string; type: string; context_window: number; max_output: number; capabilities: string[] | null; visible_tiers: string[] | null; };
   provider_account_id: number;
   sell_markup: string;
 }
