@@ -1,6 +1,6 @@
 import { useMemo, useState, type ComponentType } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Activity, AlertTriangle, ArrowRight, BadgeDollarSign, CircleCheck, PackagePlus, PartyPopper, Scale, TicketX } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BadgeDollarSign, CircleCheck, Link2, PackagePlus, PartyPopper, Radar, Scale, TicketX } from 'lucide-react';
 import { listAuditLogs } from '../api/audit';
 import { getStatsOverview, getUsage } from '../api/stats';
 import { Card, DataState, KpiStrip, PageHeader, SectionTitle, SegmentedToggle, StatCard } from '../components/ui';
@@ -79,6 +79,15 @@ function TodoStrip() {
           alert: c.price_changes_blocked > 0,
         },
         { to: '/pricing/listings', icon: PackagePlus, text: `${c.listings_pending} 个新模型待上架`, n: c.listings_pending, alert: false },
+        { to: '/pricing/offers', icon: Radar, text: `${c.offers_new ?? 0} 条优惠情报待确认`, n: c.offers_new ?? 0, alert: false },
+        { to: '/catalog/model-aliases', icon: Link2, text: `${c.aliases_suggested ?? 0} 个榜单模型映射待确认`, n: c.aliases_suggested ?? 0, alert: false },
+        {
+          to: '/pricing/sources?enabled=failing',
+          icon: AlertTriangle,
+          text: `${c.data_sources_failing ?? 0} 个数据源连续失败`,
+          n: c.data_sources_failing ?? 0,
+          alert: true,
+        },
         { to: '/channels?margin=negative', icon: AlertTriangle, text: `${c.channels_negative_margin} 个渠道负毛利`, n: c.channels_negative_margin, alert: true },
         { to: '/channels?missing_cost=true', icon: TicketX, text: `${c.channels_missing_cost} 个渠道未设成本价`, n: c.channels_missing_cost, alert: false },
         {

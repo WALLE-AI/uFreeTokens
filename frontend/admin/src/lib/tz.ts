@@ -60,3 +60,21 @@ export function toApiTime(v: string | undefined, end = false): string | undefine
   const t = startOfZonedDay(v) + (end ? 86400_000 : 0);
   return new Date(t).toISOString();
 }
+
+// isoToZonedInput / zonedInputToISO：<input type="datetime-local"> 的值按 ADMIN_TZ 解释（而不是浏览器时区）。
+export function isoToZonedInput(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const p = zonedParts(t);
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+// 空串返回 undefined；格式不对返回 null
+export function zonedInputToISO(v: string): string | null | undefined {
+  if (!v.trim()) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return null;
+  const approx = Date.parse(`${v}:00Z`);
+  const t = Date.parse(`${v}:00${zoneOffset(approx)}`);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}

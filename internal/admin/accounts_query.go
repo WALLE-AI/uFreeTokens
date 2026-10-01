@@ -18,6 +18,7 @@ type AccountSummary struct {
 	Status            string     `json:"status"`
 	Tier              string     `json:"tier"`
 	CreditLimit       int64      `json:"credit_limit_micro"`
+	ExcludeFromPublic bool       `json:"exclude_from_public_stats"`
 	CreatedAt         time.Time  `json:"created_at"`
 	OwnerEmail        *string    `json:"owner_email"`
 	CashBalanceMicro  int64      `json:"cash_balance_micro"`
@@ -66,7 +67,7 @@ func (s *Service) ListAccounts(ctx context.Context, in ListAccountsInput) (*Page
 		return nil, fmt.Errorf("admin: count accounts: %w", err)
 	}
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT a.id, a.type, a.name, a.status, a.tier, a.credit_limit, a.created_at,
+		`SELECT a.id, a.type, a.name, a.status, a.tier, a.credit_limit, a.exclude_from_public_stats, a.created_at,
 		   (SELECT u.email::text FROM account_members m JOIN users u ON u.id = m.user_id
 		      WHERE m.account_id = a.id AND m.role = 'owner' ORDER BY m.created_at LIMIT 1),
 		   COALESCE(w.cash_balance, 0), COALESCE(w.bonus_balance, 0), COALESCE(w.frozen, 0),
@@ -82,7 +83,7 @@ func (s *Service) ListAccounts(ctx context.Context, in ListAccountsInput) (*Page
 	out := []AccountSummary{}
 	for rows.Next() {
 		var a AccountSummary
-		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Status, &a.Tier, &a.CreditLimit, &a.CreatedAt, &a.OwnerEmail,
+		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Status, &a.Tier, &a.CreditLimit, &a.ExcludeFromPublic, &a.CreatedAt, &a.OwnerEmail,
 			&a.CashBalanceMicro, &a.BonusBalanceMicro, &a.FrozenMicro, &a.ActiveKeyCount, &a.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("admin: scan account: %w", err)
 		}

@@ -4,14 +4,15 @@ import { useEffect, useState } from 'react';
 import { useLocation, useParams } from 'react-router';
 import { getAccount, updateAccount } from '../../api/accounts';
 import { AuditTimeline } from '../../components/audit/AuditTimeline';
-import { AnchorNav, Button, ConfirmDialog, DataState, Money, SecretReveal, StatusBadge, useToast } from '../../components/ui';
+import { AnchorNav, Button, ConfirmDialog, DataState, Money, SecretReveal, StatusBadge, Switch, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { formatDateTime, formatRelative } from '../../lib/time';
 import type { AccountStatus, ApiKeyCreated } from '../../types';
 import { AdjustWalletModal, CreateApiKeyModal, EditAccountModal, GrantCreditModal } from './modals';
 import { ApiKeysSection, GrantsSection, LedgerSection, MembersTable, UsageSection } from './sections';
-import { ACCOUNT_TYPE_LABELS } from './shared';
+import { ACCOUNT_TYPE_LABELS, PUBLIC_STATS_HELP, PublicStatsExcludedBadge } from './shared';
 import { Can } from '../../components/ui/Can';
+import { useCan } from '../../api/auth';
 
 // 账户详情（UI_DESIGN.md §3.2 详情模板 + §5.5 资金操作）。
 
@@ -63,6 +64,8 @@ export default function AccountDetailPage() {
   const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const [statusTarget, setStatusTarget] = useState<AccountStatus | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
+  const [publicStatsBusy, setPublicStatsBusy] = useState(false);
+  const canWrite = useCan('account:write');
 
   // 从 /api-keys 跳转过来时带 #keys：数据加载完后滚动到对应段落
   useEffect(() => {
@@ -87,6 +90,21 @@ export default function AccountDetailPage() {
     }
   };
 
+  // 公开榜单开关：走账户 PATCH（If-Match 由 api/client 按详情 GET 的 ETag 自动带上）
+  const setExcludePublic = async (v: boolean) => {
+    setPublicStatsBusy(true);
+    try {
+      await updateAccount(id, { exclude_from_public_stats: v });
+      toast.success(v ? '已设为不计入公开榜单' : '已恢复计入公开榜单');
+      res.reload();
+      bump();
+    } catch (err) {
+      toast.error('修改失败', describeError(err));
+    } finally {
+      setPublicStatsBusy(false);
+    }
+  };
+
   return (
     <DataState loading={res.loading} error={res.error} onRetry={res.reload} skeleton="cards">
       {res.data &&
@@ -108,7 +126,12 @@ export default function AccountDetailPage() {
                     {a.name} <span className="text-gray-400 font-mono font-normal">#{a.id}</span>
                   </span>
                 }
-                badges={<StatusBadge kind="account" value={a.status} />}
+                badges={
+                  <>
+                    <StatusBadge kind="account" value={a.status} />
+                    {a.exclude_from_public_stats && <PublicStatsExcludedBadge />}
+                  </>
+                }
                 actions={
                   <>
                     <Can perm="wallet:adjust"><Button onClick={() => setGranting(true)}>发放赠送</Button></Can>
@@ -162,6 +185,21 @@ export default function AccountDetailPage() {
                           { label: '授信额度', value: <Money micro={a.credit_limit_micro} /> },
                         ]}
                       />
+                      <div className="mt-4 pt-4 border-t border-gray-100 flex items-start gap-3">
+                        <Switch
+                          checked={a.exclude_from_public_stats}
+                          onChange={(v) => void setExcludePublic(v)}
+                          disabled={!canWrite || publicStatsBusy}
+                          ariaLabel="不计入公开榜单"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-gray-900">
+                            不计入公开榜单
+                            {a.exclude_from_public_stats && <span className="ml-1.5 text-[11px] font-normal text-blue-700">已开启</span>}
+                          </div>
+                          <p className="text-[11px] text-gray-400 mt-0.5">{PUBLIC_STATS_HELP}</p>
+                        </div>
+                      </div>
                     </div>
                     <div className="text-xs font-medium text-gray-900 mb-2">成员</div>
                     <MembersTable accountId={a.id} members={members} onChanged={bump} />

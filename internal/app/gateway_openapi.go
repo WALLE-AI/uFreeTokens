@@ -97,12 +97,18 @@ var gatewayErrorCodes = []gatewayErrorCode{
 	{"no_available_channel", http.StatusServiceUnavailable, true, "Upstream request failed.", l10n{
 		"No upstream channel can serve the request right now: all channels are unhealthy or cooling down, or none supports the requested capability (streaming, tools, JSON schema) or context length. Not charged.",
 		"当前没有可用的上游渠道：所有渠道都不健康或在冷却中，或没有渠道支持所需能力（流式、工具调用、JSON Schema）或上下文长度。不计费。"}},
+	{"not_found", http.StatusNotFound, false, "Benchmark not found.", l10n{
+		"The requested resource does not exist or is not published (public benchmark endpoints).",
+		"请求的资源不存在或未发布（公开基准测试接口）。"}},
 	{"not_implemented", http.StatusServiceUnavailable, false, "Not implemented.", l10n{
 		"The endpoint exists but is not implemented yet.",
 		"该接口已预留路径但尚未实现。"}},
 	{"rate_limit_exceeded", http.StatusTooManyRequests, true, "Too many requests.", l10n{
-		"Rate limit exceeded: requests-per-minute or tokens-per-minute limit of the API key (relay endpoints), or the per-IP limit of `/v1/catalog`. Wait for `Retry-After` seconds when present.",
-		"触发限流：API Key 的每分钟请求数或每分钟 token 数上限（转发类接口），或 `/v1/catalog` 的按 IP 限流。有 `Retry-After` 头时按其秒数等待后重试。"}},
+		"Rate limit exceeded: requests-per-minute or tokens-per-minute limit of the API key (relay endpoints), or the per-IP limit of the public endpoints (`/v1/catalog`, `/v1/rankings/*`, `/v1/benchmarks`). Wait for `Retry-After` seconds when present.",
+		"触发限流：API Key 的每分钟请求数或每分钟 token 数上限（转发类接口），或公开接口（`/v1/catalog`、`/v1/rankings/*`、`/v1/benchmarks`）的按 IP 限流。有 `Retry-After` 头时按其秒数等待后重试。"}},
+	{"service_unavailable", http.StatusServiceUnavailable, true, "Public rankings are temporarily unavailable.", l10n{
+		"The public rankings are temporarily switched off by the operator (e.g. while a statistics issue is fixed). Retry later.",
+		"公开榜单被运营临时下线（如修正统计口径期间）。请稍后重试。"}},
 	{"upstream_error", http.StatusBadGateway, true, "Upstream request failed.", l10n{
 		"The upstream provider failed after automatic retries (connection error, 5xx, provider-side rate limit or key problem), or returned a response the gateway could not read. Not charged.",
 		"自动重试后上游仍然失败（连接错误、5xx、上游限流或上游 Key 问题），或上游响应无法读取/解析。不计费。"}},
@@ -452,7 +458,7 @@ func gatewayOperations() ([]gatewayOperation, error) {
 			errors: []string{"not_implemented"}}
 	}
 
-	return []gatewayOperation{
+	ops := []gatewayOperation{
 		{
 			method: http.MethodGet, path: "/v1/catalog", opID: "getCatalog", tag: "Catalog", auth: "none",
 			summary: l10n{"Get the public model catalog", "获取公开模型目录"},
@@ -538,7 +544,12 @@ func gatewayOperations() ([]gatewayOperation, error) {
 		notImpl(http.MethodPost, "/v1/images/generations", "createImage", "images.generations", l10n{"Generate images (not implemented)", "图像生成（未实现）"}),
 		notImpl(http.MethodPost, "/v1/audio/transcriptions", "createTranscription", "audio.transcriptions", l10n{"Transcribe audio (not implemented)", "语音转写（未实现）"}),
 		notImpl(http.MethodPost, "/v1/audio/speech", "createSpeech", "audio.speech", l10n{"Generate speech (not implemented)", "语音合成（未实现）"}),
-	}, nil
+	}
+	pub, err := publicOperations()
+	if err != nil {
+		return nil, err
+	}
+	return append(ops, pub...), nil
 }
 
 // ---------- 错误示例 ----------
@@ -767,6 +778,7 @@ func buildGatewayOpenAPI() (map[string]any, error) {
 		{"Chat", l10n{"OpenAI-compatible chat completions.", "OpenAI 兼容的对话补全。"}},
 		{"Embeddings", l10n{"OpenAI-compatible embeddings.", "OpenAI 兼容的向量嵌入。"}},
 		{"Anthropic", l10n{"Anthropic Messages API compatibility.", "Anthropic Messages API 兼容接口。"}},
+		publicTagDocs[0], publicTagDocs[1],
 		{"Not implemented", l10n{"Reserved endpoints that return `503 not_implemented`.", "预留接口，返回 `503 not_implemented`。"}},
 	}
 	tags := make([]any, 0, len(tagDocs))

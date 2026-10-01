@@ -30,6 +30,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 	"github.com/WALLE-AI/uFreeTokens/internal/store"
@@ -137,9 +138,9 @@ func run() error {
 	requireIfMatch := os.Getenv("UFT_ADMIN_REQUIRE_IF_MATCH") == "true"
 
 	router := app.NewAdminRouter(app.AdminDeps{
-		Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, Auth: authSvc,
+		Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, Offers: offers.NewStore(pg), Auth: authSvc,
 		AdminToken: adminToken, TrustedProxies: trustedProxies, TestWebDir: testWebDir,
-		Redis: rdb, StatsTZ: statsTZ, RequireIfMatch: requireIfMatch,
+		Redis: rdb, StatsTZ: statsTZ, RequireIfMatch: requireIfMatch, PublicMinAccounts: cfg.Public.RankingsMinAccounts,
 	})
 
 	addr := ":8081"

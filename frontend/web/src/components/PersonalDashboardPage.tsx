@@ -32,7 +32,7 @@ import {
   ExternalLink,
   X
 } from 'lucide-react';
-import { useApiKey, useConsoleUser, authStore } from '../api/auth';
+import { useApiKey, useConsoleUser, authStore, consoleAuthStore } from '../api/auth';
 import { getUsage, microToDisplay, UsageSnapshot } from '../api/usage';
 import {
   listKeys,
@@ -41,6 +41,7 @@ import {
   getWallet as getConsoleWallet,
   getUsageInterval,
   getLogs,
+  setPublicStatsOptOut,
   ConsoleApiKey,
   ConsoleWallet,
   UsageIntervalRow,
@@ -1132,6 +1133,8 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
               </div>
             )}
           </div>
+        ) : activeTab === 'privacy' ? (
+          <PrivacySettings onLogin={() => setAuthModal('login')} />
         ) : (
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight mb-2">
@@ -1286,3 +1289,68 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
     </div>
   );
 };
+
+// PrivacySettings 是"数据隐私"tab：公开排行榜（/rankings）以匿名、聚合形式展示各模型、厂商、
+// 应用的 token 用量，账户可以在这里选择不计入（docs/基准测试与排行榜数据服务技术方案.md §8.4）。
+function PrivacySettings({ onLogin }: { onLogin: () => void }) {
+  const { me } = useConsoleUser();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async () => {
+    if (!me) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const exclude = await setPublicStatsOptOut(!me.excludeFromPublicStats);
+      consoleAuthStore.setMe({ ...me, excludeFromPublicStats: exclude });
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 403 ? '只有账户所有者或管理员可以修改此设置。' : '保存失败，请稍后重试。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <h1 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight mb-2">数据隐私</h1>
+      <p className="text-xs text-gray-500 mb-6">管理您的账户数据如何参与平台的公开统计。</p>
+      <div className="bg-white border border-gray-200 rounded-xl p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div className="text-xs text-gray-600 leading-relaxed">
+            <div className="text-sm font-semibold text-gray-900 mb-1">不计入公开排行榜</div>
+            平台会以匿名、聚合的形式公开模型、厂商与应用的 token 用量排名：只统计成功请求的 token 数，不包含请求内容；
+            独立账户数不足 3 个的条目不会单独展示，单个账户最多计入某模型当期用量的 20%。开启后，您账户的调用将不再计入
+            公开排行榜（今天与昨天的数据约 30 分钟内更新，历史数据在次日重建后更新）。
+          </div>
+          {me ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={me.excludeFromPublicStats}
+              disabled={saving}
+              onClick={toggle}
+              className={`relative shrink-0 w-10 h-6 rounded-full transition-colors cursor-pointer disabled:opacity-60 ${
+                me.excludeFromPublicStats ? 'bg-[#7C3AED]' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                  me.excludeFromPublicStats ? 'translate-x-4' : ''
+                }`}
+              />
+            </button>
+          ) : (
+            <button
+              onClick={onLogin}
+              className="shrink-0 px-3.5 py-1.5 border border-gray-200 text-gray-700 rounded-lg text-xs cursor-pointer"
+            >
+              登录后设置
+            </button>
+          )}
+        </div>
+        {error && <div className="mt-3 text-xs text-red-600">{error}</div>}
+      </div>
+    </div>
+  );
+}

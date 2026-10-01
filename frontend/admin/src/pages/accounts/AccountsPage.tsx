@@ -8,7 +8,7 @@ import { useQueryParams } from '../../hooks/useQueryState';
 import { formatDateTime, formatRelative } from '../../lib/time';
 import type { AccountSummary } from '../../types';
 import { CreateAccountModal } from './modals';
-import { ACCOUNT_STATUS_OPTIONS, ACCOUNT_TYPE_LABELS, TIER_OPTIONS } from './shared';
+import { ACCOUNT_STATUS_OPTIONS, ACCOUNT_TYPE_LABELS, PublicStatsExcludedBadge, TIER_OPTIONS } from './shared';
 import { Can } from '../../components/ui/Can';
 
 // 账户列表（UI_DESIGN.md §5.5 / §3.1）：q 支持账户 ID、owner 邮箱、名称三种检索。
@@ -41,7 +41,10 @@ export default function AccountsPage() {
       sortable: true,
       render: (a) => (
         <div className="min-w-0">
-          <div className="text-gray-900 truncate max-w-64">{a.name}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-900 truncate max-w-64">{a.name}</span>
+            {a.exclude_from_public_stats && <PublicStatsExcludedBadge />}
+          </div>
           {a.owner_email && <div className="text-[11px] text-gray-400 font-mono truncate max-w-64">{a.owner_email}</div>}
         </div>
       ),

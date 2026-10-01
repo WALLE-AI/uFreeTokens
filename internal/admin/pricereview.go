@@ -539,6 +539,10 @@ type TodoCounts struct {
 	ChannelsNegativeMargin int `json:"channels_negative_margin"`
 	ChannelsMissingCost    int `json:"channels_missing_cost"`
 	ModelsMissingSellPrice int `json:"models_missing_sell_price"`
+	// 外部数据采集（docs/外部数据采集模块（价格情报与评测榜单）技术方案.md）
+	OffersNew          int `json:"offers_new"`
+	AliasesSuggested   int `json:"aliases_suggested"`
+	DataSourcesFailing int `json:"data_sources_failing"`
 }
 
 // GetTodoCounts 给侧栏徽标和工作台待办条用。前三项是走索引的轻量计数；
@@ -548,8 +552,11 @@ func (s *Service) GetTodoCounts(ctx context.Context) (*TodoCounts, error) {
 	if err := s.db(ctx).QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM price_change_requests WHERE status = 'pending'),
 		        (SELECT count(*) FROM price_change_requests WHERE status = 'blocked'),
-		        (SELECT count(*) FROM pending_model_listings WHERE status = 'pending')`,
-	).Scan(&t.PriceChangesPending, &t.PriceChangesBlocked, &t.ListingsPending); err != nil {
+		        (SELECT count(*) FROM pending_model_listings WHERE status = 'pending'),
+		        (SELECT count(*) FROM upstream_offers WHERE status = 'new'),
+		        (SELECT count(*) FROM model_aliases WHERE status = 'suggested'),
+		        (SELECT count(*) FROM price_sources WHERE enabled AND consecutive_failures > 0)`,
+	).Scan(&t.PriceChangesPending, &t.PriceChangesBlocked, &t.ListingsPending, &t.OffersNew, &t.AliasesSuggested, &t.DataSourcesFailing); err != nil {
 		return nil, fmt.Errorf("admin: query todo counts: %w", err)
 	}
 	// 负毛利 / 缺成本价 / 缺售价的计数直接用视图聚合（迁移 00023），不再加载全部渠道与模型。

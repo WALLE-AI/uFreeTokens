@@ -65,7 +65,8 @@
       "description": "运营录入的介绍文案（可能缺失）",
       "provider_display": "DeepSeek",
       "tags": ["reasoning", "coding"],
-      "scores": {"intelligenceIndex": 39.5, "codingIndex": 82, "agenticIndex": 68}
+      "scores": {"intelligence_index": 39.5, "coding_index": 82, "agentic_index": 68,
+                 "design_arena": {"code": 1320, "ui_component": 1335}}
     }
   ]
 }
@@ -73,8 +74,10 @@
 
 `display_name`/`description`/`provider_display`/`tags`/`scores`
 是运营通过 `cmd/admin` 的 `PUT /virtual-models/{id}/metadata` 录入的，
-可能整体缺失（没录入过）。`scores` 是自由格式 JSON，前端约定读取
-`intelligenceIndex`/`codingIndex`/`agenticIndex` 三个键。
+可能整体缺失（没录入过）。`scores` 的键名由后端按白名单校验（未知键写入时 400）：
+`intelligence_index`、`coding_index`、`agentic_index`，以及嵌套对象 `design_arena`
+（`code`、`ui_component`、`game_dev`、`data_viz`、`three_d`、`image`、`video`、`svg`），
+值都是数字。迁移 00026 已把历史数据里的 camelCase 键改写为 snake_case。
 
 ### `GET /v1/models` — 模型列表（需要 API Key）
 
@@ -133,6 +136,35 @@
 OpenAI 兼容格式；只支持文本内容块；只转发 `model`、`messages`、`system`、
 `max_tokens`、`temperature`、`top_p`、`stream`、`stop_sequences`，其余字段丢弃。
 
+### 公开排行榜与基准测试（免鉴权）
+
+`GET /v1/rankings/models|authors|speed|tools|multimodal|apps`、`GET /v1/benchmarks`、
+`GET /v1/benchmarks/{slug}`，完整字段见 `docs/gateway-openapi.json`（web 文档站的 API
+参考页由它渲染），口径见 `docs/基准测试与排行榜数据服务技术方案.md`。
+
+**鉴权**：无（带不带 API Key 返回相同内容）。**限流**：按 IP 60 次/分钟（这几个接口共享）。
+**缓存**：`Cache-Control: public, max-age=300`，进程内缓存 5 分钟。
+
+- 榜单参数：`period=day|week|month`（默认 `week`）= 截至昨天的最近 1/7/30 个完整自然日，
+  按 `Asia/Shanghai` 切日；`limit=1..100`（默认 20）；`/v1/rankings/models` 另有
+  `series=none|day`。数据由 worker 每 30 分钟从 `usage_hourly` 物化（`public_*_daily` 表）。
+- 口径：只统计成功请求的 input + output token（output 已含 reasoning）；排除
+  `accounts.exclude_from_public_stats` 的账户；统计期内独立账户数 < 3 的条目归入 `others`；
+  单账户最多计入某条目当期原始总量的 20%；只列出公开目录可见的模型。速度榜按成功流式
+  请求的单请求吞吐（输出 token ÷ 生成耗时）取中位数排名（另给加权平均），模型需 ≥ 10 个样本。应用榜只统计声明了 `X-Title` 的请求。
+- 配置（环境变量）：`UFT_PUBLIC_RANKINGS_ENABLED=false` 时 `/v1/rankings/*` 返回
+  `503 service_unavailable`；`UFT_PUBLIC_RANKINGS_SHOW_ABSOLUTE=true` 才在响应里带绝对 token
+  数（`tokens`/`total_tokens`），默认只有份额与排名；`UFT_PUBLIC_RANKINGS_MIN_ACCOUNTS` 改隐私阈值。
+- 基准测试只返回 `status=published` 的基准与其最新一次已发布的 run；未发布或不存在的 slug
+  返回 `404 not_found`。
+
+### 应用归因请求头
+
+`/v1/chat/completions`、`/v1/messages`、`/v1/embeddings` 可以带 `X-Title: <应用名>`
+（去掉控制字符、合并空白后截断到 64 个字符）和可选的 `HTTP-Referer: <应用地址>`（只保留
+`scheme://host`），写入 `request_logs.app_name` / `app_url`，用于公开的"热门应用"榜。
+只带 `HTTP-Referer` 不带 `X-Title` 的请求不算声明了应用。运营可在后台屏蔽或合并冒用的应用名。
+
 ### 尚未实现（返回 `503 not_implemented`）
 
 `POST /v1/completions`、`POST /v1/images/generations`、
@@ -175,8 +207,17 @@ OpenAI 兼容格式；只支持文本内容块；只转发 `model`、`messages`�
 **鉴权**：会话。
 
 ```json
-{"user_id": 1, "email": "you@example.com", "email_verified": false, "account_id": 1, "account_tier": "free"}
+{"user_id": 1, "email": "you@example.com", "email_verified": false, "account_id": 1, "account_tier": "free",
+ "exclude_from_public_stats": false}
 ```
+
+### `PUT /console/settings/public-stats` — 不计入公开排行榜
+
+**鉴权**：会话 + `X-UFT-CSRF: 1`；只有账户的 owner / admin 成员能改（否则 `403 permission_denied`）。
+
+请求：`{"exclude_from_public_stats": true}`。成功：`200 {"exclude_from_public_stats": true}`。
+与运营后台 `PATCH /accounts/{id}` 的同名字段是同一个值；今天与昨天的公开榜单约 30 分钟内
+生效，历史数据在 worker 每天一次的重建后生效。
 
 ### `GET /console/api-keys` — 列出自己的 API Key
 

@@ -32,7 +32,7 @@ import { ModelCard } from './components/ModelCard';
 import { ModelGridCard } from './components/ModelGridCard';
 import { ModelTable } from './components/ModelTable';
 import { ModelDetailPage } from './components/ModelDetailPage';
-import { BenchmarksPage } from './components/BenchmarksPage';
+import { BenchmarksPage, BenchmarkDetailPage } from './components/BenchmarksPage';
 import { RankingsPage } from './components/RankingsPage';
 import { HarnessPage } from './components/HarnessPage';
 import { PersonalDashboardPage } from './components/PersonalDashboardPage';
@@ -982,19 +982,18 @@ export default function App() {
         />
         <Route
           path="/benchmarks"
-          element={
-            <BenchmarksPage
-              allModels={INITIAL_MODELS}
-              onSelectModel={openModel}
-              onNavigateToModels={() => navigate('/models')}
-            />
-          }
+          element={<BenchmarksPage allModels={baseModels} onNavigateToModels={() => navigate('/models')} />}
+        />
+        {/* 基准详情是独立路由（技术方案 §3.6），链接可直接分享、刷新可还原 */}
+        <Route
+          path="/benchmarks/:slug"
+          element={<BenchmarkDetailPage allModels={baseModels} onNavigateToModels={() => navigate('/models')} />}
         />
         <Route
           path="/rankings"
           element={
             <RankingsPage
-              allModels={INITIAL_MODELS}
+              allModels={baseModels}
               onSelectModel={openModel}
               onNavigateToBenchmarks={() => navigate('/benchmarks')}
               onNavigateToModels={() => navigate('/models')}
@@ -1103,7 +1102,8 @@ interface ModelDetailRouteProps {
 }
 
 // /models/<id>：按 URL 里的模型 ID 查找模型。先查真实目录，再回落到
-// INITIAL_MODELS（基准测试 / 排行榜页目前仍用 mock 数据，点进来的模型不一定在目录里）。
+// INITIAL_MODELS（目录接口不可用时的离线兜底）。基准测试页只对 model 非空
+// 的结果生成链接，这些 ID 都来自公开目录。
 function ModelDetailRoute({
   allModels,
   catalogSettled,

@@ -19,13 +19,15 @@ import (
 var validAccountTypes = map[string]bool{"personal": true, "organization": true}
 
 type Account struct {
-	ID          int64     `json:"id"`
-	Type        string    `json:"type"`
-	Name        string    `json:"name"`
-	Status      string    `json:"status"`
-	Tier        string    `json:"tier"`
-	CreditLimit int64     `json:"credit_limit_micro"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          int64  `json:"id"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Tier        string `json:"tier"`
+	CreditLimit int64  `json:"credit_limit_micro"`
+	// ExcludeFromPublicStats：内部测试、压测、评测账户的流量不计入公开排行榜。
+	ExcludeFromPublicStats bool      `json:"exclude_from_public_stats"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 type WalletSummary struct {
@@ -39,6 +41,8 @@ type CreateAccountInput struct {
 	Name        string `json:"name"`
 	Tier        string `json:"tier"`               // 空则默认 "free"
 	CreditLimit int64  `json:"credit_limit_micro"` // 企业授信额度（微元），可为 0
+	// ExcludeFromPublicStats 为 true 时该账户的流量不计入公开排行榜（内部/压测/评测账户）。
+	ExcludeFromPublicStats bool `json:"exclude_from_public_stats"`
 }
 
 // CreateAccount 建一个账户并原子地给它初始化一个空钱包（技术方案 §6.1、§6.2）。
@@ -85,11 +89,12 @@ func CreateAccountTx(ctx context.Context, tx pgx.Tx, in CreateAccountInput) (*Ac
 		return nil, errors.New("admin: credit_limit must not be negative")
 	}
 
-	acct := &Account{Type: in.Type, Name: in.Name, Status: "active", Tier: in.Tier, CreditLimit: in.CreditLimit}
+	acct := &Account{Type: in.Type, Name: in.Name, Status: "active", Tier: in.Tier, CreditLimit: in.CreditLimit,
+		ExcludeFromPublicStats: in.ExcludeFromPublicStats}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO accounts (type, name, status, tier, credit_limit) VALUES ($1, $2, 'active', $3, $4)
+		`INSERT INTO accounts (type, name, status, tier, credit_limit, exclude_from_public_stats) VALUES ($1, $2, 'active', $3, $4, $5)
 		 RETURNING id, created_at`,
-		in.Type, in.Name, in.Tier, in.CreditLimit,
+		in.Type, in.Name, in.Tier, in.CreditLimit, in.ExcludeFromPublicStats,
 	).Scan(&acct.ID, &acct.CreatedAt); err != nil {
 		return nil, fmt.Errorf("admin: insert account: %w", err)
 	}
@@ -111,12 +116,12 @@ func (s *Service) GetAccount(ctx context.Context, accountID int64) (*Account, *W
 	acct := &Account{ID: accountID}
 	wallet := &WalletSummary{}
 	err := s.db(ctx).QueryRow(ctx,
-		`SELECT a.type, a.name, a.status, a.tier, a.credit_limit, a.created_at,
+		`SELECT a.type, a.name, a.status, a.tier, a.credit_limit, a.exclude_from_public_stats, a.created_at,
 		        w.cash_balance, w.bonus_balance, w.frozen
 		 FROM accounts a JOIN wallets w ON w.account_id = a.id
 		 WHERE a.id = $1`,
 		accountID,
-	).Scan(&acct.Type, &acct.Name, &acct.Status, &acct.Tier, &acct.CreditLimit, &acct.CreatedAt,
+	).Scan(&acct.Type, &acct.Name, &acct.Status, &acct.Tier, &acct.CreditLimit, &acct.ExcludeFromPublicStats, &acct.CreatedAt,
 		&wallet.CashBalance, &wallet.BonusBalance, &wallet.Frozen)
 	if err != nil {
 		if isNoRows(err) {

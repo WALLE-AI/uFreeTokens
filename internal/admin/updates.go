@@ -54,7 +54,7 @@ func (s *Service) RowVersion(ctx context.Context, table string, id int64) (int, 
 // versionedTables 是带 version 列（迁移 00018）、通过 patchRow 编辑的表。
 var versionedTables = map[string]bool{
 	"providers": true, "provider_accounts": true, "provider_keys": true, "virtual_models": true,
-	"channels": true, "accounts": true, "price_sources": true, "api_keys": true,
+	"channels": true, "accounts": true, "price_sources": true, "api_keys": true, "benchmarks": true,
 }
 
 type setClause struct {
@@ -478,6 +478,9 @@ type UpdateAccountInput struct {
 	Status      *string `json:"status"`
 	Tier        *string `json:"tier"`
 	CreditLimit *int64  `json:"credit_limit_micro"`
+	// ExcludeFromPublicStats 只影响公开排行榜：worker 每天重建一次全部历史物化数据，
+	// 当天与前一天每 30 分钟重算，改动最迟一天内反映到全部历史。
+	ExcludeFromPublicStats *bool `json:"exclude_from_public_stats"`
 }
 
 func (s *Service) UpdateAccount(ctx context.Context, id int64, in UpdateAccountInput) (*Change, error) {
@@ -506,22 +509,64 @@ func (s *Service) UpdateAccount(ctx context.Context, id int64, in UpdateAccountI
 		}
 		sets = append(sets, setClause{"credit_limit", *in.CreditLimit})
 	}
+	if in.ExcludeFromPublicStats != nil {
+		sets = append(sets, setClause{"exclude_from_public_stats", *in.ExcludeFromPublicStats})
+	}
 	return s.patchRow(ctx, "accounts", id, sets, ErrAccountNotFound, nil)
 }
 
 // ---------- price sources ----------
 
 type UpdatePriceSourceInput struct {
-	Enabled  *bool            `json:"enabled"`
-	URL      *string          `json:"url"` // 空字符串清除
-	Schedule *string          `json:"schedule"`
-	Config   *json.RawMessage `json:"config"`
+	Enabled       *bool            `json:"enabled"`
+	URL           *string          `json:"url"` // 空字符串清除
+	Schedule      *string          `json:"schedule"`
+	Config        *json.RawMessage `json:"config"`
+	Name          *string          `json:"name"`
+	License       *string          `json:"license"`     // 空字符串清除
+	Attribution   *string          `json:"attribution"` // 空字符串清除
+	PublicDisplay *bool            `json:"public_display"`
+	AutoPublish   *bool            `json:"auto_publish"`
+	// ProviderID：0 = 解除绑定。绑定后价格观测会按该 provider 的渠道走调价流程。
+	ProviderID *int64 `json:"provider_id"`
 }
 
 func (s *Service) UpdatePriceSource(ctx context.Context, id int64, in UpdatePriceSourceInput) (*Change, error) {
 	var sets []setClause
 	if in.Enabled != nil {
 		sets = append(sets, setClause{"enabled", *in.Enabled})
+		if *in.Enabled {
+			// 重新启用时让调度器下一轮就接手（schedule 为空的来源仍只能手工触发）。
+			sets = append(sets, setClause{"next_run_at", time.Now()})
+		}
+	}
+	if in.Name != nil {
+		if strings.TrimSpace(*in.Name) == "" {
+			return nil, invalid("name must not be empty")
+		}
+		sets = append(sets, setClause{"name", strings.TrimSpace(*in.Name)})
+	}
+	if in.License != nil {
+		sets = append(sets, setClause{"license", trimmedOrNil(in.License)})
+	}
+	if in.Attribution != nil {
+		sets = append(sets, setClause{"attribution", trimmedOrNil(in.Attribution)})
+	}
+	if in.PublicDisplay != nil {
+		sets = append(sets, setClause{"public_display", *in.PublicDisplay})
+	}
+	if in.AutoPublish != nil {
+		sets = append(sets, setClause{"auto_publish", *in.AutoPublish})
+	}
+	if in.ProviderID != nil {
+		var v any
+		if *in.ProviderID != 0 {
+			if _, err := s.GetProvider(ctx, *in.ProviderID); err != nil {
+				return nil, err
+			}
+			v = *in.ProviderID
+		}
+		sets = append(sets, setClause{"provider_id", v})
 	}
 	if in.URL != nil {
 		var u any
@@ -540,6 +585,14 @@ func (s *Service) UpdatePriceSource(ctx context.Context, id int64, in UpdatePric
 			return nil, invalid("schedule must be a 5-field cron expression or @hourly/@daily/@every <duration>")
 		}
 		sets = append(sets, setClause{"schedule", sched})
+		if in.Enabled == nil || !*in.Enabled { // 启用分支已经设置过 next_run_at
+			// 改了调度就按新调度重新排：有调度的下一轮立即跑一次，清空调度的不再自动跑。
+			var next any
+			if sched != "" {
+				next = time.Now()
+			}
+			sets = append(sets, setClause{"next_run_at", next})
+		}
 	}
 	if in.Config != nil {
 		var obj map[string]any
@@ -609,6 +662,18 @@ func findSecretLikeKey(v any) string {
 }
 
 var cronField = regexp.MustCompile(`^[0-9*/,\-]+$`)
+
+// ValidSchedule 供创建数据源时复用 validSchedule。
+func ValidSchedule(s string) bool { return validSchedule(strings.TrimSpace(s)) }
+
+// CheckSourceConfig 拒绝把凭据写进明文的数据源配置（方案 §2.1 S10）。需要密钥的来源用
+// "auth_header_env" 之类的键引用 worker 的环境变量名，而不是把值写进来。
+func CheckSourceConfig(obj map[string]any) error {
+	if key := findSecretLikeKey(obj); key != "" {
+		return invalid("config must not contain credentials (found key %q); price source configs are stored in plaintext", key)
+	}
+	return nil
+}
 
 // validSchedule 接受 5 段 cron 表达式、@hourly/@daily/@weekly，或 @every <Go duration>（至少 1 分钟）。
 func validSchedule(s string) bool {

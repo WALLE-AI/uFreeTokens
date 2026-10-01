@@ -2,6 +2,7 @@ import React from 'react';
 import { X, Check, Minus, Play, Trash2, Scale } from 'lucide-react';
 import { Model } from '../types';
 import { ProviderIcon } from './ProviderIcon';
+import { EXTERNAL_SCORE_FIELDS, EXTERNAL_SCORE_META, formatExternalScore } from '../data/models';
 
 interface ModelCompareModalProps {
   models: Model[];
@@ -207,6 +208,39 @@ export const ModelCompareModal: React.FC<ModelCompareModalProps> = ({
                       </td>
                     ))}
                   </tr>
+
+                  {/* 公开评测榜单成绩：只列出参与对比的模型里至少有一个有成绩的项，
+                      同一行最好成绩高亮（这些指标都是越高越好）。 */}
+                  {EXTERNAL_SCORE_FIELDS.filter((key) => models.some((m) => m.scores[key] !== undefined)).map((key) => {
+                    const meta = EXTERNAL_SCORE_META[key];
+                    const values = models.map((m) => m.scores[key]).filter((v): v is number => v !== undefined);
+                    const best = values.length > 1 ? Math.max(...values) : undefined;
+                    return (
+                      <tr key={key}>
+                        <td className="py-2.5 px-3 font-medium text-gray-500 bg-gray-50/50" title={`数据来源：${meta.source}`}>
+                          {meta.label}
+                          <div className="text-[9px] font-normal text-gray-400">{meta.source}</div>
+                        </td>
+                        {models.map((m) => {
+                          const v = m.scores[key];
+                          return (
+                            <td
+                              key={m.id}
+                              className={`py-2.5 px-3 font-mono ${
+                                v === undefined
+                                  ? 'text-gray-300'
+                                  : v === best
+                                    ? 'font-bold text-emerald-700'
+                                    : 'font-medium text-gray-900'
+                              }`}
+                            >
+                              {formatExternalScore(key, v)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
 
                   {/* Tool calling */}
                   <tr>

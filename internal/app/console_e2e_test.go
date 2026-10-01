@@ -393,7 +393,9 @@ func TestConsole_UsageInterval_GroupsByDayAndModel(t *testing.T) {
 	seedRequestLog(t, pool, accountID, apiKeyID, "req-"+suffix+"-2", today.Add(time.Hour), modelA, 200, 100, 300)
 	seedRequestLog(t, pool, accountID, apiKeyID, "req-"+suffix+"-3", yesterday, modelB, 10, 5, 15)
 
-	resp, body := c.do(http.MethodGet, "/console/usage?group_by=day", nil, false)
+	// 显式给出区间：默认区间是"本月至今"，每月 1 号时"昨天"落在上个月，会被排除。
+	rangeQ := "&from=" + yesterday.Format("2006-01-02") + "&to=" + today.Format("2006-01-02")
+	resp, body := c.do(http.MethodGet, "/console/usage?group_by=day"+rangeQ, nil, false)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("usage?group_by=day status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -421,7 +423,7 @@ func TestConsole_UsageInterval_GroupsByDayAndModel(t *testing.T) {
 		t.Errorf("yesterday's row = %+v, want requests=1 charged=15", gotYesterday)
 	}
 
-	resp, body = c.do(http.MethodGet, "/console/usage?group_by=model", nil, false)
+	resp, body = c.do(http.MethodGet, "/console/usage?group_by=model"+rangeQ, nil, false)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("usage?group_by=model status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -530,5 +532,44 @@ func TestConsole_Logs_KeysetPaginationWindowAndCrossAccountIsolation(t *testing.
 	}
 	if len(crossOut.Data) != 0 {
 		t.Errorf("cross-account api_key_id filter returned %d entries, want 0: %+v", len(crossOut.Data), crossOut.Data)
+	}
+}
+
+// TestConsole_PublicStatsOptOut：用户在个人中心选择"不计入公开排行榜"（§8.4），
+// 写的是运营后台同一个 exclude_from_public_stats 字段；非 owner/admin 成员不能改。
+func TestConsole_PublicStatsOptOut(t *testing.T) {
+	gwURL, _, pool := buildConsoleGateway(t)
+	c := newConsoleClient(t, gwURL)
+	email := uniqueEmail(t)
+	if resp, body := c.register(email, "correct horse battery staple"); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d, body = %s", resp.StatusCode, body)
+	}
+	if resp, body := c.login(email, "correct horse battery staple"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", resp.StatusCode, body)
+	}
+	if resp, _ := c.do(http.MethodPut, "/console/settings/public-stats", map[string]any{"exclude_from_public_stats": true}, false); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("without CSRF header: status = %d, want 403", resp.StatusCode)
+	}
+	if resp, body := c.do(http.MethodPut, "/console/settings/public-stats", map[string]any{}, true); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("missing field: status = %d, body = %s", resp.StatusCode, body)
+	}
+	if resp, body := c.do(http.MethodPut, "/console/settings/public-stats", map[string]any{"exclude_from_public_stats": true}, true); resp.StatusCode != http.StatusOK {
+		t.Fatalf("opt out: status = %d, body = %s", resp.StatusCode, body)
+	}
+	resp, body := c.do(http.MethodGet, "/console/me", nil, false)
+	var me struct {
+		AccountID int64 `json:"account_id"`
+		Exclude   bool  `json:"exclude_from_public_stats"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &me) != nil || !me.Exclude {
+		t.Fatalf("me after opt-out: status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	// 降为 viewer 后不能再改。
+	if _, err := pool.Exec(context.Background(), `UPDATE account_members SET role = 'viewer' WHERE account_id = $1`, me.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	if resp, body := c.do(http.MethodPut, "/console/settings/public-stats", map[string]any{"exclude_from_public_stats": false}, true); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer: status = %d, body = %s", resp.StatusCode, body)
 	}
 }

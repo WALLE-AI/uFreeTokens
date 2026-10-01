@@ -60,6 +60,14 @@ type Record struct {
 	// 见 catalog.Channel 的注释）；渠道没参与实验时都为空字符串。
 	ExperimentKey string
 	VariantLabel  string
+	// 公开排行榜的采集字段（迁移 00027）。GenMillis 只有流式成功请求才有（最后一个 chunk −
+	// 第一个 chunk）；ToolCalls / ImageInputs 是响应里的工具调用条数、请求里的图片输入个数；
+	// AppName / AppURL 是调用方用 X-Title / HTTP-Referer 主动声明的应用（已截断、规范化）。
+	GenMillis   *int64
+	ToolCalls   int
+	ImageInputs int
+	AppName     string
+	AppURL      string
 }
 
 // Writer 是唯一的 request_logs 写入路径。
@@ -147,14 +155,16 @@ INSERT INTO request_logs (
     ttft_ms, latency_ms,
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens, usage_source,
     sell_price_book_id, promotion_ids, list_amount, charged_amount, cost_amount, client_ip, user_agent,
-    experiment_key, variant_label, virtual_model_id
+    experiment_key, variant_label, virtual_model_id,
+    gen_ms, tool_calls, image_inputs, app_name, app_url
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14,
     $15, $16,
     $17, $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27, $28, $29,
-    $30, $31, $32
+    $30, $31, $32,
+    $33, $34, $35, $36, $37
 )`
 
 func (w *Writer) insertBatch(records []Record) {
@@ -180,6 +190,7 @@ func (w *Writer) insertBatch(records []Record) {
 			r.Usage.InputTokens, r.Usage.CacheReadTokens, r.Usage.CacheWriteTokens, r.Usage.OutputTokens, r.Usage.ReasoningTokens, source,
 			r.SellBookID, r.PromotionIDs, r.ListAmount, r.ChargedAmount, r.CostAmount, nullIfEmpty(r.ClientIP), nullIfEmpty(r.UserAgent),
 			nullIfEmpty(r.ExperimentKey), nullIfEmpty(r.VariantLabel), nullIfZero64(r.VirtualModelID),
+			r.GenMillis, r.ToolCalls, r.ImageInputs, nullIfEmpty(r.AppName), nullIfEmpty(r.AppURL),
 		)
 	}
 

@@ -39,7 +39,11 @@ export const router = createBrowserRouter([
         lazy: page(() => import('./pages/pricing/PriceChangesPage')),
       },
       { path: 'pricing/listings', handle: crumb('待上架模型'), lazy: page(() => import('./pages/pricing/ListingsPage')) },
-      { path: 'pricing/sources', handle: crumb('价格源 & 汇率'), lazy: page(() => import('./pages/supply/SourcesPage')) },
+      { path: 'pricing/offers', handle: crumb('优惠雷达'), lazy: page(() => import('./pages/pricing/OffersPage')) },
+      { path: 'pricing/comparison', handle: crumb('比价看板'), lazy: page(() => import('./pages/pricing/PriceComparisonPage')) },
+      { path: 'catalog/model-aliases', handle: crumb('榜单模型映射'), lazy: page(() => import('./pages/catalog/ModelAliasesPage')) },
+      { path: 'public-apps', handle: crumb('公开应用榜'), lazy: page(() => import('./pages/catalog/PublicAppsPage')) },
+      { path: 'pricing/sources', handle: crumb('数据源 & 汇率'), lazy: page(() => import('./pages/supply/SourcesPage')) },
       {
         path: 'providers',
         handle: crumb('供应商'),
@@ -63,6 +67,21 @@ export const router = createBrowserRouter([
         children: [
           { index: true, lazy: page(() => import('./pages/catalog/ModelsPage')) },
           { path: ':id', handle: crumb((p) => `#${p.id}`), lazy: page(() => import('./pages/catalog/ModelDetailPage')) },
+        ],
+      },
+      {
+        path: 'benchmarks',
+        handle: crumb('基准测试'),
+        children: [
+          { index: true, lazy: page(() => import('./pages/catalog/BenchmarksPage')) },
+          {
+            path: ':id',
+            handle: crumb((p) => `#${p.id}`),
+            children: [
+              { index: true, lazy: page(() => import('./pages/catalog/BenchmarkDetailPage')) },
+              { path: 'runs/new', handle: crumb('录入 run'), lazy: page(() => import('./pages/catalog/BenchmarkRunNewPage')) },
+            ],
+          },
         ],
       },
       {

@@ -43,3 +43,9 @@ log:
 
 console:
   cookie_secure: false          # 本地 http 开发环境必须是 false；生产 HTTPS 环境应设为 true
+
+# 免鉴权公开数据接口 GET /v1/rankings/*、/v1/benchmarks（docs/基准测试与排行榜数据服务技术方案.md）
+public:
+  rankings_enabled: true        # false 时 /v1/rankings/* 返回 503，前端显示"数据维护中"
+  rankings_show_absolute: false # 是否公开绝对 token 数；默认只公开份额与排名
+  rankings_min_accounts: 3      # 统计期内独立账户数低于该值的模型/作者/应用不单独上榜

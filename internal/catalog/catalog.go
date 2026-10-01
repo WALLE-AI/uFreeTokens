@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,8 +37,9 @@ type VirtualModel struct {
 }
 
 // VirtualModelMetadata 对应 virtual_model_metadata 表的一行（运营录入，
-// 不是订阅上游拿到的数据）。Scores 的具体键名（如 intelligence_index）由
-// 运营和前端约定，后端不解析、不校验其内部结构，原样透传。
+// 不是订阅上游拿到的数据）。Scores 的键名由 admin.ValidateScores 在写入时
+// 按白名单校验（intelligence_index/coding_index/agentic_index/design_arena.*，
+// 见基准测试与排行榜方案 §3.1）；这里读出后原样透传。
 type VirtualModelMetadata struct {
 	DisplayName     string
 	Description     string
@@ -622,4 +624,15 @@ func (s *Store) loadLatestPriceBooks(ctx context.Context, kind, keyColumn string
 		return nil, err
 	}
 	return books, nil
+}
+
+// AuthorOf 返回虚拟模型名里 '/' 之前的部分，作为"模型作者/厂商"维度（公开排行榜的
+// 市场份额、作者归类，见基准测试与排行榜方案 §4.2）。没有 '/' 时整个名字就是作者。
+// 与 frontend/web 的 modelFromCatalog 推导 provider 的规则一致；Go 侧只在这里写一处，
+// 物化任务和公开接口共用。
+func AuthorOf(virtualModel string) string {
+	if i := strings.Index(virtualModel, "/"); i > 0 {
+		return virtualModel[:i]
+	}
+	return virtualModel
 }

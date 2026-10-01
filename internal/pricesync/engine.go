@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
 	"github.com/WALLE-AI/uFreeTokens/internal/store"
 )
@@ -40,16 +41,28 @@ func NewEngine(pool *pgxpool.Pool, publisher ListingPublisher) *Engine {
 var validSourceKinds = map[string]bool{"api": true, "html": true, "dataset": true, "billing": true, "manual": true}
 var validLevels = map[Level]bool{LevelL1: true, LevelL2: true, LevelL3: true, LevelL4: true, LevelL5: true}
 
-// CreateSourceInput 对应一条 price_sources（技术方案 §7.16.4）。调度（cron）、
-// 抓取配置（config JSONB）没有在这里暴露——本阶段没有调度器去读它们（见包级
-// 注释），先只暴露发起一次 Ingest 所必须的最小字段。
+// CreateSourceInput 对应一条 price_sources（技术方案 §7.16.4）。这张表现在是外部数据采集的
+// 通用"数据源"表（docs/外部数据采集模块（价格情报与评测榜单）技术方案.md §2）：domain 区分
+// 价格 / 优惠 / 评测榜单，Schedule 由 internal/datasync 的调度器读取。
 type CreateSourceInput struct {
 	ProviderID *int64 // nil = 不关联具体 provider（比如跨厂商的社区数据集）
 	Level      Level
 	Kind       string // api / html / dataset / billing / manual
-	Fetcher    string // 插件名，纯标识用途，不要求真的注册了同名 Fetcher 实现
+	Fetcher    string // 抓取器名；手工录入观测的来源用 manual
 	URL        string
+
+	Domain        string         // price（默认）/ offer / benchmark
+	Name          string         // 空 = fetcher 名
+	Schedule      string         // 空 = 不自动调度
+	Config        map[string]any // 抓取配置（明文，调用方负责拒绝凭据类键）
+	Enabled       *bool          // nil = true
+	License       string
+	Attribution   string
+	PublicDisplay bool
+	AutoPublish   bool
 }
+
+var validDomains = map[string]bool{"price": true, "offer": true, "benchmark": true}
 
 // CreateSource 注册一个价格来源。这是 Ingest 的前置步骤——price_observations
 // / price_change_requests 都要求一个真实存在的 source_id 才能落库审计。
@@ -63,10 +76,37 @@ func (e *Engine) CreateSource(ctx context.Context, in CreateSourceInput) (int64,
 	if in.Fetcher == "" {
 		return 0, errors.New("pricesync: fetcher name is required")
 	}
+	if in.Domain == "" {
+		in.Domain = "price"
+	}
+	if !validDomains[in.Domain] {
+		return 0, fmt.Errorf("pricesync: invalid domain %q", in.Domain)
+	}
+	if in.Name == "" {
+		in.Name = in.Fetcher
+	}
+	var next *time.Time
+	if in.Schedule != "" {
+		if _, ok, err := datasync.NextRun(in.Schedule, time.Now()); err != nil || !ok {
+			return 0, fmt.Errorf("pricesync: invalid schedule %q", in.Schedule)
+		}
+		now := time.Now()
+		next = &now
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	if in.Config == nil {
+		in.Config = map[string]any{}
+	}
 	var id int64
 	if err := e.db(ctx).QueryRow(ctx,
-		`INSERT INTO price_sources (provider_id, level, kind, fetcher, url) VALUES ($1, $2, $3, $4, NULLIF($5, '')) RETURNING id`,
-		in.ProviderID, string(in.Level), in.Kind, in.Fetcher, in.URL,
+		`INSERT INTO price_sources (provider_id, level, kind, fetcher, url, domain, name, schedule, config, enabled,
+			license, attribution, public_display, auto_publish, next_run_at)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, ''), $13, $14, $15) RETURNING id`,
+		in.ProviderID, string(in.Level), in.Kind, in.Fetcher, in.URL, in.Domain, in.Name, in.Schedule, in.Config, enabled,
+		in.License, in.Attribution, in.PublicDisplay, in.AutoPublish, next,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("pricesync: insert price_source: %w", err)
 	}

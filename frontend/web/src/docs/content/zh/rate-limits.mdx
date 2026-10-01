@@ -1,6 +1,6 @@
 ---
 title: 速率限制
-description: 网关对 API Key 的 RPM、TPM、并发限制，公开目录的按 IP 限流，以及触发限流时的响应与应对方式。
+description: 网关对 API Key 的 RPM、TPM、并发限制，公开接口（目录、排行榜、基准测试）的按 IP 限流，以及触发限流时的响应与应对方式。
 section: guides
 order: 70
 ---
@@ -13,6 +13,7 @@ order: 70
 | TPM（每分钟 token 数） | 单个 API Key | 同上 | `429 rate_limit_exceeded` |
 | 并发数 | 单个 API Key | 同上 | `429 concurrency_limit_exceeded` |
 | 每 IP 每分钟 60 次 | 客户端 IP | `GET /v1/catalog`（免鉴权） | `429 rate_limit_exceeded` |
+| 每 IP 每分钟 60 次（共享） | 客户端 IP | `GET /v1/rankings/models` 等全部排行榜接口、`GET /v1/benchmarks[/{slug}]`（免鉴权） | `429 rate_limit_exceeded` |
 
 `GET /v1/models` 和 `GET /v1/usage` 目前不做限流。
 
@@ -68,6 +69,7 @@ X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
 | 超过 TPM | `rate_limit_exceeded` | `Token-per-minute quota exceeded.` | 有，固定为 `60` |
 | 超过并发 | `concurrency_limit_exceeded` | `Too many concurrent requests.` | 无（名额何时释放取决于你其它请求何时结束） |
 | `/v1/catalog` 超过每 IP 每分钟 60 次 | `rate_limit_exceeded` | `Too many requests.` | 有 |
+| 排行榜 / 基准测试接口合计超过每 IP 每分钟 60 次 | `rate_limit_exceeded` | `Too many requests.` | 有 |
 
 网关不会返回 `X-RateLimit-*` 一类的剩余额度响应头。RPM 与 TPM 共用 `rate_limit_exceeded`，如需区分可参考 `message`，但程序逻辑上建议同样处理：等待 `Retry-After` 后重试。
 

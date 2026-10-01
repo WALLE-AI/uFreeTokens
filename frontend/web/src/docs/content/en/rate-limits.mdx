@@ -1,9 +1,9 @@
 ---
 title: Rate limits
-description: Per-API-key RPM, TPM and concurrency limits, the per-IP limit on the public catalog, and how to respond when you hit them.
+description: Per-API-key RPM, TPM and concurrency limits, the per-IP limits on the public endpoints (catalog, rankings, benchmarks), and how to respond when you hit them.
 section: guides
 order: 70
-translatedFrom: 99b73d37b18e
+translatedFrom: f9090b9201bc
 ---
 
 ## Overview
@@ -14,6 +14,7 @@ translatedFrom: 99b73d37b18e
 | TPM (tokens per minute) | Each API key | Same as above | `429 rate_limit_exceeded` |
 | Concurrency | Each API key | Same as above | `429 concurrency_limit_exceeded` |
 | 60 requests per minute per IP | Client IP | `GET /v1/catalog` (no auth) | `429 rate_limit_exceeded` |
+| 60 requests per minute per IP (shared) | Client IP | all ranking endpoints such as `GET /v1/rankings/models`, `GET /v1/benchmarks[/{slug}]` (no auth) | `429 rate_limit_exceeded` |
 
 `GET /v1/models` and `GET /v1/usage` are currently not rate limited.
 
@@ -69,6 +70,7 @@ X-Request-Id: 01J9Z3K5V8Q2M4N6P8R0S2T4V6
 | TPM exceeded | `rate_limit_exceeded` | `Token-per-minute quota exceeded.` | Yes — always `60` |
 | Concurrency exceeded | `concurrency_limit_exceeded` | `Too many concurrent requests.` | No (a slot frees up when one of your other requests finishes) |
 | `/v1/catalog` over 60/min per IP | `rate_limit_exceeded` | `Too many requests.` | Yes |
+| Rankings / benchmarks endpoints over 60/min per IP combined | `rate_limit_exceeded` | `Too many requests.` | Yes |
 
 The gateway does not return `X-RateLimit-*` style headers with remaining quota. RPM and TPM share the `rate_limit_exceeded` code; you can tell them apart by `message` if needed, but your code should treat both the same way: wait for `Retry-After`, then retry.
 

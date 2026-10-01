@@ -120,6 +120,12 @@ type requestMeta struct {
 	// logEndpointEmbeddings），不是字面的上游 URL 路径。handleNonStream 在
 	// ChatCompletions 和 Embeddings 之间共用，靠这个字段区分是谁调用的。
 	logEndpoint string
+	// 公开排行榜的采集字段（见 attribution.go）：请求阶段填 app/imageInputs，
+	// handleStream / handleNonStream 在写日志前填 genMs/toolCalls。
+	appName, appURL string
+	imageInputs     int
+	genMs           *int64
+	toolCalls       int
 }
 
 // ChatCompletions 是 POST /v1/chat/completions 的 http.HandlerFunc。
@@ -232,8 +238,9 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		accountTier: principal.AccountTier,
 		vmName:      vm.Name, vmID: vm.ID, isStream: stream, clientWantsUsage: clientWantsUsage,
 		clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
-		logEndpoint: logEndpointChat,
+		logEndpoint: logEndpointChat, imageInputs: countImageInputs(reqMap),
 	}
+	meta.appName, meta.appURL = appAttribution(r)
 
 	// 只有真正进入重试循环、会对上游发起至少一次尝试的请求才计入"正常请求"基数
 	// （技术方案 §7.7 的重试预算比较的是"重试数 vs 正常请求数"，鉴权失败/限流拒绝/
@@ -491,6 +498,7 @@ func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.
 
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
+	meta.toolCalls = countToolCalls(rewritten)
 	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage, fxRates)
 	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
@@ -517,11 +525,13 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 	w.WriteHeader(http.StatusOK)
 
 	var forwardedBytes int
+	var stats streamStats
 	for {
 		chunk, err := dec.Next()
 		if err != nil {
 			break // io.EOF（正常结束）或读取错误（客户端断开/上游中断）都在这里停止转发
 		}
+		stats.observe(chunk, time.Now())
 		// 客户端没有自己要 include_usage 时，不把 relay 为了计费而注入的
 		// usage-only chunk 转发出去——协议行为要和客户端自己发起、不带
 		// stream_options 的请求完全一致（技术方案 §7.4）。usage 已经在
@@ -553,6 +563,7 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 	}
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	costAmount := computeCostAmount(costBook, picked.Account.CostMultiplier, usage, fxRates)
+	meta.genMs, meta.toolCalls = stats.genMillis(), len(stats.toolCalls)
 	s.logSuccess(meta, picked, trace, http.StatusOK, ttft, usage, sellBook.ID, list, charged, promoID, costAmount)
 }
 
@@ -603,6 +614,8 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 		Status: "success", HTTPStatus: httpStatus, Attempts: len(trace), AttemptTrace: trace,
 		TTFTMillis: &ttftMs, LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage: usage, ClientIP: meta.clientIP, UserAgent: meta.userAgent,
+		GenMillis: meta.genMs, ToolCalls: meta.toolCalls, ImageInputs: meta.imageInputs,
+		AppName: meta.appName, AppURL: meta.appURL,
 	}
 	if picked != nil {
 		rec.ChannelID = &picked.Channel.ID
@@ -631,6 +644,7 @@ func (s *Service) logFailure(meta requestMeta, trace []reqlog.AttemptTraceEntry,
 		LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage:         schema.Usage{Source: schema.UsageSourceEstimated}, // 未产生任何计费用量
 		ClientIP:      meta.clientIP, UserAgent: meta.userAgent,
+		ImageInputs: meta.imageInputs, AppName: meta.appName, AppURL: meta.appURL,
 	}
 	if n := len(trace); n > 0 {
 		last := trace[n-1]

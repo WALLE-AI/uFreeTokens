@@ -264,6 +264,9 @@ func (s *Service) SetVirtualModelMetadata(ctx context.Context, in SetVirtualMode
 	if tags == nil {
 		tags = []string{}
 	}
+	if err := ValidateScores(in.Scores); err != nil {
+		return err
+	}
 	var scoresJSON []byte
 	if in.Scores != nil {
 		var err error

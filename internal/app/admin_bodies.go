@@ -161,11 +161,20 @@ type unmappedObservationRequest struct {
 
 // createPriceSourceRequest 是 createPriceSource 的请求体。
 type createPriceSourceRequest struct {
-	ProviderID *int64 `json:"provider_id"`
-	Level      string `json:"level"`
-	Kind       string `json:"kind"`
-	Fetcher    string `json:"fetcher"`
-	URL        string `json:"url"`
+	ProviderID    *int64         `json:"provider_id"`
+	Level         string         `json:"level"`
+	Kind          string         `json:"kind"`
+	Fetcher       string         `json:"fetcher"`
+	URL           string         `json:"url"`
+	Domain        string         `json:"domain"` // price（默认）/ offer / benchmark
+	Name          string         `json:"name"`
+	Schedule      string         `json:"schedule"`
+	Config        map[string]any `json:"config"`
+	Enabled       *bool          `json:"enabled"`
+	License       string         `json:"license"`
+	Attribution   string         `json:"attribution"`
+	PublicDisplay bool           `json:"public_display"`
+	AutoPublish   bool           `json:"auto_publish"`
 }
 
 // ---------- 命名响应体 ----------

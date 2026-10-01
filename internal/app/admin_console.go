@@ -20,6 +20,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
+	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 )
 
@@ -550,7 +551,8 @@ func (h *adminHandlers) listLatestFXRates(w http.ResponseWriter, r *http.Request
 
 func (h *adminHandlers) listPriceSources(w http.ResponseWriter, r *http.Request) {
 	q := &queryParser{r: r}
-	in := admin.ListPriceSourcesInput{ProviderID: q.int64("provider_id"), Enabled: q.optBool("enabled")}
+	in := admin.ListPriceSourcesInput{ProviderID: q.int64("provider_id"), Enabled: q.optBool("enabled"),
+		Domain: q.enum("domain", admin.EnumValues().SourceDomains...)}
 	if !q.ok(w) {
 		return
 	}
@@ -762,10 +764,14 @@ func isAdminNotFound(err error) bool {
 	return errors.Is(err, admin.ErrProviderNotFound) || errors.Is(err, admin.ErrProviderKeyNotFound) ||
 		errors.Is(err, admin.ErrPriceSourceNotFound) || errors.Is(err, admin.ErrChangeRequestNotFound) ||
 		errors.Is(err, pricesync.ErrChangeRequestNotFound) || errors.Is(err, admin.ErrRequestLogNotFound) ||
-		errors.Is(err, admin.ErrUserNotFound) || errors.Is(err, admin.ErrMemberNotFound)
+		errors.Is(err, admin.ErrUserNotFound) || errors.Is(err, admin.ErrMemberNotFound) ||
+		errors.Is(err, admin.ErrBenchmarkNotFound) || errors.Is(err, admin.ErrBenchmarkRunNotFound) ||
+		errors.Is(err, admin.ErrPublicAppRuleNotFound) || errors.Is(err, admin.ErrModelAliasNotFound) ||
+		errors.Is(err, offers.ErrNotFound)
 }
 
 func isAdminConflict(err error) bool {
 	return errors.Is(err, admin.ErrLastActiveChannel) || errors.Is(err, admin.ErrProviderKeyRevoked) ||
-		errors.Is(err, admin.ErrLastAccountOwner) || errors.Is(err, admin.ErrAPIKeyRevokedFinal)
+		errors.Is(err, admin.ErrLastAccountOwner) || errors.Is(err, admin.ErrAPIKeyRevokedFinal) ||
+		errors.Is(err, admin.ErrBenchmarkRunPublished) || errors.Is(err, offers.ErrInvalidStatus)
 }

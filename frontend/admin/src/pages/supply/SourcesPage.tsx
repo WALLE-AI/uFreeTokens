@@ -1,6 +1,6 @@
 import { describeError } from '../../api/errors';
 import { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { AlertTriangle, Plus } from 'lucide-react';
 import { listFXRates, listLatestFXRates, setFXRate } from '../../api/catalog';
 import { listPriceSources } from '../../api/pricing';
 import {
@@ -12,6 +12,7 @@ import {
   FormModal,
   Input,
   PageHeader,
+  Pills,
   SectionTitle,
   Select,
   useToast,
@@ -19,18 +20,33 @@ import {
 } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
-import type { FXRate } from '../../types';
-import { CreateSourceModal, PriceSourcesTable } from './sources';
+import type { FXRate, SourceDomain } from '../../types';
+import { CreateSourceModal, PriceSourcesTable, isFailing } from './sources';
 import { Can } from '../../components/ui/Can';
 
-// /pricing/sources：价格源 & 汇率（UI_DESIGN.md §1.1 目录与定价分组）
+const DOMAIN_TABS: Array<{ value: SourceDomain | 'all'; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'price', label: '价格' },
+  { value: 'offer', label: '优惠' },
+  { value: 'benchmark', label: '评测榜单' },
+];
+
+// /pricing/sources：数据源 & 汇率（UI_DESIGN.md §1.1 目录与定价分组）。
+// 数据源覆盖价格、优惠情报、评测榜单三个领域（?domain=），?enabled=true|false|failing。
+// 数据源数量有限，一次取全部、在本地按领域与状态筛选，这样各领域的数量与失败数可以一起显示。
 export default function SourcesPage() {
   const [params, setParams] = useQueryParams();
   const [sourcesKey, setSourcesKey] = useState(0);
   const [fxKey, setFxKey] = useState(0);
-  const enabledFilter = params.enabled === 'true' ? true : params.enabled === 'false' ? false : undefined;
+  const domain = DOMAIN_TABS.some((t) => t.value === params.domain) ? (params.domain as SourceDomain | 'all') : 'all';
 
-  const sources = useAsync((signal) => listPriceSources({ enabled: enabledFilter }, signal), [enabledFilter, sourcesKey]);
+  const sources = useAsync((signal) => listPriceSources({}, signal), [sourcesKey]);
+  const all = sources.data?.data ?? [];
+  const inDomain = domain === 'all' ? all : all.filter((s) => s.domain === domain);
+  const rows = inDomain.filter((s) =>
+    params.enabled === 'true' ? s.enabled : params.enabled === 'false' ? !s.enabled : params.enabled === 'failing' ? isFailing(s) : true,
+  );
+  const failing = all.filter((s) => s.enabled && isFailing(s));
   const latest = useAsync((signal) => listLatestFXRates(signal), [fxKey]);
   const history = useAsync((signal) => listFXRates({ base: params.fx_base || undefined, limit: 60 }, signal), [params.fx_base, fxKey]);
 
@@ -47,8 +63,8 @@ export default function SourcesPage() {
   return (
     <div>
       <PageHeader
-        title="价格源 & 汇率"
-        description="价格源决定上游价格从哪里来、可信度多高；汇率用于把非人民币成本价折算成人民币来计算毛利"
+        title="数据源 & 汇率"
+        description="数据源决定价格、优惠情报、评测榜单从哪里来、多久抓一次、可信度多高；汇率用于把非人民币成本价折算成人民币来计算毛利"
       />
 
       <section className="mb-10">
@@ -61,19 +77,39 @@ export default function SourcesPage() {
                 options={[
                   { value: 'true', label: '已启用' },
                   { value: 'false', label: '已停用' },
+                  { value: 'failing', label: '连续失败' },
                 ]}
                 onChange={(e) => setParams({ enabled: e.target.value })}
               />
-              <Button size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setCreatingSource(true)}>
-                新增价格源
-              </Button>
+              <Can perm="pricing:write"><Button size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setCreatingSource(true)}>
+                新增数据源
+              </Button></Can>
             </>
           }
         >
-          价格源
+          数据源
         </SectionTitle>
+        <div className="mb-3">
+          <Pills
+            options={DOMAIN_TABS.map((t) => ({ ...t, count: t.value === 'all' ? all.length : all.filter((s) => s.domain === t.value).length }))}
+            value={domain}
+            onChange={(v) => setParams({ domain: v === 'all' ? null : v })}
+          />
+        </div>
+        {failing.length > 0 && params.enabled !== 'failing' && (
+          <div className="bg-rose-50/80 border border-rose-200 rounded-xl px-4 py-3 mb-3 flex items-center gap-2 text-xs text-rose-800">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>
+              {failing.length} 个已启用的数据源连续失败：{failing.slice(0, 3).map((s) => s.name || s.fetcher).join('、')}
+              {failing.length > 3 ? ' 等' : ''}
+            </span>
+            <button type="button" className="ml-auto text-rose-700 hover:underline cursor-pointer" onClick={() => setParams({ enabled: 'failing', domain: null })}>
+              只看失败的
+            </button>
+          </div>
+        )}
         <DataState loading={sources.loading} error={sources.error} onRetry={sources.reload}>
-          {sources.data && <PriceSourcesTable sources={sources.data.data} showProvider onChanged={() => setSourcesKey((k) => k + 1)} />}
+          {sources.data && <PriceSourcesTable sources={rows} showProvider onChanged={() => setSourcesKey((k) => k + 1)} />}
         </DataState>
       </section>
 
@@ -148,7 +184,12 @@ export default function SourcesPage() {
         </DataState>
       </section>
 
-      <CreateSourceModal open={creatingSource} onClose={() => setCreatingSource(false)} onSaved={() => setSourcesKey((k) => k + 1)} />
+      <CreateSourceModal
+        open={creatingSource}
+        onClose={() => setCreatingSource(false)}
+        defaultDomain={domain === 'all' ? 'price' : domain}
+        onSaved={() => setSourcesKey((k) => k + 1)}
+      />
       <FXRateModal
         initial={settingFx}
         onClose={() => setSettingFx(null)}

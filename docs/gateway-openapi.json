@@ -27,6 +27,1168 @@
       }
     },
     "schemas": {
+      "AppRanking": {
+        "description": "Apps and clients ranked by tokens.",
+        "properties": {
+          "apps": {
+            "description": "Ranked apps.",
+            "items": {
+              "$ref": "#/components/schemas/AppRankingEntry"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "上榜应用。"
+              }
+            }
+          },
+          "from": {
+            "description": "First day of the period (inclusive), `YYYY-MM-DD` in `tz`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期第一天（含），`tz` 时区的 `YYYY-MM-DD`。"
+              }
+            }
+          },
+          "methodology": {
+            "$ref": "#/components/schemas/RankingMethodology",
+            "description": "The rules used to compute this ranking.",
+            "x-i18n": {
+              "zh": {
+                "description": "本榜单的统计口径。"
+              }
+            }
+          },
+          "others": {
+            "$ref": "#/components/schemas/RankingOthers",
+            "description": "Everything not listed individually: entries below the privacy threshold, non-public models, entries beyond `limit`.",
+            "x-i18n": {
+              "zh": {
+                "description": "未单独上榜的部分：未达隐私阈值的、非公开模型、超出 `limit` 的。"
+              }
+            }
+          },
+          "period": {
+            "description": "Echo of the requested period: `day`, `week` or `month`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "所请求的统计期：`day`、`week` 或 `month`。"
+              }
+            }
+          },
+          "to": {
+            "description": "Day after the last day of the period (exclusive). Periods are complete days ending yesterday.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期最后一天的后一天（不含）。统计期由截至昨天的完整自然日组成。"
+              }
+            }
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total counted tokens of the period, including `others`. Omitted unless the server is configured to publish absolute numbers.",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期内计入的 token 总量（含 `others`）。服务端未开启公开绝对值时省略。"
+              }
+            }
+          },
+          "tz": {
+            "description": "Time zone used to cut days, always `Asia/Shanghai`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "切日时区，固定为 `Asia/Shanghai`。"
+              }
+            }
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the underlying daily data was last materialized (about every 30 minutes); `null` if there is no data.",
+            "x-i18n": {
+              "zh": {
+                "description": "底层日数据最近一次物化的时间（约每 30 分钟一次）；无数据时为 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "apps",
+          "from",
+          "methodology",
+          "others",
+          "period",
+          "to",
+          "tz",
+          "updated_at"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "按 token 排名的应用与客户端。"
+          }
+        }
+      },
+      "AppRankingEntry": {
+        "description": "A ranked app.",
+        "properties": {
+          "app_name": {
+            "description": "App name declared with the `X-Title` request header.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "通过请求头 `X-Title` 声明的应用名。"
+              }
+            }
+          },
+          "app_url": {
+            "description": "App origin (`scheme://host`) declared with `HTTP-Referer`; empty if not declared.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "通过 `HTTP-Referer` 声明的应用地址（`scheme://host`）；未声明时为空。"
+              }
+            }
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Change versus the previous period; `null` if it had no usage.",
+            "x-i18n": {
+              "zh": {
+                "description": "与上一期相比的变化；上一期无用量时为 `null`。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "名次，从 1 开始。"
+              }
+            }
+          },
+          "share": {
+            "description": "Share of `total_tokens` (0–1).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "占 `total_tokens` 的比例（0–1）。"
+              }
+            }
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Counted tokens. Omitted unless absolute numbers are published.",
+            "x-i18n": {
+              "zh": {
+                "description": "计入的 token 数。未公开绝对值时省略。"
+              }
+            }
+          }
+        },
+        "required": [
+          "app_name",
+          "app_url",
+          "change",
+          "rank",
+          "share"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个上榜应用。"
+          }
+        }
+      },
+      "AuthorRanking": {
+        "description": "Model author (vendor) token share.",
+        "properties": {
+          "authors": {
+            "description": "Ranked authors (top 9).",
+            "items": {
+              "$ref": "#/components/schemas/AuthorRankingEntry"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "上榜作者（前 9 名）。"
+              }
+            }
+          },
+          "from": {
+            "description": "First day of the period (inclusive), `YYYY-MM-DD` in `tz`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期第一天（含），`tz` 时区的 `YYYY-MM-DD`。"
+              }
+            }
+          },
+          "methodology": {
+            "$ref": "#/components/schemas/RankingMethodology",
+            "description": "The rules used to compute this ranking.",
+            "x-i18n": {
+              "zh": {
+                "description": "本榜单的统计口径。"
+              }
+            }
+          },
+          "others": {
+            "$ref": "#/components/schemas/RankingOthers",
+            "description": "Everything not listed individually: entries below the privacy threshold, non-public models, entries beyond `limit`.",
+            "x-i18n": {
+              "zh": {
+                "description": "未单独上榜的部分：未达隐私阈值的、非公开模型、超出 `limit` 的。"
+              }
+            }
+          },
+          "period": {
+            "description": "Echo of the requested period: `day`, `week` or `month`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "所请求的统计期：`day`、`week` 或 `month`。"
+              }
+            }
+          },
+          "to": {
+            "description": "Day after the last day of the period (exclusive). Periods are complete days ending yesterday.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期最后一天的后一天（不含）。统计期由截至昨天的完整自然日组成。"
+              }
+            }
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total counted tokens of the period, including `others`. Omitted unless the server is configured to publish absolute numbers.",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期内计入的 token 总量（含 `others`）。服务端未开启公开绝对值时省略。"
+              }
+            }
+          },
+          "tz": {
+            "description": "Time zone used to cut days, always `Asia/Shanghai`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "切日时区，固定为 `Asia/Shanghai`。"
+              }
+            }
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the underlying daily data was last materialized (about every 30 minutes); `null` if there is no data.",
+            "x-i18n": {
+              "zh": {
+                "description": "底层日数据最近一次物化的时间（约每 30 分钟一次）；无数据时为 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "authors",
+          "from",
+          "methodology",
+          "others",
+          "period",
+          "to",
+          "tz",
+          "updated_at"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "模型作者（厂商）token 份额。"
+          }
+        }
+      },
+      "AuthorRankingEntry": {
+        "description": "A ranked author.",
+        "properties": {
+          "author": {
+            "description": "Model author: the part of the model ID before `/`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型作者：模型 ID 中 `/` 之前的部分。"
+              }
+            }
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Change versus the previous period; `null` if it had no usage.",
+            "x-i18n": {
+              "zh": {
+                "description": "与上一期相比的变化；上一期无用量时为 `null`。"
+              }
+            }
+          },
+          "models": {
+            "description": "Number of the author's public models used in the period.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期内被使用的该作者公开模型数。"
+              }
+            }
+          },
+          "provider_display": {
+            "description": "Display name of the author.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "作者展示名。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "名次，从 1 开始。"
+              }
+            }
+          },
+          "share": {
+            "description": "Share of `total_tokens` (0–1).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "占 `total_tokens` 的比例（0–1）。"
+              }
+            }
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Counted tokens. Omitted unless absolute numbers are published.",
+            "x-i18n": {
+              "zh": {
+                "description": "计入的 token 数。未公开绝对值时省略。"
+              }
+            }
+          }
+        },
+        "required": [
+          "author",
+          "change",
+          "models",
+          "provider_display",
+          "rank",
+          "share"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个上榜作者。"
+          }
+        }
+      },
+      "Benchmark": {
+        "description": "A published benchmark with its latest published run summary.",
+        "properties": {
+          "category": {
+            "description": "`general`, `coding`, `agents`, `reasoning`, `chinese`, `search`, `media`, `artifacts` or `embedding`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`general`、`coding`、`agents`、`reasoning`、`chinese`、`search`、`media`、`artifacts` 或 `embedding`。"
+              }
+            }
+          },
+          "champions": {
+            "$ref": "#/components/schemas/BenchmarkChampions",
+            "description": "Quality / value / speed champions of the published run.",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的质量 / 性价比 / 速度冠军。"
+              }
+            }
+          },
+          "description": {
+            "description": "What the benchmark measures.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "基准测什么。"
+              }
+            }
+          },
+          "higher_is_better": {
+            "description": "Whether a higher score is better.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "分数是否越高越好。"
+              }
+            }
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "License of imported external data (e.g. `CC-BY-4.0`); display `source_name` as attribution. `null` for manually entered or self-evaluated benchmarks.",
+            "x-i18n": {
+              "zh": {
+                "description": "导入的外部数据的许可（如 `CC-BY-4.0`），展示时请以 `source_name` 署名；手工录入或平台自建评测为 `null`。"
+              }
+            }
+          },
+          "metric_name": {
+            "description": "Name of the score metric, e.g. `accuracy`, `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "分数指标名，如 `accuracy`、`elo`。"
+              }
+            }
+          },
+          "metric_unit": {
+            "description": "`percent` (score is 0–100) or a free-form unit such as `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`percent`（分数为 0–100）或自由格式的单位，如 `elo`。"
+              }
+            }
+          },
+          "models_count": {
+            "description": "Number of models in the published run.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的参评模型数。"
+              }
+            }
+          },
+          "name": {
+            "description": "Benchmark name.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "基准名称。"
+              }
+            }
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest published run, or `null` if none has been published yet.",
+            "x-i18n": {
+              "zh": {
+                "description": "最新一次已发布的评测批次；尚未发布时为 `null`。"
+              }
+            }
+          },
+          "slug": {
+            "description": "URL-safe identifier, e.g. `gpqa-diamond`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "URL 标识，如 `gpqa-diamond`。"
+              }
+            }
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External data source; `null` for the platform's own evaluations.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部数据来源；平台自建评测为 `null`。"
+              }
+            }
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the external source, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部来源链接，或 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "category",
+          "champions",
+          "description",
+          "higher_is_better",
+          "license",
+          "metric_name",
+          "metric_unit",
+          "models_count",
+          "name",
+          "run",
+          "slug",
+          "source_name",
+          "source_url"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个已发布基准及其最新已发布批次的摘要。"
+          }
+        }
+      },
+      "BenchmarkChampion": {
+        "description": "A champion result.",
+        "properties": {
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Average duration per task in milliseconds, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "单题平均耗时（毫秒），或 `null`。"
+              }
+            }
+          },
+          "cost_per_task_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Average cost per task in micro-units of `run.cost_currency` (1,000,000 = 1 USD/CNY), or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "单题平均成本，`run.cost_currency` 的微单位（1,000,000 = 1 美元/元），或 `null`。"
+              }
+            }
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model ID on this platform if the result is linked to a public model, otherwise `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "关联到平台公开模型时为其模型 ID，否则为 `null`。"
+              }
+            }
+          },
+          "model_label": {
+            "description": "Model name as reported by the run (models not listed on the platform can take part).",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "评测批次中的模型名（平台未上架的模型也可参评）。"
+              }
+            }
+          },
+          "score": {
+            "description": "Score in `metric_unit`.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "分数，单位见 `metric_unit`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "avg_duration_ms",
+          "cost_per_task_micro",
+          "model",
+          "model_label",
+          "score"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一项冠军结果。"
+          }
+        }
+      },
+      "BenchmarkChampions": {
+        "description": "Champions of a run; each may be `null` when there is not enough data.",
+        "properties": {
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkChampion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best score.",
+            "x-i18n": {
+              "zh": {
+                "description": "分数最好。"
+              }
+            }
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkChampion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lowest average duration among models scoring at least the median.",
+            "x-i18n": {
+              "zh": {
+                "description": "分数不低于中位数的模型中平均耗时最短。"
+              }
+            }
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkChampion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lowest cost per task among models scoring at least the median.",
+            "x-i18n": {
+              "zh": {
+                "description": "分数不低于中位数的模型中单题成本最低。"
+              }
+            }
+          }
+        },
+        "required": [
+          "quality",
+          "speed",
+          "value"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "批次冠军；数据不足时对应项为 `null`。"
+          }
+        }
+      },
+      "BenchmarkDetail": {
+        "description": "A published benchmark with the full leaderboard of its latest published run.",
+        "properties": {
+          "category": {
+            "description": "`general`, `coding`, `agents`, `reasoning`, `chinese`, `search`, `media`, `artifacts` or `embedding`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`general`、`coding`、`agents`、`reasoning`、`chinese`、`search`、`media`、`artifacts` 或 `embedding`。"
+              }
+            }
+          },
+          "champions": {
+            "$ref": "#/components/schemas/BenchmarkChampions",
+            "description": "Quality / value / speed champions of the published run.",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的质量 / 性价比 / 速度冠军。"
+              }
+            }
+          },
+          "description": {
+            "description": "What the benchmark measures.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "基准测什么。"
+              }
+            }
+          },
+          "higher_is_better": {
+            "description": "Whether a higher score is better.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "分数是否越高越好。"
+              }
+            }
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "License of imported external data (e.g. `CC-BY-4.0`); display `source_name` as attribution. `null` for manually entered or self-evaluated benchmarks.",
+            "x-i18n": {
+              "zh": {
+                "description": "导入的外部数据的许可（如 `CC-BY-4.0`），展示时请以 `source_name` 署名；手工录入或平台自建评测为 `null`。"
+              }
+            }
+          },
+          "metric_name": {
+            "description": "Name of the score metric, e.g. `accuracy`, `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "分数指标名，如 `accuracy`、`elo`。"
+              }
+            }
+          },
+          "metric_unit": {
+            "description": "`percent` (score is 0–100) or a free-form unit such as `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`percent`（分数为 0–100）或自由格式的单位，如 `elo`。"
+              }
+            }
+          },
+          "models_count": {
+            "description": "Number of models in the published run.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的参评模型数。"
+              }
+            }
+          },
+          "name": {
+            "description": "Benchmark name.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "基准名称。"
+              }
+            }
+          },
+          "results": {
+            "description": "Full leaderboard of the published run, best first.",
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkResult"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的完整排行榜，从好到差。"
+              }
+            }
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest published run, or `null` if none has been published yet.",
+            "x-i18n": {
+              "zh": {
+                "description": "最新一次已发布的评测批次；尚未发布时为 `null`。"
+              }
+            }
+          },
+          "slug": {
+            "description": "URL-safe identifier, e.g. `gpqa-diamond`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "URL 标识，如 `gpqa-diamond`。"
+              }
+            }
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External data source; `null` for the platform's own evaluations.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部数据来源；平台自建评测为 `null`。"
+              }
+            }
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the external source, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部来源链接，或 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "category",
+          "champions",
+          "description",
+          "higher_is_better",
+          "license",
+          "metric_name",
+          "metric_unit",
+          "models_count",
+          "name",
+          "results",
+          "run",
+          "slug",
+          "source_name",
+          "source_url"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个已发布基准及其最新已发布批次的完整排行榜。"
+          }
+        }
+      },
+      "BenchmarkListResponse": {
+        "description": "Published benchmarks.",
+        "properties": {
+          "data": {
+            "description": "Published benchmarks.",
+            "items": {
+              "$ref": "#/components/schemas/Benchmark"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布的基准。"
+              }
+            }
+          },
+          "object": {
+            "description": "Always `list`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "固定为 `list`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "data",
+          "object"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "已发布的基准列表。"
+          }
+        }
+      },
+      "BenchmarkResult": {
+        "description": "One model's result in a run.",
+        "properties": {
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Average duration per task in milliseconds, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "单题平均耗时（毫秒），或 `null`。"
+              }
+            }
+          },
+          "cost_per_task_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Average cost per task in micro-units of `run.cost_currency` (1,000,000 = 1 USD/CNY), or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "单题平均成本，`run.cost_currency` 的微单位（1,000,000 = 1 美元/元），或 `null`。"
+              }
+            }
+          },
+          "error_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Share of failed tasks (0–1), or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "失败题目占比（0–1），或 `null`。"
+              }
+            }
+          },
+          "extra": {
+            "description": "Extra data such as sample media URLs, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "附加数据（如样例媒体链接），或 `null`。"
+              }
+            }
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model ID on this platform if the result is linked to a public model, otherwise `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "关联到平台公开模型时为其模型 ID，否则为 `null`。"
+              }
+            }
+          },
+          "model_label": {
+            "description": "Model name as reported by the run (models not listed on the platform can take part).",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "评测批次中的模型名（平台未上架的模型也可参评）。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank; ties share a rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "名次，从 1 开始；同分并列。"
+              }
+            }
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of tasks evaluated, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "评测题目数，或 `null`。"
+              }
+            }
+          },
+          "score": {
+            "description": "Score in `metric_unit`.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "分数，单位见 `metric_unit`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "avg_duration_ms",
+          "cost_per_task_micro",
+          "error_rate",
+          "extra",
+          "model",
+          "model_label",
+          "rank",
+          "sample_count",
+          "score"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "某模型在批次中的结果。"
+          }
+        }
+      },
+      "BenchmarkRun": {
+        "description": "An evaluation run.",
+        "properties": {
+          "cost_currency": {
+            "description": "Currency of `cost_per_task_micro`: `USD` or `CNY`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`cost_per_task_micro` 的币种：`USD` 或 `CNY`。"
+              }
+            }
+          },
+          "id": {
+            "description": "Run ID.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "评测批次 ID。"
+              }
+            }
+          },
+          "notes": {
+            "description": "Notes about the run.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "批次说明。"
+              }
+            }
+          },
+          "origin": {
+            "description": "`self_eval` (measured on this platform), `manual` or `import` (external data).",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`self_eval`（平台实测），`manual` 或 `import`（外部数据）。"
+              }
+            }
+          },
+          "run_at": {
+            "description": "When the evaluation was run.",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "评测时间。"
+              }
+            }
+          }
+        },
+        "required": [
+          "cost_currency",
+          "id",
+          "notes",
+          "origin",
+          "run_at"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一次评测批次。"
+          }
+        }
+      },
       "CatalogListResponse": {
         "description": "Public model catalog.",
         "properties": {
@@ -1166,6 +2328,236 @@
           }
         }
       },
+      "ModelBenchmark": {
+        "description": "A model's result on one benchmark.",
+        "properties": {
+          "category": {
+            "description": "`general`, `coding`, `agents`, `reasoning`, `chinese`, `search`, `media`, `artifacts` or `embedding`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`general`、`coding`、`agents`、`reasoning`、`chinese`、`search`、`media`、`artifacts` 或 `embedding`。"
+              }
+            }
+          },
+          "extra": {
+            "description": "Extra data from the source (e.g. confidence interval, vote count), or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "来源附带的数据（如置信区间、票数），或 `null`。"
+              }
+            }
+          },
+          "higher_is_better": {
+            "description": "Whether a higher score is better.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "分数是否越高越好。"
+              }
+            }
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "License of imported external data (e.g. `CC-BY-4.0`); display `source_name` as attribution. `null` for manually entered or self-evaluated benchmarks.",
+            "x-i18n": {
+              "zh": {
+                "description": "导入的外部数据的许可（如 `CC-BY-4.0`），展示时请以 `source_name` 署名；手工录入或平台自建评测为 `null`。"
+              }
+            }
+          },
+          "metric_name": {
+            "description": "Name of the score metric, e.g. `accuracy`, `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "分数指标名，如 `accuracy`、`elo`。"
+              }
+            }
+          },
+          "metric_unit": {
+            "description": "`percent` (score is 0–100) or a free-form unit such as `elo`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`percent`（分数为 0–100）或自由格式的单位，如 `elo`。"
+              }
+            }
+          },
+          "model_label": {
+            "description": "Name on the leaderboard; when several variants (e.g. reasoning effort) map to the model, the best one is returned.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "榜单上的模型名；多个档位（如推理强度）都对应该模型时返回成绩最好的一个。"
+              }
+            }
+          },
+          "models_count": {
+            "description": "Number of entries in the published run.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的参评条目数。"
+              }
+            }
+          },
+          "name": {
+            "description": "Benchmark name.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "基准名称。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank in the published run; ties share a rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "在已发布批次中的名次，从 1 开始；同分并列。"
+              }
+            }
+          },
+          "run_at": {
+            "description": "When the published run was evaluated.",
+            "format": "date-time",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "已发布批次的评测时间。"
+              }
+            }
+          },
+          "score": {
+            "description": "Score in `metric_unit`.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "分数，单位见 `metric_unit`。"
+              }
+            }
+          },
+          "slug": {
+            "description": "URL-safe identifier, e.g. `gpqa-diamond`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "URL 标识，如 `gpqa-diamond`。"
+              }
+            }
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External data source; `null` for the platform's own evaluations.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部数据来源；平台自建评测为 `null`。"
+              }
+            }
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the external source, or `null`.",
+            "x-i18n": {
+              "zh": {
+                "description": "外部来源链接，或 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "category",
+          "extra",
+          "higher_is_better",
+          "license",
+          "metric_name",
+          "metric_unit",
+          "model_label",
+          "models_count",
+          "name",
+          "rank",
+          "run_at",
+          "score",
+          "slug",
+          "source_name",
+          "source_url"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "某模型在一个基准上的成绩。"
+          }
+        }
+      },
+      "ModelBenchmarksResponse": {
+        "description": "A model's results across published benchmarks.",
+        "properties": {
+          "data": {
+            "description": "The model's results, grouped by category.",
+            "items": {
+              "$ref": "#/components/schemas/ModelBenchmark"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "该模型的成绩，按分类排列。"
+              }
+            }
+          },
+          "model": {
+            "description": "The requested model ID.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "请求的模型 ID。"
+              }
+            }
+          },
+          "object": {
+            "description": "Always `list`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "固定为 `list`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "data",
+          "model",
+          "object"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "某模型在各已发布基准上的成绩。"
+          }
+        }
+      },
       "ModelListResponse": {
         "description": "OpenAI-compatible model list.",
         "properties": {
@@ -1199,6 +2591,253 @@
         "x-i18n": {
           "zh": {
             "description": "OpenAI 兼容的模型列表。"
+          }
+        }
+      },
+      "ModelRanking": {
+        "description": "Model token-usage ranking.",
+        "properties": {
+          "from": {
+            "description": "First day of the period (inclusive), `YYYY-MM-DD` in `tz`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期第一天（含），`tz` 时区的 `YYYY-MM-DD`。"
+              }
+            }
+          },
+          "methodology": {
+            "$ref": "#/components/schemas/RankingMethodology",
+            "description": "The rules used to compute this ranking.",
+            "x-i18n": {
+              "zh": {
+                "description": "本榜单的统计口径。"
+              }
+            }
+          },
+          "models": {
+            "description": "Ranked models.",
+            "items": {
+              "$ref": "#/components/schemas/ModelRankingEntry"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "上榜模型。"
+              }
+            }
+          },
+          "others": {
+            "$ref": "#/components/schemas/RankingOthers",
+            "description": "Everything not listed individually: entries below the privacy threshold, non-public models, entries beyond `limit`.",
+            "x-i18n": {
+              "zh": {
+                "description": "未单独上榜的部分：未达隐私阈值的、非公开模型、超出 `limit` 的。"
+              }
+            }
+          },
+          "period": {
+            "description": "Echo of the requested period: `day`, `week` or `month`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "所请求的统计期：`day`、`week` 或 `month`。"
+              }
+            }
+          },
+          "to": {
+            "description": "Day after the last day of the period (exclusive). Periods are complete days ending yesterday.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期最后一天的后一天（不含）。统计期由截至昨天的完整自然日组成。"
+              }
+            }
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total counted tokens of the period, including `others`. Omitted unless the server is configured to publish absolute numbers.",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期内计入的 token 总量（含 `others`）。服务端未开启公开绝对值时省略。"
+              }
+            }
+          },
+          "tz": {
+            "description": "Time zone used to cut days, always `Asia/Shanghai`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "切日时区，固定为 `Asia/Shanghai`。"
+              }
+            }
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the underlying daily data was last materialized (about every 30 minutes); `null` if there is no data.",
+            "x-i18n": {
+              "zh": {
+                "description": "底层日数据最近一次物化的时间（约每 30 分钟一次）；无数据时为 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "from",
+          "methodology",
+          "models",
+          "others",
+          "period",
+          "to",
+          "tz",
+          "updated_at"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "模型 token 用量榜。"
+          }
+        }
+      },
+      "ModelRankingEntry": {
+        "description": "A ranked model.",
+        "properties": {
+          "author": {
+            "description": "Model author: the part of the model ID before `/`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型作者：模型 ID 中 `/` 之前的部分。"
+              }
+            }
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Change versus the previous period of equal length (`0.12` = +12%); `null` if the previous period had no usage.",
+            "x-i18n": {
+              "zh": {
+                "description": "与上一个等长统计期相比的变化（`0.12` = +12%）；上一期无用量时为 `null`。"
+              }
+            }
+          },
+          "deprecated": {
+            "description": "`true` if the model has been retired (listed for history; cannot be called).",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "模型已下架时为 `true`（作为历史数据展示，不能调用）。"
+              }
+            }
+          },
+          "display_name": {
+            "description": "Display name of the model.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型展示名。"
+              }
+            }
+          },
+          "model": {
+            "description": "Model ID (same as `GET /v1/catalog` `name`).",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型 ID（与 `GET /v1/catalog` 的 `name` 相同）。"
+              }
+            }
+          },
+          "provider_display": {
+            "description": "Display name of the model vendor. Omitted if not set.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型厂商展示名；未录入时省略。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "名次，从 1 开始。"
+              }
+            }
+          },
+          "series": {
+            "description": "Daily series, only with `series=day`.",
+            "items": {
+              "$ref": "#/components/schemas/RankingSeriesPoint"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "每日序列，仅 `series=day` 时返回。"
+              }
+            }
+          },
+          "share": {
+            "description": "Share of `total_tokens` (0–1).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "占 `total_tokens` 的比例（0–1）。"
+              }
+            }
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Counted tokens (after the per-account cap). Omitted unless absolute numbers are published.",
+            "x-i18n": {
+              "zh": {
+                "description": "计入排名的 token 数（已应用单账户上限）。未公开绝对值时省略。"
+              }
+            }
+          }
+        },
+        "required": [
+          "author",
+          "change",
+          "deprecated",
+          "display_name",
+          "model",
+          "rank",
+          "share"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个上榜模型。"
           }
         }
       },
@@ -1252,6 +2891,343 @@
         "x-i18n": {
           "zh": {
             "description": "OpenAI 兼容的模型对象。"
+          }
+        }
+      },
+      "RankingMethodology": {
+        "description": "Ranking rules.",
+        "properties": {
+          "excludes_internal": {
+            "description": "Internal, load-test and evaluation accounts are excluded.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "已排除内部、压测与评测账户。"
+              }
+            }
+          },
+          "max_account_share": {
+            "description": "One account counts for at most this share of an entry's raw period total (anti-gaming cap).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "单个账户最多计入该条目当期原始总量的比例（防刷上限）。"
+              }
+            }
+          },
+          "min_distinct_accounts": {
+            "description": "Minimum number of distinct accounts in the period for an entry to be listed individually.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "单独上榜所需的统计期内最少独立账户数。"
+              }
+            }
+          },
+          "shows_absolute": {
+            "description": "Whether absolute token numbers are published.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "是否公开绝对 token 数。"
+              }
+            }
+          },
+          "success_only": {
+            "description": "Only successful requests are counted (input + output tokens; output already includes reasoning tokens).",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "只统计成功请求（输入 + 输出 token；输出已包含推理 token）。"
+              }
+            }
+          }
+        },
+        "required": [
+          "excludes_internal",
+          "max_account_share",
+          "min_distinct_accounts",
+          "shows_absolute",
+          "success_only"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "榜单统计口径。"
+          }
+        }
+      },
+      "RankingOthers": {
+        "description": "Aggregate of entries not listed individually.",
+        "properties": {
+          "share": {
+            "description": "Share of `others` (0–1).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "\"其他\"的占比（0–1）。"
+              }
+            }
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tokens of `others`. Omitted unless absolute numbers are published.",
+            "x-i18n": {
+              "zh": {
+                "description": "\"其他\"的 token 数。未公开绝对值时省略。"
+              }
+            }
+          }
+        },
+        "required": [
+          "share"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "未单独上榜部分的汇总。"
+          }
+        }
+      },
+      "RankingSeriesPoint": {
+        "description": "One day of a model's trend.",
+        "properties": {
+          "day": {
+            "description": "Day, `YYYY-MM-DD`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "日期，`YYYY-MM-DD`。"
+              }
+            }
+          },
+          "share": {
+            "description": "Share of that day's platform-wide public tokens (0–1).",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "占当天全平台公开 token 的比例（0–1）。"
+              }
+            }
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Counted tokens that day. Omitted unless absolute numbers are published.",
+            "x-i18n": {
+              "zh": {
+                "description": "当天计入的 token 数。未公开绝对值时省略。"
+              }
+            }
+          }
+        },
+        "required": [
+          "day",
+          "share"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "模型趋势中的一天。"
+          }
+        }
+      },
+      "SpeedRanking": {
+        "description": "Fastest models by output speed.",
+        "properties": {
+          "from": {
+            "description": "First day of the period (inclusive), `YYYY-MM-DD` in `tz`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期第一天（含），`tz` 时区的 `YYYY-MM-DD`。"
+              }
+            }
+          },
+          "methodology": {
+            "$ref": "#/components/schemas/RankingMethodology",
+            "description": "The rules used to compute this ranking.",
+            "x-i18n": {
+              "zh": {
+                "description": "本榜单的统计口径。"
+              }
+            }
+          },
+          "models": {
+            "description": "Models sorted by output speed, fastest first.",
+            "items": {
+              "$ref": "#/components/schemas/SpeedRankingEntry"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "按输出速度从快到慢排序的模型。"
+              }
+            }
+          },
+          "period": {
+            "description": "Echo of the requested period: `day`, `week` or `month`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "所请求的统计期：`day`、`week` 或 `month`。"
+              }
+            }
+          },
+          "to": {
+            "description": "Day after the last day of the period (exclusive). Periods are complete days ending yesterday.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "统计期最后一天的后一天（不含）。统计期由截至昨天的完整自然日组成。"
+              }
+            }
+          },
+          "tz": {
+            "description": "Time zone used to cut days, always `Asia/Shanghai`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "切日时区，固定为 `Asia/Shanghai`。"
+              }
+            }
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the underlying daily data was last materialized (about every 30 minutes); `null` if there is no data.",
+            "x-i18n": {
+              "zh": {
+                "description": "底层日数据最近一次物化的时间（约每 30 分钟一次）；无数据时为 `null`。"
+              }
+            }
+          }
+        },
+        "required": [
+          "from",
+          "methodology",
+          "models",
+          "period",
+          "to",
+          "tz",
+          "updated_at"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "按输出速度排名的模型。"
+          }
+        }
+      },
+      "SpeedRankingEntry": {
+        "description": "A ranked model. Upstream providers are not disclosed.",
+        "properties": {
+          "author": {
+            "description": "Model author: the part of the model ID before `/`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型作者：模型 ID 中 `/` 之前的部分。"
+              }
+            }
+          },
+          "deprecated": {
+            "description": "`true` if the model has been retired (listed for history; cannot be called).",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "模型已下架时为 `true`（作为历史数据展示，不能调用）。"
+              }
+            }
+          },
+          "display_name": {
+            "description": "Display name of the model.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型展示名。"
+              }
+            }
+          },
+          "mean_tokens_per_second": {
+            "description": "Token-weighted mean output speed: total output tokens ÷ total generation time.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "按 token 加权的平均输出速度：输出 token 之和 ÷ 生成耗时之和。"
+              }
+            }
+          },
+          "model": {
+            "description": "Model ID (same as `GET /v1/catalog` `name`).",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型 ID（与 `GET /v1/catalog` 的 `name` 相同）。"
+              }
+            }
+          },
+          "provider_display": {
+            "description": "Display name of the model vendor. Omitted if not set.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "模型厂商展示名；未录入时省略。"
+              }
+            }
+          },
+          "rank": {
+            "description": "1-based rank.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "名次，从 1 开始。"
+              }
+            }
+          },
+          "tokens_per_second": {
+            "description": "Median (P50) output speed of successful streaming requests, in tokens per second (each request: output tokens ÷ generation time; estimated from a bucketed histogram). Used for ranking.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "成功流式请求输出速度的中位数（P50），单位 token/秒（每个请求为输出 token ÷ 生成耗时；由分桶直方图估算）。排名依据。"
+              }
+            }
+          }
+        },
+        "required": [
+          "author",
+          "deprecated",
+          "display_name",
+          "mean_tokens_per_second",
+          "model",
+          "rank",
+          "tokens_per_second"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "一个上榜模型。不披露上游供应商。"
           }
         }
       },
@@ -1489,6 +3465,15 @@
         }
       },
       {
+        "code": "not_found",
+        "status": 404,
+        "retryable": false,
+        "description": {
+          "en": "The requested resource does not exist or is not published (public benchmark endpoints).",
+          "zh": "请求的资源不存在或未发布（公开基准测试接口）。"
+        }
+      },
+      {
         "code": "not_implemented",
         "status": 503,
         "retryable": false,
@@ -1502,8 +3487,17 @@
         "status": 429,
         "retryable": true,
         "description": {
-          "en": "Rate limit exceeded: requests-per-minute or tokens-per-minute limit of the API key (relay endpoints), or the per-IP limit of `/v1/catalog`. Wait for `Retry-After` seconds when present.",
-          "zh": "触发限流：API Key 的每分钟请求数或每分钟 token 数上限（转发类接口），或 `/v1/catalog` 的按 IP 限流。有 `Retry-After` 头时按其秒数等待后重试。"
+          "en": "Rate limit exceeded: requests-per-minute or tokens-per-minute limit of the API key (relay endpoints), or the per-IP limit of the public endpoints (`/v1/catalog`, `/v1/rankings/*`, `/v1/benchmarks`). Wait for `Retry-After` seconds when present.",
+          "zh": "触发限流：API Key 的每分钟请求数或每分钟 token 数上限（转发类接口），或公开接口（`/v1/catalog`、`/v1/rankings/*`、`/v1/benchmarks`）的按 IP 限流。有 `Retry-After` 头时按其秒数等待后重试。"
+        }
+      },
+      {
+        "code": "service_unavailable",
+        "status": 503,
+        "retryable": true,
+        "description": {
+          "en": "The public rankings are temporarily switched off by the operator (e.g. while a statistics issue is fixed). Retry later.",
+          "zh": "公开榜单被运营临时下线（如修正统计口径期间）。请稍后重试。"
         }
       },
       {
@@ -1639,6 +3633,461 @@
           }
         },
         "x-status": "not_implemented"
+      }
+    },
+    "/v1/benchmarks": {
+      "get": {
+        "description": "Published benchmarks with the summary of their latest published run: model count and quality / value / speed champions (value and speed are chosen among models scoring at least the median). No API key required (the same content is returned with or without one); responses carry `Cache-Control: public, max-age=300`. Results from external sources (`run.origin` = `manual`/`import`) use the source's own cost figures; `self_eval` runs are measured on this platform at its actual prices.",
+        "operationId": "listBenchmarks",
+        "parameters": [
+          {
+            "description": "Only benchmarks of this category.",
+            "example": "reasoning",
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "enum": [
+                "general",
+                "coding",
+                "agents",
+                "reasoning",
+                "chinese",
+                "search",
+                "media",
+                "artifacts",
+                "embedding"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "只返回该分类的基准。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {
+                      "slug": "gpqa-diamond",
+                      "name": "GPQA Diamond",
+                      "category": "reasoning",
+                      "description": "Graduate-level science questions.",
+                      "metric_name": "accuracy",
+                      "metric_unit": "percent",
+                      "higher_is_better": true,
+                      "source_name": "Example Leaderboard",
+                      "source_url": "https://example.com/gpqa",
+                      "license": "CC-BY-4.0",
+                      "run": {
+                        "id": 12,
+                        "origin": "import",
+                        "run_at": "2026-09-20T00:00:00Z",
+                        "cost_currency": "USD",
+                        "notes": ""
+                      },
+                      "models_count": 1,
+                      "champions": {
+                        "quality": {
+                          "model_label": "DeepSeek V4 Flash",
+                          "model": "deepseek-ai/DeepSeek-V4-Flash",
+                          "score": 71.2,
+                          "cost_per_task_micro": 12300,
+                          "avg_duration_ms": 5300
+                        },
+                        "value": {
+                          "model_label": "DeepSeek V4 Flash",
+                          "model": "deepseek-ai/DeepSeek-V4-Flash",
+                          "score": 71.2,
+                          "cost_per_task_micro": 12300,
+                          "avg_duration_ms": 5300
+                        },
+                        "speed": {
+                          "model_label": "DeepSeek V4 Flash",
+                          "model": "deepseek-ai/DeepSeek-V4-Flash",
+                          "score": 71.2,
+                          "cost_per_task_micro": 12300,
+                          "avg_duration_ms": 5300
+                        }
+                      }
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkListResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'category' must be one of general, coding, agents, reasoning, chinese, search, media, artifacts, embedding.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load benchmarks.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "List benchmarks",
+        "tags": [
+          "Benchmarks"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "已发布的基准及其最新已发布批次的摘要：参评模型数，以及质量 / 性价比 / 速度三项冠军（性价比与速度在分数不低于中位数的模型中评选）。无需 API Key（带不带 Key 返回相同内容）；响应带 `Cache-Control: public, max-age=300`。外部来源的结果（`run.origin` 为 `manual`/`import`）成本沿用来源口径；`self_eval` 为平台按实际售价实测。",
+            "summary": "列出基准测试"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/benchmarks/{slug}": {
+      "get": {
+        "description": "A published benchmark with the full leaderboard of its latest published run (best first; ties share a rank). Unknown or unpublished slugs return `404 not_found`. No API key required (the same content is returned with or without one); responses carry `Cache-Control: public, max-age=300`. Results from external sources (`run.origin` = `manual`/`import`) use the source's own cost figures; `self_eval` runs are measured on this platform at its actual prices.",
+        "operationId": "getBenchmark",
+        "parameters": [
+          {
+            "description": "Benchmark slug.",
+            "example": "gpqa-diamond",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "基准的 slug。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "slug": "gpqa-diamond",
+                  "name": "GPQA Diamond",
+                  "category": "reasoning",
+                  "description": "Graduate-level science questions.",
+                  "metric_name": "accuracy",
+                  "metric_unit": "percent",
+                  "higher_is_better": true,
+                  "source_name": "Example Leaderboard",
+                  "source_url": "https://example.com/gpqa",
+                  "license": "CC-BY-4.0",
+                  "run": {
+                    "id": 12,
+                    "origin": "import",
+                    "run_at": "2026-09-20T00:00:00Z",
+                    "cost_currency": "USD",
+                    "notes": ""
+                  },
+                  "models_count": 1,
+                  "champions": {
+                    "quality": {
+                      "model_label": "DeepSeek V4 Flash",
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "score": 71.2,
+                      "cost_per_task_micro": 12300,
+                      "avg_duration_ms": 5300
+                    },
+                    "value": {
+                      "model_label": "DeepSeek V4 Flash",
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "score": 71.2,
+                      "cost_per_task_micro": 12300,
+                      "avg_duration_ms": 5300
+                    },
+                    "speed": {
+                      "model_label": "DeepSeek V4 Flash",
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "score": 71.2,
+                      "cost_per_task_micro": 12300,
+                      "avg_duration_ms": 5300
+                    }
+                  },
+                  "results": [
+                    {
+                      "rank": 1,
+                      "model_label": "DeepSeek V4 Flash",
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "score": 71.2,
+                      "cost_per_task_micro": 12300,
+                      "avg_duration_ms": 5300,
+                      "error_rate": 0.01,
+                      "sample_count": 198,
+                      "extra": null
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkDetail"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Benchmark not found.",
+                    "type": "invalid_request_error",
+                    "code": "not_found",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未找到"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load benchmarks.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get a benchmark leaderboard",
+        "tags": [
+          "Benchmarks"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "一个已发布基准及其最新已发布批次的完整排行榜（从好到差，同分并列）。不存在或未发布的 slug 返回 `404 not_found`。无需 API Key（带不带 Key 返回相同内容）；响应带 `Cache-Control: public, max-age=300`。外部来源的结果（`run.origin` 为 `manual`/`import`）成本沿用来源口径；`self_eval` 为平台按实际售价实测。",
+            "summary": "获取基准排行榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
       }
     },
     "/v1/catalog": {
@@ -3077,6 +5526,201 @@
         }
       }
     },
+    "/v1/model-benchmarks": {
+      "get": {
+        "description": "A public model's results on every published benchmark (one entry per benchmark, its best variant), for model detail pages. Unknown or non-public models return an empty list. No API key required (the same content is returned with or without one); responses carry `Cache-Control: public, max-age=300`. Results from external sources (`run.origin` = `manual`/`import`) use the source's own cost figures; `self_eval` runs are measured on this platform at its actual prices.",
+        "operationId": "getModelBenchmarks",
+        "parameters": [
+          {
+            "description": "Model ID as listed in `GET /v1/catalog`.",
+            "example": "deepseek-ai/DeepSeek-V4-Flash",
+            "in": "query",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "模型 ID，同 `GET /v1/catalog`。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "object": "list",
+                  "model": "deepseek-ai/DeepSeek-V4-Flash",
+                  "data": [
+                    {
+                      "slug": "gpqa-diamond",
+                      "name": "GPQA Diamond",
+                      "category": "reasoning",
+                      "metric_name": "Accuracy",
+                      "metric_unit": "percent",
+                      "higher_is_better": true,
+                      "source_name": "Example Leaderboard",
+                      "source_url": "https://example.com/gpqa",
+                      "license": "CC-BY-4.0",
+                      "run_at": "2026-09-20T00:00:00Z",
+                      "model_label": "deepseek-v4-flash_max",
+                      "score": 71.2,
+                      "rank": 8,
+                      "models_count": 120,
+                      "extra": {
+                        "stderr": 1.8
+                      }
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ModelBenchmarksResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'model' is required.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load benchmarks.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get a model's benchmark results",
+        "tags": [
+          "Benchmarks"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "某个公开模型在全部已发布基准上的成绩（每个基准一条，取最好的档位），用于模型详情页。模型不存在或不公开时返回空列表。无需 API Key（带不带 Key 返回相同内容）；响应带 `Cache-Control: public, max-age=300`。外部来源的结果（`run.origin` 为 `manual`/`import`）成本沿用来源口径；`self_eval` 为平台按实际售价实测。",
+            "summary": "获取模型的评测成绩"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
     "/v1/models": {
       "get": {
         "description": "OpenAI-compatible model list: the active models visible to the account tier of this API key, sorted by `id`. No prices or context lengths (use `GET /v1/catalog`). The key's own model allow-list is not applied here.",
@@ -3229,6 +5873,1589 @@
             "description": "OpenAI 兼容的模型列表：该 API Key 所属账户等级可见的、已上线的模型，按 `id` 排序。不含价格与上下文长度（请用 `GET /v1/catalog`）。这里不会按 Key 自身的模型白名单过滤。",
             "summary": "列出模型"
           }
+        }
+      }
+    },
+    "/v1/rankings/apps": {
+      "get": {
+        "description": "Apps and clients ranked by tokens. Only requests that declare an app with the `X-Title` header (≤ 64 characters; optional `HTTP-Referer`, of which only `scheme://host` is kept) are counted; requests with the same `HTTP-Referer` origin are grouped as one app. Operators may block or merge impersonating app names.\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getAppRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          },
+          {
+            "description": "Maximum number of entries.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "最多返回的条数。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "total_tokens": 52000000,
+                  "apps": [
+                    {
+                      "rank": 1,
+                      "app_name": "Cline",
+                      "app_url": "https://cline.bot",
+                      "tokens": 15600000,
+                      "share": 0.3,
+                      "change": 0.1
+                    }
+                  ],
+                  "others": {
+                    "tokens": 36400000,
+                    "share": 0.7
+                  },
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": true
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/AppRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get app rankings",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按 token 量对应用与客户端排名。只统计用请求头 `X-Title`（≤ 64 个字符；可选 `HTTP-Referer`，只保留 `scheme://host`）声明了应用的请求；`HTTP-Referer` 来源相同的请求归为同一应用。运营可屏蔽或合并冒用的应用名。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取热门应用榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/rankings/authors": {
+      "get": {
+        "description": "Token share by model author (the part of the model ID before `/`): top 9 plus `others`. An author needs at least `min_distinct_accounts` distinct accounts across its models.\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getAuthorRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "authors": [
+                    {
+                      "rank": 1,
+                      "author": "deepseek-ai",
+                      "provider_display": "DeepSeek",
+                      "share": 0.52,
+                      "change": -0.03,
+                      "models": 3
+                    }
+                  ],
+                  "others": {
+                    "share": 0.48
+                  },
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": false
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get model author market share",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按模型作者（模型 ID 中 `/` 之前的部分）统计 token 份额：前 9 名加 `others`。作者在其全部模型上需至少有 `min_distinct_accounts` 个独立账户。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取模型厂商份额"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/rankings/models": {
+      "get": {
+        "description": "Models ranked by tokens processed on the platform in the period, with share, change versus the previous period and (with `series=day`) a daily trend.\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getModelRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          },
+          {
+            "description": "Maximum number of models.",
+            "example": 20,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "最多返回的模型数。"
+              }
+            }
+          },
+          {
+            "description": "`day` adds a daily series to each model (for trend charts).",
+            "example": "day",
+            "in": "query",
+            "name": "series",
+            "required": false,
+            "schema": {
+              "default": "none",
+              "enum": [
+                "none",
+                "day"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "为 `day` 时每个模型附带每日序列（用于趋势图）。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "models": [
+                    {
+                      "rank": 1,
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "display_name": "DeepSeek V4 Flash",
+                      "author": "deepseek-ai",
+                      "provider_display": "DeepSeek",
+                      "deprecated": false,
+                      "share": 0.4213,
+                      "change": 0.12,
+                      "series": [
+                        {
+                          "day": "2026-09-24",
+                          "share": 0.39
+                        },
+                        {
+                          "day": "2026-09-25",
+                          "share": 0.41
+                        }
+                      ]
+                    },
+                    {
+                      "rank": 2,
+                      "model": "BAAI/bge-m3",
+                      "display_name": "BGE M3",
+                      "author": "BAAI",
+                      "provider_display": "BAAI",
+                      "deprecated": false,
+                      "share": 0.1802,
+                      "change": null
+                    }
+                  ],
+                  "others": {
+                    "share": 0.3985
+                  },
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": false
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ModelRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get model usage rankings",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按统计期内平台处理的 token 量对模型排名，附带份额、与上一期相比的变化，以及（`series=day` 时）每日趋势。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取模型用量榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/rankings/multimodal": {
+      "get": {
+        "description": "Models ranked by tokens of successful requests that contained image inputs (`image_url` content parts). Same response shape as `GET /v1/rankings/models` (without series).\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getMultimodalRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          },
+          {
+            "description": "Maximum number of entries.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "最多返回的条数。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "models": [
+                    {
+                      "rank": 1,
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "display_name": "DeepSeek V4 Flash",
+                      "author": "deepseek-ai",
+                      "provider_display": "DeepSeek",
+                      "deprecated": false,
+                      "share": 0.4213,
+                      "change": 0.12,
+                      "series": [
+                        {
+                          "day": "2026-09-24",
+                          "share": 0.39
+                        },
+                        {
+                          "day": "2026-09-25",
+                          "share": 0.41
+                        }
+                      ]
+                    },
+                    {
+                      "rank": 2,
+                      "model": "BAAI/bge-m3",
+                      "display_name": "BGE M3",
+                      "author": "BAAI",
+                      "provider_display": "BAAI",
+                      "deprecated": false,
+                      "share": 0.1802,
+                      "change": null
+                    }
+                  ],
+                  "others": {
+                    "share": 0.3985
+                  },
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": false
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ModelRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get image-input rankings",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按含图片输入（`image_url` 内容块）的成功请求的 token 量对模型排名。响应形状同 `GET /v1/rankings/models`（无序列）。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取多模态图像处理榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/rankings/speed": {
+      "get": {
+        "description": "Models ranked by median (P50) output speed of successful streaming requests; each request's speed is output tokens ÷ generation time (last chunk − first chunk). Non-streaming requests are not counted because queueing and generation cannot be separated. A model needs at least 10 such requests in the period. Upstream providers are not disclosed.\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getSpeedRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          },
+          {
+            "description": "Maximum number of entries.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "最多返回的条数。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "models": [
+                    {
+                      "rank": 1,
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "display_name": "DeepSeek V4 Flash",
+                      "author": "deepseek-ai",
+                      "provider_display": "DeepSeek",
+                      "deprecated": false,
+                      "tokens_per_second": 85.3,
+                      "mean_tokens_per_second": 91.7
+                    }
+                  ],
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": false
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SpeedRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get fastest models",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按成功流式请求输出速度的中位数（P50）对模型排名；单个请求的速度 = 输出 token ÷ 生成耗时（最后一个 chunk − 第一个 chunk）。非流式请求无法区分排队与生成，不参与统计。模型在统计期内需至少有 10 个此类请求。不披露上游供应商。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取最快推理速度榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
+        }
+      }
+    },
+    "/v1/rankings/tools": {
+      "get": {
+        "description": "Models ranked by tokens of successful requests whose response contained tool calls. Same response shape as `GET /v1/rankings/models` (without series).\n\n**Rules.** Only successful requests count (input + output tokens; output already includes reasoning tokens). Internal, load-test and evaluation accounts are excluded. An entry is listed only if at least `methodology.min_distinct_accounts` distinct accounts used it in the period; one account counts for at most `methodology.max_account_share` of an entry's period total. Only models visible in the public catalog are listed; everything else is folded into `others`. Absolute token numbers are omitted unless the operator publishes them. When rankings are switched off the endpoint returns `503 service_unavailable`.\n\nNo API key required; responses carry `Cache-Control: public, max-age=300`.",
+        "operationId": "getToolCallRankings",
+        "parameters": [
+          {
+            "description": "Statistics period: the last 1 / 7 / 30 complete days (Asia/Shanghai) ending yesterday.",
+            "example": "week",
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "week",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "统计期：截至昨天的最近 1 / 7 / 30 个完整自然日（Asia/Shanghai）。"
+              }
+            }
+          },
+          {
+            "description": "Maximum number of entries.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "最多返回的条数。"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "period": "week",
+                  "from": "2026-09-24",
+                  "to": "2026-10-01",
+                  "tz": "Asia/Shanghai",
+                  "models": [
+                    {
+                      "rank": 1,
+                      "model": "deepseek-ai/DeepSeek-V4-Flash",
+                      "display_name": "DeepSeek V4 Flash",
+                      "author": "deepseek-ai",
+                      "provider_display": "DeepSeek",
+                      "deprecated": false,
+                      "share": 0.4213,
+                      "change": 0.12,
+                      "series": [
+                        {
+                          "day": "2026-09-24",
+                          "share": 0.39
+                        },
+                        {
+                          "day": "2026-09-25",
+                          "share": 0.41
+                        }
+                      ]
+                    },
+                    {
+                      "rank": 2,
+                      "model": "BAAI/bge-m3",
+                      "display_name": "BGE M3",
+                      "author": "BAAI",
+                      "provider_display": "BAAI",
+                      "deprecated": false,
+                      "share": 0.1802,
+                      "change": null
+                    }
+                  ],
+                  "others": {
+                    "share": 0.3985
+                  },
+                  "updated_at": "2026-10-01T08:30:00+08:00",
+                  "methodology": {
+                    "min_distinct_accounts": 3,
+                    "max_account_share": 0.2,
+                    "excludes_internal": true,
+                    "success_only": true,
+                    "shows_absolute": false
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ModelRanking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "description": "`public, max-age=300`.",
+                "example": "public, max-age=300",
+                "schema": {
+                  "type": "string"
+                },
+                "x-i18n": {
+                  "zh": {
+                    "description": "`public, max-age=300`。"
+                  }
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "'period' must be one of day, week, month.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load rankings.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Public rankings are temporarily unavailable.",
+                    "type": "api_error",
+                    "code": "service_unavailable",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "not_implemented",
+              "service_unavailable"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [],
+        "summary": "Get tool-calling rankings",
+        "tags": [
+          "Rankings"
+        ],
+        "x-auth": "none",
+        "x-billable": false,
+        "x-i18n": {
+          "zh": {
+            "description": "按响应中含工具调用的成功请求的 token 量对模型排名。响应形状同 `GET /v1/rankings/models`（无序列）。\n\n**口径。** 只统计成功请求（输入 + 输出 token；输出已包含推理 token）。排除内部、压测与评测账户。统计期内至少有 `methodology.min_distinct_accounts` 个独立账户使用过才单独上榜；单个账户最多计入该条目当期总量的 `methodology.max_account_share`。只列出公开目录中可见的模型，其余计入 `others`。运营未开启时不返回绝对 token 数。榜单下线时返回 `503 service_unavailable`。\n\n无需 API Key；响应带 `Cache-Control: public, max-age=300`。",
+            "summary": "获取工具调用榜"
+          }
+        },
+        "x-rate-limit": {
+          "en": "60 requests per minute per client IP (shared by all public ranking and benchmark endpoints).",
+          "zh": "每个客户端 IP 每分钟 60 次（所有公开榜单与基准测试接口共享）。"
         }
       }
     },
@@ -3490,6 +7717,24 @@
       "x-i18n": {
         "zh": {
           "description": "Anthropic Messages API 兼容接口。"
+        }
+      }
+    },
+    {
+      "description": "Public usage rankings (no API key).",
+      "name": "Rankings",
+      "x-i18n": {
+        "zh": {
+          "description": "公开用量排行榜（无需 API Key）。"
+        }
+      }
+    },
+    {
+      "description": "Public benchmark leaderboards (no API key).",
+      "name": "Benchmarks",
+      "x-i18n": {
+        "zh": {
+          "description": "公开基准测试排行榜（无需 API Key）。"
         }
       }
     },

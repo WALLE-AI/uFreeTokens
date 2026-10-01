@@ -25,6 +25,7 @@ type Config struct {
 	Secrets  SecretsConfig  `koanf:"secrets"`
 	Log      LogConfig      `koanf:"log"`
 	Console  ConsoleConfig  `koanf:"console"`
+	Public   PublicConfig   `koanf:"public"`
 }
 
 type GatewayConfig struct {
@@ -41,6 +42,19 @@ type GatewayConfig struct {
 	// 字符串而不是 []string：koanf 的环境变量 provider 不会把逗号分隔的字符串
 	// 拆成 slice，拆分交给 app.NewGatewayRouter 做。
 	CORSOrigins string `koanf:"cors_origins"`
+}
+
+// PublicConfig 是免鉴权公开数据接口（GET /v1/rankings/*、/v1/benchmarks）的开关与口径，
+// 见 docs/基准测试与排行榜数据服务技术方案.md §3.4、§8.3。环境变量
+// UFT_PUBLIC_RANKINGS_ENABLED / UFT_PUBLIC_RANKINGS_SHOW_ABSOLUTE / UFT_PUBLIC_RANKINGS_MIN_ACCOUNTS。
+type PublicConfig struct {
+	// RankingsEnabled 为 false 时 /v1/rankings/* 返回 503 service_unavailable（前端显示
+	// "数据维护中"），用于口径出问题时快速下线而不回滚代码。
+	RankingsEnabled bool `koanf:"rankings_enabled"`
+	// RankingsShowAbsolute 为 false（默认）时只公开份额与排名，不公开绝对 token 数。
+	RankingsShowAbsolute bool `koanf:"rankings_show_absolute"`
+	// RankingsMinAccounts 是上榜所需的最少独立账户数（隐私阈值）。
+	RankingsMinAccounts int `koanf:"rankings_min_accounts"`
 }
 
 type MetricsConfig struct {
@@ -92,31 +106,34 @@ type ConsoleConfig struct {
 func defaults() *koanf.Koanf {
 	k := koanf.New(".")
 	_ = k.Load(confmap.Provider(map[string]any{
-		"gateway.addr":                ":8080",
-		"gateway.max_body_bytes":      20 * 1024 * 1024,
-		"gateway.read_header_timeout": "5s",
-		"gateway.read_timeout":        "30s",
-		"gateway.idle_timeout":        "120s",
-		"gateway.stream_idle_timeout": "120s",
-		"gateway.shutdown_grace":      "30s",
-		"metrics.addr":                ":9090",
-		"retry.max_attempts":          3,
-		"retry.total_deadline":        "90s",
-		"retry.budget_ratio":          0.2,
-		"billing.reserve_output_cap":  8192,
-		"billing.reservation_ttl":     "30m",
-		"billing.rounding":            "ceil_micro",
-		"postgres.dsn":                "postgres://uft:uft@localhost:5432/uft?sslmode=disable",
-		"postgres.max_conns":          20,
-		"redis.addr":                  "localhost:6379",
-		"redis.db":                    0,
-		"secrets.kek_source":          "env",
-		"secrets.kek_env":             "UFT_KEK",
-		"secrets.api_key_pepper_env":  "UFT_KEY_PEPPER",
-		"secrets.admin_token_env":     "UFT_ADMIN_TOKEN",
-		"log.level":                   "info",
-		"log.format":                  "json",
-		"console.cookie_secure":       false,
+		"gateway.addr":                  ":8080",
+		"gateway.max_body_bytes":        20 * 1024 * 1024,
+		"gateway.read_header_timeout":   "5s",
+		"gateway.read_timeout":          "30s",
+		"gateway.idle_timeout":          "120s",
+		"gateway.stream_idle_timeout":   "120s",
+		"gateway.shutdown_grace":        "30s",
+		"metrics.addr":                  ":9090",
+		"retry.max_attempts":            3,
+		"retry.total_deadline":          "90s",
+		"retry.budget_ratio":            0.2,
+		"billing.reserve_output_cap":    8192,
+		"billing.reservation_ttl":       "30m",
+		"billing.rounding":              "ceil_micro",
+		"postgres.dsn":                  "postgres://uft:uft@localhost:5432/uft?sslmode=disable",
+		"postgres.max_conns":            20,
+		"redis.addr":                    "localhost:6379",
+		"redis.db":                      0,
+		"secrets.kek_source":            "env",
+		"secrets.kek_env":               "UFT_KEK",
+		"secrets.api_key_pepper_env":    "UFT_KEY_PEPPER",
+		"secrets.admin_token_env":       "UFT_ADMIN_TOKEN",
+		"log.level":                     "info",
+		"log.format":                    "json",
+		"console.cookie_secure":         false,
+		"public.rankings_enabled":       true,
+		"public.rankings_show_absolute": false,
+		"public.rankings_min_accounts":  3,
 	}, "."), nil)
 	return k
 }

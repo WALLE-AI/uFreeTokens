@@ -63,3 +63,18 @@ export function keyLimitsText(k: Pick<ApiKey, 'rpm_limit' | 'tpm_limit' | 'concu
   return parts.length ? parts.join(' · ') : '不限';
 }
 
+// exclude_from_public_stats：内部测试 / 压测 / 评测账户的流量不计入公开排行榜。
+// 生效时机见技术方案 §3.3（public_usage_daily 每 30 分钟重算今天 + 昨天）。
+export const PUBLIC_STATS_HELP =
+  '内部测试、压测、评测账户的流量不计入公开排行榜（/v1/rankings）。修改后约 30 分钟内对今天和昨天的榜单生效，更早的历史数据在下一次每日全量重建时生效。';
+
+export function PublicStatsExcludedBadge({ className = '' }: { className?: string }) {
+  return (
+    <span
+      title={PUBLIC_STATS_HELP}
+      className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-medium whitespace-nowrap bg-blue-50 text-blue-700 border-blue-200 ${className}`}
+    >
+      不计入公开榜单
+    </span>
+  );
+}

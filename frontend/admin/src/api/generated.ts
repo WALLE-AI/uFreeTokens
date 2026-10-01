@@ -27,6 +27,7 @@ export interface Account {
   status: string;
   tier: string;
   credit_limit_micro: number;
+  exclude_from_public_stats: boolean;
   created_at: string;
 }
 
@@ -52,6 +53,7 @@ export interface AccountSummary {
   status: string;
   tier: string;
   credit_limit_micro: number;
+  exclude_from_public_stats: boolean;
   created_at: string;
   owner_email: string | null;
   cash_balance_micro: number;
@@ -94,6 +96,22 @@ export interface AdminUser {
   totp_enabled: boolean;
   last_login_at: string | null;
   created_at: string;
+}
+
+export interface AdoptOfferRequest {
+  side: string;
+  channel_id: number | null;
+  virtual_model: string;
+  name: string;
+  discount_ratio: string | null;
+  starts_at: string | null;
+  ends_at: string | null;
+  priority: number;
+  budget_total: number | null;
+}
+
+export interface AdoptOfferResponse {
+  promotion_id: number;
 }
 
 export interface ApiError {
@@ -148,6 +166,136 @@ export interface BatchItemResult {
 
 export interface BatchItemsResponse {
   results: BatchItemResult[] | null;
+}
+
+export interface Benchmark {
+  id: number;
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  metric_name: string;
+  metric_unit: string;
+  higher_is_better: boolean;
+  source_name: string | null;
+  source_url: string | null;
+  status: string;
+  sort_order: number;
+  data_source_id: number | null;
+  data_source_name: string | null;
+  external_key: string | null;
+  alias_namespace: string | null;
+  score_key: string | null;
+  public_display: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BenchmarkDetail {
+  id: number;
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  metric_name: string;
+  metric_unit: string;
+  higher_is_better: boolean;
+  source_name: string | null;
+  source_url: string | null;
+  status: string;
+  sort_order: number;
+  data_source_id: number | null;
+  data_source_name: string | null;
+  external_key: string | null;
+  alias_namespace: string | null;
+  score_key: string | null;
+  public_display: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  runs: BenchmarkRun[] | null;
+}
+
+export interface BenchmarkResult {
+  model_label: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null;
+  score: number;
+  cost_per_task_micro: number | null;
+  avg_duration_ms: number | null;
+  error_rate: number | null;
+  sample_count: number | null;
+  extra: unknown;
+}
+
+export interface BenchmarkResultInput {
+  model_label: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null;
+  score: number | null;
+  cost_per_task_micro: number | null;
+  avg_duration_ms: number | null;
+  error_rate: number | null;
+  sample_count: number | null;
+  extra: unknown;
+}
+
+export interface BenchmarkRun {
+  id: number;
+  benchmark_id: number;
+  origin: string;
+  run_at: string;
+  notes: string;
+  cost_currency: string;
+  published: boolean;
+  published_at: string | null;
+  created_by: number | null;
+  created_at: string;
+  result_count: number;
+}
+
+export interface BenchmarkRunDetail {
+  id: number;
+  benchmark_id: number;
+  origin: string;
+  run_at: string;
+  notes: string;
+  cost_currency: string;
+  published: boolean;
+  published_at: string | null;
+  created_by: number | null;
+  created_at: string;
+  result_count: number;
+  results: BenchmarkResult[] | null;
+}
+
+export interface BenchmarkSummary {
+  id: number;
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  metric_name: string;
+  metric_unit: string;
+  higher_is_better: boolean;
+  source_name: string | null;
+  source_url: string | null;
+  status: string;
+  sort_order: number;
+  data_source_id: number | null;
+  data_source_name: string | null;
+  external_key: string | null;
+  alias_namespace: string | null;
+  score_key: string | null;
+  public_display: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  published_run_id: number | null;
+  published_run_at: string | null;
+  published_result_count: number;
 }
 
 export interface CatalogCounts {
@@ -234,6 +382,17 @@ export interface Channel {
   experiment_key: string | null;
   variant_label: string | null;
   allowed_account_ids: number[] | null;
+}
+
+export interface ChannelCost {
+  channel_id: number;
+  provider_code: string;
+  upstream_model: string;
+  currency: string | null;
+  input: string | null;
+  output: string | null;
+  input_cny: string | null;
+  output_cny: string | null;
 }
 
 export interface ChannelDetail {
@@ -348,6 +507,7 @@ export interface CreateAccountInput {
   name: string;
   tier: string;
   credit_limit_micro: number;
+  exclude_from_public_stats: boolean;
 }
 
 export interface CreateAdminInput {
@@ -355,6 +515,30 @@ export interface CreateAdminInput {
   name: string;
   password: string;
   roles: string[] | null;
+}
+
+export interface CreateBenchmarkInput {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  metric_name: string;
+  metric_unit: string;
+  higher_is_better: boolean | null;
+  source_name: string | null;
+  source_url: string | null;
+  status: string;
+  sort_order: number;
+  score_key: string | null;
+}
+
+export interface CreateBenchmarkRunInput {
+  origin: string;
+  run_at: string;
+  notes: string;
+  cost_currency: string;
+  results: BenchmarkResultInput[] | null;
+  publish: boolean;
 }
 
 export interface CreateChannelInput {
@@ -375,6 +559,15 @@ export interface CreatePriceSourceRequest {
   kind: string;
   fetcher: string;
   url: string;
+  domain: string;
+  name: string;
+  schedule: string;
+  config: Record<string, unknown> | null;
+  enabled: boolean | null;
+  license: string;
+  attribution: string;
+  public_display: boolean;
+  auto_publish: boolean;
 }
 
 export interface CreateProviderAccountRequest {
@@ -390,6 +583,14 @@ export interface CreateProviderInput {
   protocol: string;
   allowed_hosts: string[] | null;
   currency: string;
+}
+
+export interface CreatePublicAppRuleInput {
+  app_key: string;
+  action: string;
+  merge_into: string | null;
+  display_name: string | null;
+  note: string;
 }
 
 export interface CreateVirtualModelInput {
@@ -445,6 +646,18 @@ export interface CursorPage_LedgerEntry {
 export interface CursorPage_RequestLogItem {
   data: RequestLogItem[] | null;
   next_cursor: string;
+}
+
+export interface DataSourceRun {
+  id: number;
+  source_id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  items_fetched: number | null;
+  items_changed: number | null;
+  error: string | null;
+  detail: unknown;
 }
 
 export interface DecideChangeRequestBody {
@@ -599,6 +812,14 @@ export interface ListData_AdminUser {
   data: AdminUser[] | null;
 }
 
+export interface ListData_BenchmarkSummary {
+  data: BenchmarkSummary[] | null;
+}
+
+export interface ListData_DataSourceRun {
+  data: DataSourceRun[] | null;
+}
+
 export interface ListData_FXRateInfo {
   data: FXRateInfo[] | null;
 }
@@ -611,8 +832,16 @@ export interface ListData_PriceSourceInfo {
   data: PriceSourceInfo[] | null;
 }
 
+export interface ListData_PublicAppRule {
+  data: PublicAppRule[] | null;
+}
+
 export interface ListData_Role {
   data: Role[] | null;
+}
+
+export interface ListData_String {
+  data: string[] | null;
 }
 
 export interface ListData_UpstreamModel {
@@ -637,6 +866,19 @@ export interface LoginResult {
   token: string;
   expires_at: string;
   user: AdminUser | null;
+}
+
+export interface MarketPrice {
+  source_id: number;
+  source_name: string;
+  level: string;
+  upstream_model: string;
+  currency: string;
+  input: string | null;
+  output: string | null;
+  input_cny: string | null;
+  output_cny: string | null;
+  observed_at: string;
 }
 
 export interface MeResponse {
@@ -674,6 +916,16 @@ export interface MetaEnumsResponse {
   fetchers: string[] | null;
   listing_statuses: string[] | null;
   member_roles: string[] | null;
+  source_domains: string[] | null;
+  offer_types: string[] | null;
+  offer_statuses: string[] | null;
+  model_alias_statuses: string[] | null;
+  data_source_run_statuses: string[] | null;
+  benchmark_categories: string[] | null;
+  benchmark_statuses: string[] | null;
+  benchmark_origins: string[] | null;
+  score_keys: string[] | null;
+  design_arena_keys: string[] | null;
   permissions: string[] | null;
 }
 
@@ -695,6 +947,46 @@ export interface Metrics {
   p95_ttft_ms: number | null;
   estimated_ratio: string | null;
   active_accounts: number;
+}
+
+export interface ModelAlias {
+  namespace: string;
+  external_label: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null;
+  status: string;
+  method: string;
+  confidence: number | null;
+  variant: string | null;
+  seen_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  decided_by_name: string | null;
+  decided_at: string | null;
+}
+
+export interface Offer {
+  id: number;
+  source_id: number | null;
+  source_name?: string | null;
+  provider_code: string;
+  upstream_model: string | null;
+  offer_type: string;
+  discount_ratio: string | null;
+  quota: unknown;
+  limits: unknown;
+  starts_at: string | null;
+  ends_at: string | null;
+  conditions: string | null;
+  evidence_url: string | null;
+  evidence_excerpt: string | null;
+  detection: string;
+  status: string;
+  adopted_promotion_id: number | null;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
 }
 
 export interface Page_APIKeyListItem {
@@ -725,8 +1017,29 @@ export interface Page_ChannelSummary {
   page_size: number;
 }
 
+export interface Page_ModelAlias {
+  data: ModelAlias[] | null;
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface Page_Offer {
+  data: Offer[] | null;
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface Page_PendingListing {
   data: PendingListing[] | null;
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface Page_PriceComparisonRow {
+  data: PriceComparisonRow[] | null;
   total: number;
   page: number;
   page_size: number;
@@ -797,6 +1110,18 @@ export interface PriceBrief {
   effective_from: string;
 }
 
+export interface PriceComparisonRow {
+  virtual_model_id: number;
+  virtual_model: string;
+  sell_currency: string | null;
+  sell_input: string | null;
+  sell_output: string | null;
+  channels: ChannelCost[] | null;
+  market: MarketPrice[] | null;
+  margin_ratio: string | null;
+  vs_market_lowest: string | null;
+}
+
 export interface PriceComponentInput {
   meter: string;
   unit: string;
@@ -841,6 +1166,8 @@ export interface PriceObservationRequest {
 
 export interface PriceSourceInfo {
   id: number;
+  domain: string;
+  name: string;
   provider_id: number | null;
   provider_code: string | null;
   level: string;
@@ -850,7 +1177,15 @@ export interface PriceSourceInfo {
   schedule: string;
   config: unknown;
   enabled: boolean;
+  license: string | null;
+  attribution: string | null;
+  public_display: boolean;
+  auto_publish: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
   last_success_at: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
   observation_count_7d: number;
   created_at: string;
 }
@@ -1001,6 +1336,32 @@ export interface ProviderUpdateResult {
   affected_active_channels: number;
 }
 
+export interface PublicAppCandidate {
+  app_key: string;
+  app_name: string;
+  app_url: string;
+  requests: number;
+  tokens: number;
+  distinct_accounts: number;
+  rule: PublicAppRule | null;
+}
+
+export interface PublicAppRule {
+  id: number;
+  app_key: string;
+  action: string;
+  merge_into: string | null;
+  display_name: string | null;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublicAppsResponse {
+  data: PublicAppCandidate[] | null;
+  min_distinct_accounts: number;
+}
+
 export interface PublishListingRequest {
   virtual_model: { name: string; family: string; type: string; context_window: number; max_output: number; capabilities: string[] | null; visible_tiers: string[] | null; };
   provider_account_id: number;
@@ -1128,6 +1489,24 @@ export interface SetMetadataRequest {
   scores: Record<string, unknown> | null;
 }
 
+export interface SetModelAliasInput {
+  namespace: string;
+  external_label: string;
+  status: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null;
+}
+
+export interface SetModelAliasResult {
+  alias: ModelAlias | null;
+  relinked_results: number;
+  reprojected_runs: number;
+}
+
+export interface SetOfferStatusRequest {
+  status: string;
+}
+
 export interface SetSellPriceRequest {
   tier: string;
   components: PriceComponentInput[] | null;
@@ -1164,6 +1543,9 @@ export interface TodoCounts {
   channels_negative_margin: number;
   channels_missing_cost: number;
   models_missing_sell_price: number;
+  offers_new: number;
+  aliases_suggested: number;
+  data_sources_failing: number;
 }
 
 export interface TotpCodeRequest {
@@ -1204,6 +1586,7 @@ export interface UpdateAccountInput {
   status: string | null;
   tier: string | null;
   credit_limit_micro: number | null;
+  exclude_from_public_stats: boolean | null;
 }
 
 export interface UpdateAdminInput {
@@ -1212,6 +1595,20 @@ export interface UpdateAdminInput {
   roles: string[] | null | null;
   password: string | null;
   reset_totp: boolean;
+}
+
+export interface UpdateBenchmarkInput {
+  name: string | null;
+  category: string | null;
+  description: string | null;
+  metric_name: string | null;
+  metric_unit: string | null;
+  higher_is_better: boolean | null;
+  source_name: string | null;
+  source_url: string | null;
+  status: string | null;
+  sort_order: number | null;
+  score_key: string | null;
 }
 
 export interface UpdateChannelInput {
@@ -1233,6 +1630,12 @@ export interface UpdatePriceSourceInput {
   url: string | null;
   schedule: string | null;
   config: unknown | null;
+  name: string | null;
+  license: string | null;
+  attribution: string | null;
+  public_display: boolean | null;
+  auto_publish: boolean | null;
+  provider_id: number | null;
 }
 
 export interface UpdateProviderAccountInput {

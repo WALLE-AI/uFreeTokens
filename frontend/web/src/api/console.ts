@@ -11,6 +11,8 @@ export interface ConsoleUser {
   emailVerified: boolean;
   accountId: number;
   accountTier: string;
+  // 账户是否选择了不计入公开排行榜（数据隐私设置，只有 owner/admin 能改）。
+  excludeFromPublicStats: boolean;
 }
 
 export interface ConsoleApiKey {
@@ -41,6 +43,7 @@ interface RawMe {
   email_verified: boolean;
   account_id: number;
   account_tier: string;
+  exclude_from_public_stats?: boolean;
 }
 
 interface RawApiKey {
@@ -72,6 +75,7 @@ function mapMe(raw: RawMe): ConsoleUser {
     emailVerified: raw.email_verified,
     accountId: raw.account_id,
     accountTier: raw.account_tier,
+    excludeFromPublicStats: raw.exclude_from_public_stats ?? false,
   };
 }
 
@@ -120,6 +124,17 @@ export async function logout(): Promise<void> {
 export async function getMe(): Promise<ConsoleUser> {
   const raw = await request<RawMe>('/console/me');
   return mapMe(raw);
+}
+
+// setPublicStatsOptOut 是"不计入公开排行榜"开关（PUT /console/settings/public-stats）：
+// 公开榜单只以匿名、聚合形式展示模型用量，账户可以选择退出；非 owner/admin 成员返回 403。
+export async function setPublicStatsOptOut(exclude: boolean): Promise<boolean> {
+  const raw = await request<{ exclude_from_public_stats: boolean }>('/console/settings/public-stats', {
+    method: 'PUT',
+    body: { exclude_from_public_stats: exclude },
+    headers: CSRF_HEADERS,
+  });
+  return raw.exclude_from_public_stats;
 }
 
 export async function listKeys(): Promise<ConsoleApiKey[]> {

@@ -1,0 +1,103 @@
+---
+title: 排行榜与基准测试数据
+description: 免鉴权的公开排行榜与基准测试接口、排行榜统计口径，以及用 X-Title / HTTP-Referer 请求头为你的应用署名。
+section: guides
+order: 90
+---
+
+网站上的[排行榜](/rankings)与[基准测试](/benchmarks)页面使用的数据都来自下面这组公开接口，你也可以直接调用它们。
+
+## 公开接口一览
+
+这些接口**不需要 API Key**（带 Key 调用返回的内容完全相同），只支持 `GET`：
+
+| 接口 | 说明 | 查询参数 |
+| --- | --- | --- |
+| `GET /v1/rankings/models` | 模型 token 用量排名与环比 | `period`、`limit`、`series` |
+| `GET /v1/rankings/authors` | 按模型厂商汇总的 token 份额 | `period` |
+| `GET /v1/rankings/speed` | 按模型的输出速度中位数（P50）排名 | `period` |
+| `GET /v1/rankings/tools` | 工具调用请求量排名 | `period` |
+| `GET /v1/rankings/multimodal` | 图片输入请求量排名 | `period` |
+| `GET /v1/rankings/apps` | 应用 token 用量排名，见[应用署名](#应用署名) | `period` |
+| `GET /v1/benchmarks` | 已发布的基准测试列表，含参评模型数、最近评测批次与三项冠军 | `category` |
+| `GET /v1/benchmarks/{slug}` | 单个基准最新已发布批次的完整排行榜 | — |
+
+查询参数：
+
+| 参数 | 取值 | 说明 |
+| --- | --- | --- |
+| `period` | `day`、`week`、`month` | 统计周期，适用于全部排行榜接口 |
+| `limit` | 1–100 | 仅 `/v1/rankings/models`，返回的模型数 |
+| `series` | `day` | 仅 `/v1/rankings/models`，附带每个模型的按日序列，用于绘制趋势图 |
+| `category` | `agents`、`media`、`artifacts`、`reasoning`、`search` | 仅 `/v1/benchmarks`，按分类过滤；省略时返回全部分类 |
+
+### 示例
+
+```bash title="cURL"
+curl "{{BASE_URL}}/v1/rankings/models?period=week&limit=20&series=day"
+```
+
+```bash title="cURL"
+curl "{{BASE_URL}}/v1/benchmarks?category=reasoning"
+```
+
+基准测试结果中：
+
+- `model` 是平台上架模型的 ID（可直接用于调用），参评模型未在平台上架时为 `null`，只有展示名 `model_label`。
+- `cost_per_task_micro` 是单题平均成本，单位为 `run.cost_currency`（`USD` 或 `CNY`）下的百万分之一，除以 1,000,000 得到金额。
+- `run.origin` 为 `self_eval` 表示平台通过自家网关实测；`manual`、`import` 表示录入的外部公开结果，此时 `source_name`、`source_url` 标明来源。
+- 三项冠军：`quality` 为得分最好的模型；`value`（性价比）为得分不低于中位数的模型中单题成本最低者；`speed` 为得分不低于中位数的模型中平均耗时最短者。
+- 基准不存在或尚未发布时返回 `404 not_found`。
+
+### 缓存、限流与停用
+
+- 响应带 `Cache-Control: public, max-age=300`，数据最多有 5 分钟延迟，请勿高频轮询。
+- 按客户端 IP 限流，超限时返回 `429 rate_limit_exceeded` 并带 `Retry-After`，处理方式见[速率限制](/docs/zh/rate-limits)。
+- 平台可以临时关闭公开数据（例如修正统计口径时），此时这些接口返回 `503 service_unavailable`，稍后重试即可。
+
+## 排行榜统计口径
+
+- **只统计成功请求**的输入 + 输出 token。失败请求不计入排名。
+- **内部账户不计入**：平台内部测试、压测与评测账户的流量全部排除。
+- **至少 3 个独立账户**：统计期内调用某模型（或应用）的独立账户数少于 3 时不单独上榜，归入"其他"，避免从榜单反推单个客户的用量。
+- **单账户贡献上限**：单个账户在某模型上计入排名的 token 数不超过该模型当期总量的 20%，超出部分不计入排名，以抑制刷量。
+- **按北京时间切日**：统计日按 `Asia/Shanghai` 时区划分，只包含已完整结束的自然日，最新一天为昨天。
+- **绝对数值可能隐藏**：平台可能只公开份额与排名而不展示绝对 token 数，此时请以份额字段为准。
+
+## 隐私与退出
+
+排行榜只以匿名、聚合的形式公开 token 用量，不包含任何请求内容。账户的所有者或管理员可以在个人中心 →「数据隐私」中关闭「计入公开排行榜」（对应 `PUT /console/settings/public-stats`）：今天与昨天的榜单约 30 分钟内生效，历史数据在次日的全量重建后生效。
+
+## 应用署名
+
+如果你在自己的应用里调用 uFreeTokens，可以在请求上附带下面两个请求头，让应用出现在应用排行榜中：
+
+| 请求头 | 是否必填 | 说明 |
+| --- | --- | --- |
+| `X-Title` | 必填 | 应用名称，最多 64 个字符，超出部分被截断 |
+| `HTTP-Referer` | 可选 | 应用网址，例如 `https://your.app`；只保留协议与域名，路径和查询参数会被丢弃 |
+
+适用于 `/v1/chat/completions`、`/v1/messages`、`/v1/embeddings` 等调用接口，不影响鉴权与计费：
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Title: My App" \
+  -H "HTTP-Referer: https://your.app" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+只有**主动声明了 `X-Title`** 且统计期内有**至少 3 个独立账户**使用的应用才会出现在 `/v1/rankings/apps` 中。不带这两个请求头的调用照常计入模型排行，但不会归属到任何应用。
+
+<Callout type="info">
+
+请求头里不要放个人信息或密钥——应用名与域名会公开展示在排行榜上。
+
+</Callout>
+
+## 相关
+
+- [模型与模型 ID](/docs/zh/models)
+- [速率限制](/docs/zh/rate-limits)
+- [错误处理](/docs/zh/errors)

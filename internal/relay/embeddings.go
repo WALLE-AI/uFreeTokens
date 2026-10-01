@@ -120,6 +120,7 @@ func (s *Service) Embeddings(w http.ResponseWriter, r *http.Request) {
 		vmName:      vm.Name, vmID: vm.ID, clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
 		logEndpoint: logEndpointEmbeddings,
 	}
+	meta.appName, meta.appURL = appAttribution(r)
 
 	s.RetryBudget.RecordRequest()
 	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, embeddingsEndpoint, reqMap)

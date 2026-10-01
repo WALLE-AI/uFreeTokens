@@ -844,36 +844,51 @@ func (s *Service) ListFXRates(ctx context.Context, base, quote string, latest bo
 	return out, rows.Err()
 }
 
+// PriceSourceInfo 是一个数据源（历史原因表名仍是 price_sources；domain 区分价格 / 优惠 / 评测榜单，
+// 见 docs/外部数据采集模块（价格情报与评测榜单）技术方案.md §2）。
 type PriceSourceInfo struct {
-	ID                 int64           `json:"id"`
-	ProviderID         *int64          `json:"provider_id"`
-	ProviderCode       *string         `json:"provider_code"`
-	Level              string          `json:"level"`
-	Kind               string          `json:"kind"`
-	Fetcher            string          `json:"fetcher"`
-	URL                *string         `json:"url"`
-	Schedule           string          `json:"schedule"`
-	Config             json.RawMessage `json:"config"`
-	Enabled            bool            `json:"enabled"`
-	LastSuccessAt      *time.Time      `json:"last_success_at"`
-	ObservationCount7d int             `json:"observation_count_7d"`
-	CreatedAt          time.Time       `json:"created_at"`
+	ID                  int64           `json:"id"`
+	Domain              string          `json:"domain"`
+	Name                string          `json:"name"`
+	ProviderID          *int64          `json:"provider_id"`
+	ProviderCode        *string         `json:"provider_code"`
+	Level               string          `json:"level"`
+	Kind                string          `json:"kind"`
+	Fetcher             string          `json:"fetcher"`
+	URL                 *string         `json:"url"`
+	Schedule            string          `json:"schedule"`
+	Config              json.RawMessage `json:"config"`
+	Enabled             bool            `json:"enabled"`
+	License             *string         `json:"license"`
+	Attribution         *string         `json:"attribution"`
+	PublicDisplay       bool            `json:"public_display"`
+	AutoPublish         bool            `json:"auto_publish"`
+	NextRunAt           *time.Time      `json:"next_run_at"`
+	LastRunAt           *time.Time      `json:"last_run_at"`
+	LastSuccessAt       *time.Time      `json:"last_success_at"`
+	LastError           *string         `json:"last_error"`
+	ConsecutiveFailures int             `json:"consecutive_failures"`
+	ObservationCount7d  int             `json:"observation_count_7d"`
+	CreatedAt           time.Time       `json:"created_at"`
 }
 
 type ListPriceSourcesInput struct {
 	ProviderID int64
 	Enabled    *bool
+	Domain     string
 }
 
 func (s *Service) ListPriceSources(ctx context.Context, in ListPriceSourcesInput) ([]PriceSourceInfo, error) {
 	return s.queryPriceSources(ctx,
-		`WHERE ($1 = 0 OR ps.provider_id = $1) AND ($2::boolean IS NULL OR ps.enabled = $2) ORDER BY ps.id`,
-		in.ProviderID, in.Enabled)
+		`WHERE ($1 = 0 OR ps.provider_id = $1) AND ($2::boolean IS NULL OR ps.enabled = $2) AND ($3 = '' OR ps.domain = $3) ORDER BY ps.domain, ps.id`,
+		in.ProviderID, in.Enabled, in.Domain)
 }
 
 func (s *Service) queryPriceSources(ctx context.Context, where string, args ...any) ([]PriceSourceInfo, error) {
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT ps.id, ps.provider_id, p.code, ps.level, ps.kind, ps.fetcher, ps.url, ps.schedule, ps.config, ps.enabled, ps.last_success_at,
+		`SELECT ps.id, ps.domain, ps.name, ps.provider_id, p.code, ps.level, ps.kind, ps.fetcher, ps.url, ps.schedule, ps.config, ps.enabled,
+		   ps.license, ps.attribution, ps.public_display, ps.auto_publish, ps.next_run_at, ps.last_run_at, ps.last_success_at,
+		   ps.last_error, ps.consecutive_failures,
 		   (SELECT count(*) FROM price_observations o WHERE o.source_id = ps.id AND o.observed_at > now() - interval '7 days'),
 		   ps.created_at
 		 FROM price_sources ps LEFT JOIN providers p ON p.id = ps.provider_id `+where, args...)
@@ -884,8 +899,9 @@ func (s *Service) queryPriceSources(ctx context.Context, where string, args ...a
 	out := []PriceSourceInfo{}
 	for rows.Next() {
 		var ps PriceSourceInfo
-		if err := rows.Scan(&ps.ID, &ps.ProviderID, &ps.ProviderCode, &ps.Level, &ps.Kind, &ps.Fetcher, &ps.URL, &ps.Schedule, &ps.Config,
-			&ps.Enabled, &ps.LastSuccessAt, &ps.ObservationCount7d, &ps.CreatedAt); err != nil {
+		if err := rows.Scan(&ps.ID, &ps.Domain, &ps.Name, &ps.ProviderID, &ps.ProviderCode, &ps.Level, &ps.Kind, &ps.Fetcher, &ps.URL,
+			&ps.Schedule, &ps.Config, &ps.Enabled, &ps.License, &ps.Attribution, &ps.PublicDisplay, &ps.AutoPublish, &ps.NextRunAt,
+			&ps.LastRunAt, &ps.LastSuccessAt, &ps.LastError, &ps.ConsecutiveFailures, &ps.ObservationCount7d, &ps.CreatedAt); err != nil {
 			return nil, fmt.Errorf("admin: scan price_source: %w", err)
 		}
 		out = append(out, ps)

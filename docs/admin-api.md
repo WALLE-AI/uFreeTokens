@@ -70,6 +70,11 @@
   - 熔断与冷却状态来自 Redis。cmd/admin 连不上 Redis 时 `runtime_state_known=false`。
   - 运营吊销或重新启用上游 Key 时，服务端会清除该 Key 的冷却记录。
 - **统计数据源**：统计接口响应里的 `source` 为 `raw`（直接统计请求日志）或 `rollup`（时间窗超过 48 小时，读小时汇总表）。
+- **基准测试与公开榜单**（docs/基准测试与排行榜数据服务技术方案.md）：
+  - `PUT /virtual-models/{id}/metadata` 的 `scores` 按白名单校验，只接受数字型的 `intelligence_index`、`coding_index`、`agentic_index` 与嵌套对象 `design_arena.{code,ui_component,game_dev,data_viz,three_d,image,video,svg}`，其他键返回 400；允许的键也在 `GET /meta/enums` 的 `score_keys` / `design_arena_keys` 里。
+  - 基准：`/benchmarks`（定义，PATCH 走 If-Match）、`POST /benchmarks/{id}/runs`（一次录入或批量导入整批结果，全部成功或全部回滚；`publish: true` 时立即发布）、`POST /benchmark-runs/{id}/publish`（同基准此前发布的 run 自动取消发布，保留为历史）、`DELETE /benchmark-runs/{id}`（只有从未发布过的 run 能删，否则 409）。公开接口只展示 `status=published` 的基准的最新已发布 run。
+  - 账户的 `exclude_from_public_stats`（创建、`PATCH /accounts/{id}`）：内部测试、压测、评测账户的流量不计入公开排行榜；用户也可在个人中心自行关闭（`PUT /console/settings/public-stats`）。
+  - 应用榜治理：`GET /public-apps?days=` 列出声明过的应用（不受隐私阈值限制）；`/public-app-rules` 按 `app_key` 屏蔽（`block`）、合并（`merge` + `merge_into`）或改名（`rename` + `display_name`），网关读榜时实时生效（公开缓存 5 分钟）。
 - **已废弃**：下面两种用法仍可用，但响应带 `Deprecation: true` 头，请改用新接口：
   - `GET /virtual-models?name=` 改用 `GET /virtual-models/lookup?name=`
   - `GET /channels?virtual_model_id=&provider_account_id=&upstream_model=` 改用 `GET /channels/lookup`
@@ -109,6 +114,14 @@
 | POST | /auth/totp/disable | `（已登录即可）` |
 | POST | /auth/totp/enable | `（已登录即可）` |
 | POST | /auth/totp/setup | `（已登录即可）` |
+| DELETE | /benchmark-runs/{runID} | `catalog:write` |
+| GET | /benchmark-runs/{runID} | `catalog:read` |
+| POST | /benchmark-runs/{runID}/publish | `catalog:write` |
+| GET | /benchmarks | `catalog:read` |
+| POST | /benchmarks | `catalog:write` |
+| GET | /benchmarks/{benchmarkID} | `catalog:read` |
+| PATCH | /benchmarks/{benchmarkID} | `catalog:write` |
+| POST | /benchmarks/{benchmarkID}/runs | `catalog:write` |
 | GET | /catalog/counts | `catalog:read` |
 | GET | /channels | `catalog:read` |
 | POST | /channels | `catalog:write` |
@@ -124,6 +137,9 @@
 | GET | /fx-rates/latest | `pricing:read` |
 | GET | /me | `（已登录即可）` |
 | GET | /meta/enums | `（已登录即可）` |
+| GET | /model-aliases | `catalog:read` |
+| PUT | /model-aliases | `catalog:write` |
+| GET | /model-aliases/namespaces | `catalog:read` |
 | GET | /pending-model-listings | `pricing:read` |
 | POST | /pending-model-listings/batch-dismiss | `pricing:write` |
 | POST | /pending-model-listings/{listingID}/dismiss | `pricing:write` |
@@ -137,6 +153,9 @@
 | POST | /price-sources | `pricing:write` |
 | GET | /price-sources/{priceSourceID} | `pricing:read` |
 | PATCH | /price-sources/{priceSourceID} | `pricing:write` |
+| POST | /price-sources/{priceSourceID}/run | `pricing:write` |
+| GET | /price-sources/{priceSourceID}/runs | `pricing:read` |
+| GET | /pricesync/price-comparison | `pricing:read` |
 | POST | /pricesync/reference-price-lookup | `pricing:read` |
 | POST | /pricing/preview | `pricing:read` |
 | GET | /provider-accounts | `catalog:read` |
@@ -153,11 +172,19 @@
 | GET | /providers/{providerID} | `catalog:read` |
 | PATCH | /providers/{providerID} | `catalog:write` |
 | POST | /providers/{providerID}/price-observations | `pricing:write` |
+| GET | /public-app-rules | `catalog:read` |
+| POST | /public-app-rules | `catalog:write` |
+| DELETE | /public-app-rules/{ruleID} | `catalog:write` |
+| GET | /public-apps | `catalog:read` |
 | GET | /request-logs | `observe:read` |
 | GET | /request-logs/{requestID} | `observe:read` |
 | GET | /stats/overview | `observe:read` |
 | GET | /stats/usage | `observe:read` |
 | GET | /todo-counts | `（已登录即可）` |
+| GET | /upstream-offers | `pricing:read` |
+| GET | /upstream-offers/{offerID} | `pricing:read` |
+| POST | /upstream-offers/{offerID}/adopt | `pricing:write` |
+| POST | /upstream-offers/{offerID}/status | `pricing:write` |
 | GET | /virtual-models | `catalog:read` |
 | POST | /virtual-models | `catalog:write` |
 | GET | /virtual-models/lookup | `catalog:read` |

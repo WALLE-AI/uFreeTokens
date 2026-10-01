@@ -23,6 +23,11 @@ type Metrics struct {
 	UnsettledReservations prometheus.Gauge
 
 	ChannelMarginRatio prometheus.Gauge
+
+	// 免鉴权公开数据接口（/v1/rankings/*、/v1/benchmarks）：result 为 hit（命中进程内缓存）/
+	// miss（查库）/ error / rate_limited，据此看缓存命中率与限流拒绝数。
+	PublicRequestsTotal *prometheus.CounterVec
+	PublicDuration      *prometheus.HistogramVec
 }
 
 func NewMetrics(reg prometheus.Registerer) *Metrics {
@@ -75,6 +80,17 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "channel_margin_ratio",
 			Help: "渠道毛利率（占位，按渠道维度上报见 worker）",
 		}),
+
+		PublicRequestsTotal: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "public_api_requests_total",
+			Help: "公开数据接口（排行榜、基准测试）请求数，按结果区分缓存命中 / 查库 / 失败 / 限流",
+		}, []string{"endpoint", "result"}),
+
+		PublicDuration: f.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "public_api_duration_seconds",
+			Help:    "公开数据接口耗时（含缓存命中）",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+		}, []string{"endpoint"}),
 	}
 }
 

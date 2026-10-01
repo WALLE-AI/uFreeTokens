@@ -4,6 +4,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/console"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
+	"github.com/WALLE-AI/uFreeTokens/internal/rankings"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
 	"github.com/WALLE-AI/uFreeTokens/internal/relay"
 )
@@ -80,6 +82,26 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 			v1.Get("/catalog", notImplementedHandler("catalog"))
 		}
 
+		// 公开排行榜与基准测试（免鉴权，同 /v1/catalog），见 public.go。
+		pub := newPublicHandlers(d)
+		v1.Get("/rankings/models", pub.rankingsModels)
+		v1.Get("/rankings/authors", pub.rankingsAuthors)
+		v1.Get("/rankings/speed", pub.rankingsByLimit("speed", func(ctx context.Context, s *rankings.Service, p rankings.Period, n int) (any, error) {
+			return s.Speed(ctx, p, n)
+		}))
+		v1.Get("/rankings/tools", pub.rankingsByLimit("tools", func(ctx context.Context, s *rankings.Service, p rankings.Period, n int) (any, error) {
+			return s.Tools(ctx, p, n)
+		}))
+		v1.Get("/rankings/multimodal", pub.rankingsByLimit("multimodal", func(ctx context.Context, s *rankings.Service, p rankings.Period, n int) (any, error) {
+			return s.Multimodal(ctx, p, n)
+		}))
+		v1.Get("/rankings/apps", pub.rankingsByLimit("apps", func(ctx context.Context, s *rankings.Service, p rankings.Period, n int) (any, error) {
+			return s.Apps(ctx, p, n)
+		}))
+		v1.Get("/benchmarks", pub.listBenchmarks)
+		v1.Get("/benchmarks/{slug}", pub.getBenchmark)
+		v1.Get("/model-benchmarks", pub.modelBenchmarks)
+
 		v1.Group(func(authed chi.Router) {
 			authed.Use(auth.APIKey(d.AuthStore, d.Pepper))
 
@@ -122,6 +144,7 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 					mutating.Use(console.CSRFGuard)
 					mutating.Post("/api-keys", d.Console.HandleCreateKey)
 					mutating.Post("/api-keys/{id}/revoke", d.Console.HandleRevokeKey)
+					mutating.Put("/settings/public-stats", d.Console.HandleSetPublicStats)
 				})
 			})
 		})

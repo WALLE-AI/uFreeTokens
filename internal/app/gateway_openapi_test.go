@@ -58,6 +58,15 @@ func TestGatewayOpenAPI_UpToDate(t *testing.T) {
 		"POST /v1/images/generations":   "createImage",
 		"POST /v1/audio/transcriptions": "createTranscription",
 		"POST /v1/audio/speech":         "createSpeech",
+		"GET /v1/rankings/models":       "getModelRankings",
+		"GET /v1/rankings/authors":      "getAuthorRankings",
+		"GET /v1/rankings/speed":        "getSpeedRankings",
+		"GET /v1/rankings/tools":        "getToolCallRankings",
+		"GET /v1/rankings/multimodal":   "getMultimodalRankings",
+		"GET /v1/rankings/apps":         "getAppRankings",
+		"GET /v1/benchmarks":            "listBenchmarks",
+		"GET /v1/benchmarks/{slug}":     "getBenchmark",
+		"GET /v1/model-benchmarks":      "getModelBenchmarks",
 	}
 	got := map[string]string{}
 	for path, methods := range spec.Paths {
@@ -101,7 +110,7 @@ func TestGatewayOpenAPI_UpToDate(t *testing.T) {
 
 // 数据面源码：/v1/* 请求可能经过的所有写错误的地方（不含 admin_*、console）。
 var gatewaySourceDirs = []string{"../relay", "../auth", "../httpx", "../ratelimit"}
-var gatewaySourceFiles = []string{"gateway.go", "models.go", "usage.go", "catalog.go"}
+var gatewaySourceFiles = []string{"gateway.go", "models.go", "usage.go", "catalog.go", "public.go"}
 
 // nonDataPlaneCodes 是扫描范围内出现、但不会出现在 /v1/* 上的错误码。
 var nonDataPlaneCodes = map[string]string{

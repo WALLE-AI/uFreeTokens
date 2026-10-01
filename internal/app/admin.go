@@ -18,6 +18,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
+	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 	"github.com/WALLE-AI/uFreeTokens/internal/wallet"
 )
@@ -27,6 +28,8 @@ type AdminDeps struct {
 	Logger    *slog.Logger
 	Admin     *admin.Service
 	PriceSync *pricesync.Engine // nil 时价格同步相关接口返回 503 not_implemented（见技术方案 §7.16）
+	// Offers 是上游优惠情报库（docs/外部数据采集模块（价格情报与评测榜单）技术方案.md §3.2）；nil 时优惠雷达接口返回 503。
+	Offers *offers.Store
 	// Auth 是管理员账号/会话服务；nil 时只接受应急令牌（测试与未迁移的环境）。
 	Auth *adminauth.Service
 	// AdminToken 是应急（break-glass）共享令牌：匹配时身份为 system、拥有全部
@@ -44,8 +47,11 @@ type AdminDeps struct {
 	StatsTZ *time.Location
 	// Redis 可选：用于读取网关的熔断/冷却状态（/channels/health）、吊销或重新启用
 	// 上游 Key 时清除冷却记录。nil 时这些能力降级（健康页的熔断状态为 unknown）。
-	Redis      *redis.Client
-	TestWebDir string // 非空时在根路径同源提供 test_web/admin.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
+	Redis *redis.Client
+	// PublicMinAccounts 是公开排行榜的隐私阈值（config public.rankings_min_accounts），
+	// GET /public-apps 原样返回给后台页面做提示；0 = 默认 3。
+	PublicMinAccounts int
+	TestWebDir        string // 非空时在根路径同源提供 test_web/admin.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
 }
 
 // NewAdminRouter 组装控制面路由：账户/API Key/Provider/渠道/虚拟模型/价格管理
@@ -70,9 +76,13 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	r.Get("/", serveStaticHTML(d.TestWebDir, "admin.html"))
 
 	h := &adminHandlers{
-		svc: d.Admin, log: d.Logger, pricesync: d.PriceSync, auth: d.Auth,
+		svc: d.Admin, log: d.Logger, pricesync: d.PriceSync, offers: d.Offers, auth: d.Auth,
 		legacyToken: d.AdminToken, trustedProxies: d.TrustedProxies, refURLs: d.ReferencePriceURLs.withDefaults(),
 		requireIfMatch: d.RequireIfMatch, defaultTZ: d.StatsTZ, redis: d.Redis,
+		publicMinAccounts: d.PublicMinAccounts,
+	}
+	if h.publicMinAccounts <= 0 {
+		h.publicMinAccounts = 3
 	}
 	r.Post("/auth/login", h.login)
 
@@ -92,6 +102,7 @@ type adminHandlers struct {
 	svc            *admin.Service
 	log            *slog.Logger
 	pricesync      *pricesync.Engine
+	offers         *offers.Store
 	auth           *adminauth.Service
 	legacyToken    string
 	trustedProxies []netip.Prefix
@@ -99,6 +110,8 @@ type adminHandlers struct {
 	requireIfMatch bool
 	defaultTZ      *time.Location
 	redis          *redis.Client
+	// publicMinAccounts 见 AdminDeps.PublicMinAccounts。
+	publicMinAccounts int
 }
 
 // requirePriceSync 是价格同步相关接口共用的前置检查：PriceSync 未装配时统一

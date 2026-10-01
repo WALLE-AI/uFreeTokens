@@ -121,7 +121,42 @@ func (s *Service) HandleMe(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"user_id": info.UserID, "email": info.Email, "email_verified": info.EmailVerified,
 		"account_id": info.AccountID, "account_tier": info.AccountTier,
+		"exclude_from_public_stats": info.ExcludeFromPublicStats,
 	})
+}
+
+type publicStatsRequest struct {
+	ExcludeFromPublicStats *bool `json:"exclude_from_public_stats"`
+}
+
+// HandleSetPublicStats 是 PUT /console/settings/public-stats 的入口：需要会话 + CSRF，
+// 只有账户 owner / admin 能修改。
+func (s *Service) HandleSetPublicStats(w http.ResponseWriter, r *http.Request) {
+	sess, ok := SessionFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Not logged in.")
+		return
+	}
+	var req publicStatsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ExcludeFromPublicStats == nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "\"exclude_from_public_stats\" (boolean) is required.")
+		return
+	}
+	exclude := *req.ExcludeFromPublicStats
+	if err := s.SetPublicStatsOptOut(r.Context(), sess.AccountID, sess.UserID, exclude); err != nil {
+		if errors.Is(err, ErrNotAccountAdmin) {
+			httpx.WriteError(w, r, http.StatusForbidden, "permission_denied", "Only account owners and admins can change this setting.")
+			return
+		}
+		s.logger.Error("console: set public stats opt-out failed", "error", err)
+		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to update setting.")
+		return
+	}
+	s.RecordAudit(r.Context(), admin.AuditLogInput{
+		ActorID: sess.UserID, Action: "account.public_stats_opt_out", TargetType: "account", TargetID: strconv.FormatInt(sess.AccountID, 10),
+		IP: clientIP(r), After: map[string]any{"exclude_from_public_stats": exclude},
+	})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"exclude_from_public_stats": exclude})
 }
 
 // HandleListKeys 是 GET /console/api-keys 的入口：需要会话。

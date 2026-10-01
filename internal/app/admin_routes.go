@@ -94,6 +94,20 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{get, "/catalog/counts", adminauth.PermCatalogRead, h.catalogCounts},
 		{get, "/channels/health", adminauth.PermObserveRead, h.channelHealth},
 
+		// --- 基准测试（公开 /v1/benchmarks 的数据来源） ---
+		{get, "/benchmarks", adminauth.PermCatalogRead, h.listBenchmarks},
+		{post, "/benchmarks", adminauth.PermCatalogWrite, h.createBenchmark},
+		{get, "/benchmarks/{benchmarkID}", adminauth.PermCatalogRead, h.getBenchmark},
+		{patch, "/benchmarks/{benchmarkID}", adminauth.PermCatalogWrite, h.updateBenchmark},
+		{post, "/benchmarks/{benchmarkID}/runs", adminauth.PermCatalogWrite, h.createBenchmarkRun},
+		{get, "/benchmark-runs/{runID}", adminauth.PermCatalogRead, h.getBenchmarkRun},
+		{post, "/benchmark-runs/{runID}/publish", adminauth.PermCatalogWrite, h.publishBenchmarkRun},
+		{http.MethodDelete, "/benchmark-runs/{runID}", adminauth.PermCatalogWrite, h.deleteBenchmarkRun},
+		{get, "/public-apps", adminauth.PermCatalogRead, h.listPublicApps},
+		{get, "/public-app-rules", adminauth.PermCatalogRead, h.listPublicAppRules},
+		{post, "/public-app-rules", adminauth.PermCatalogWrite, h.createPublicAppRule},
+		{http.MethodDelete, "/public-app-rules/{ruleID}", adminauth.PermCatalogWrite, h.deletePublicAppRule},
+
 		// --- 价格 / 汇率 / 价格同步 ---
 		{get, "/fx-rates", adminauth.PermPricingRead, h.listFXRates},
 		{get, "/fx-rates/latest", adminauth.PermPricingRead, h.listLatestFXRates},
@@ -104,6 +118,8 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{get, "/price-sources/{priceSourceID}", adminauth.PermPricingRead, h.getPriceSource},
 		{post, "/price-sources", adminauth.PermPricingWrite, h.createPriceSource},
 		{patch, "/price-sources/{priceSourceID}", adminauth.PermPricingWrite, h.updatePriceSource},
+		{post, "/price-sources/{priceSourceID}/run", adminauth.PermPricingWrite, h.runPriceSourceNow},
+		{get, "/price-sources/{priceSourceID}/runs", adminauth.PermPricingRead, h.listDataSourceRuns},
 		{post, "/channels/{channelID}/price-observations", adminauth.PermPricingWrite, h.ingestPriceObservation},
 		{post, "/providers/{providerID}/price-observations", adminauth.PermPricingWrite, h.ingestUnmappedPriceObservation},
 		{get, "/price-change-requests", adminauth.PermPricingRead, h.listChangeRequests},
@@ -115,6 +131,16 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{post, "/pending-model-listings/{listingID}/publish", adminauth.PermPricingWrite, h.publishPendingModelListing},
 		{post, "/pending-model-listings/{listingID}/dismiss", adminauth.PermPricingWrite, h.dismissPendingModelListing},
 		{post, "/pending-model-listings/batch-dismiss", adminauth.PermPricingWrite, h.batchDismissListings},
+
+		// --- 外部数据采集：优惠雷达 / 比价看板 / 榜单模型名映射 ---
+		{get, "/upstream-offers", adminauth.PermPricingRead, h.listUpstreamOffers},
+		{get, "/upstream-offers/{offerID}", adminauth.PermPricingRead, h.getUpstreamOffer},
+		{post, "/upstream-offers/{offerID}/status", adminauth.PermPricingWrite, h.setUpstreamOfferStatus},
+		{post, "/upstream-offers/{offerID}/adopt", adminauth.PermPricingWrite, h.adoptUpstreamOffer},
+		{get, "/pricesync/price-comparison", adminauth.PermPricingRead, h.priceComparison},
+		{get, "/model-aliases", adminauth.PermCatalogRead, h.listModelAliases},
+		{get, "/model-aliases/namespaces", adminauth.PermCatalogRead, h.listModelAliasNamespaces},
+		{put, "/model-aliases", adminauth.PermCatalogWrite, h.setModelAlias},
 
 		// --- 观测 / 审计 ---
 		{get, "/stats/overview", adminauth.PermObserveRead, h.statsOverview},

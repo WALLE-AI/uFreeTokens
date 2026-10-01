@@ -22,9 +22,19 @@ func (h *adminHandlers) createPriceSource(w http.ResponseWriter, r *http.Request
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
+	if body.Schedule != "" && !admin.ValidSchedule(body.Schedule) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "schedule must be a 5-field cron expression or @hourly/@daily/@every <duration>")
+		return
+	}
+	if err := admin.CheckSourceConfig(body.Config); err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
 	id, err := audited(h, r, func(ctx context.Context) (int64, auditEntry, error) {
 		id, err := h.pricesync.CreateSource(ctx, pricesync.CreateSourceInput{
 			ProviderID: body.ProviderID, Level: pricesync.Level(body.Level), Kind: body.Kind, Fetcher: body.Fetcher, URL: body.URL,
+			Domain: body.Domain, Name: body.Name, Schedule: body.Schedule, Config: body.Config, Enabled: body.Enabled,
+			License: body.License, Attribution: body.Attribution, PublicDisplay: body.PublicDisplay, AutoPublish: body.AutoPublish,
 		})
 		if err != nil {
 			return 0, auditEntry{}, err

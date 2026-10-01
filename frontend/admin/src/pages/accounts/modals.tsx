@@ -5,7 +5,7 @@ import { adjustWallet, createAccount, createApiKey, grantCredit, updateAccount }
 import { listVirtualModels } from '../../api/catalog';
 import { ApiError, describeError } from '../../api/errors';
 import { newIdempotencyKey } from '../../api/client';
-import { Button, ConfirmDialog, Field, FormModal, Input, Money, MoneyInput, SearchInput, Select, Textarea, useToast } from '../../components/ui';
+import { Button, Checkbox, ConfirmDialog, Field, FormModal, Input, Money, MoneyInput, SearchInput, Select, Textarea, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { cn } from '../../lib/cn';
 import type { Account, ApiKeyCreated, GrantSource, Tier, WalletAdjustReceipt } from '../../types';
@@ -20,6 +20,7 @@ export function CreateAccountModal({ open, onClose, onCreated }: { open: boolean
   const [name, setName] = useState('');
   const [tier, setTier] = useState<Tier>('free');
   const [credit, setCredit] = useState<number | null>(0);
+  const [excludePublic, setExcludePublic] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +30,7 @@ export function CreateAccountModal({ open, onClose, onCreated }: { open: boolean
       setName('');
       setTier('free');
       setCredit(0);
+      setExcludePublic(false);
       setError(null);
     }
   }, [open]);
@@ -37,7 +39,7 @@ export function CreateAccountModal({ open, onClose, onCreated }: { open: boolean
     setSubmitting(true);
     setError(null);
     try {
-      const a = await createAccount({ type, name: name.trim(), tier, credit_limit_micro: credit ?? 0 });
+      const a = await createAccount({ type, name: name.trim(), tier, credit_limit_micro: credit ?? 0, exclude_from_public_stats: excludePublic });
       toast.success(`账户 #${a.id} 已创建`);
       onCreated(a);
     } catch (err) {
@@ -80,6 +82,15 @@ export function CreateAccountModal({ open, onClose, onCreated }: { open: boolean
           <MoneyInput valueMicro={credit} onChange={setCredit} />
         </Field>
       </div>
+      <label className="flex items-start gap-2 cursor-pointer select-none">
+        <span className="pt-0.5">
+          <Checkbox checked={excludePublic} onChange={setExcludePublic} label="不计入公开榜单" />
+        </span>
+        <span>
+          <span className="text-xs font-medium text-gray-700">不计入公开榜单</span>
+          <span className="block text-[11px] text-gray-400 mt-0.5">内部测试 / 压测 / 评测账户勾选此项，其流量不会出现在公开排行榜中；之后可在账户详情页修改。</span>
+        </span>
+      </label>
     </FormModal>
   );
 }

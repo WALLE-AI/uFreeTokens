@@ -132,6 +132,9 @@
           "credit_limit_micro": {
             "type": "integer"
           },
+          "exclude_from_public_stats": {
+            "type": "boolean"
+          },
           "id": {
             "type": "integer"
           },
@@ -151,6 +154,7 @@
         "required": [
           "created_at",
           "credit_limit_micro",
+          "exclude_from_public_stats",
           "id",
           "name",
           "status",
@@ -252,6 +256,9 @@
           "credit_limit_micro": {
             "type": "integer"
           },
+          "exclude_from_public_stats": {
+            "type": "boolean"
+          },
           "frozen_micro": {
             "type": "integer"
           },
@@ -298,6 +305,7 @@
           "cash_balance_micro",
           "created_at",
           "credit_limit_micro",
+          "exclude_from_public_stats",
           "frozen_micro",
           "id",
           "last_active_at",
@@ -457,6 +465,98 @@
           "roles",
           "status",
           "totp_enabled"
+        ],
+        "type": "object"
+      },
+      "AdoptOfferRequest": {
+        "properties": {
+          "budget_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "discount_ratio": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "side": {
+            "type": "string"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "budget_total",
+          "channel_id",
+          "discount_ratio",
+          "ends_at",
+          "name",
+          "priority",
+          "side",
+          "starts_at",
+          "virtual_model"
+        ],
+        "type": "object"
+      },
+      "AdoptOfferResponse": {
+        "properties": {
+          "promotion_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "promotion_id"
         ],
         "type": "object"
       },
@@ -668,6 +768,786 @@
         },
         "required": [
           "results"
+        ],
+        "type": "object"
+      },
+      "Benchmark": {
+        "properties": {
+          "alias_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "external_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "higher_is_better": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "metric_name": {
+            "type": "string"
+          },
+          "metric_unit": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "public_display": {
+            "type": "boolean"
+          },
+          "score_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "sort_order": {
+            "type": "integer"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias_namespace",
+          "category",
+          "created_at",
+          "data_source_id",
+          "data_source_name",
+          "description",
+          "external_key",
+          "higher_is_better",
+          "id",
+          "metric_name",
+          "metric_unit",
+          "name",
+          "public_display",
+          "score_key",
+          "slug",
+          "sort_order",
+          "source_name",
+          "source_url",
+          "status",
+          "updated_at",
+          "version"
+        ],
+        "type": "object"
+      },
+      "BenchmarkDetail": {
+        "properties": {
+          "alias_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "external_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "higher_is_better": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "metric_name": {
+            "type": "string"
+          },
+          "metric_unit": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "public_display": {
+            "type": "boolean"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkRun"
+            },
+            "type": "array"
+          },
+          "score_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "sort_order": {
+            "type": "integer"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias_namespace",
+          "category",
+          "created_at",
+          "data_source_id",
+          "data_source_name",
+          "description",
+          "external_key",
+          "higher_is_better",
+          "id",
+          "metric_name",
+          "metric_unit",
+          "name",
+          "public_display",
+          "runs",
+          "score_key",
+          "slug",
+          "sort_order",
+          "source_name",
+          "source_url",
+          "status",
+          "updated_at",
+          "version"
+        ],
+        "type": "object"
+      },
+      "BenchmarkResult": {
+        "properties": {
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_per_task_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extra": {},
+          "model_label": {
+            "type": "string"
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "type": "number"
+          },
+          "virtual_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "avg_duration_ms",
+          "cost_per_task_micro",
+          "error_rate",
+          "extra",
+          "model_label",
+          "sample_count",
+          "score",
+          "virtual_model",
+          "virtual_model_id"
+        ],
+        "type": "object"
+      },
+      "BenchmarkResultInput": {
+        "properties": {
+          "avg_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_per_task_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extra": {},
+          "model_label": {
+            "type": "string"
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "avg_duration_ms",
+          "cost_per_task_micro",
+          "error_rate",
+          "extra",
+          "model_label",
+          "sample_count",
+          "score",
+          "virtual_model",
+          "virtual_model_id"
+        ],
+        "type": "object"
+      },
+      "BenchmarkRun": {
+        "properties": {
+          "benchmark_id": {
+            "type": "integer"
+          },
+          "cost_currency": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_count": {
+            "type": "integer"
+          },
+          "run_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "cost_currency",
+          "created_at",
+          "created_by",
+          "id",
+          "notes",
+          "origin",
+          "published",
+          "published_at",
+          "result_count",
+          "run_at"
+        ],
+        "type": "object"
+      },
+      "BenchmarkRunDetail": {
+        "properties": {
+          "benchmark_id": {
+            "type": "integer"
+          },
+          "cost_currency": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_count": {
+            "type": "integer"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkResult"
+            },
+            "type": "array"
+          },
+          "run_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "cost_currency",
+          "created_at",
+          "created_by",
+          "id",
+          "notes",
+          "origin",
+          "published",
+          "published_at",
+          "result_count",
+          "results",
+          "run_at"
+        ],
+        "type": "object"
+      },
+      "BenchmarkSummary": {
+        "properties": {
+          "alias_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "external_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "higher_is_better": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "metric_name": {
+            "type": "string"
+          },
+          "metric_unit": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "public_display": {
+            "type": "boolean"
+          },
+          "published_result_count": {
+            "type": "integer"
+          },
+          "published_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "published_run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_count": {
+            "type": "integer"
+          },
+          "score_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "sort_order": {
+            "type": "integer"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias_namespace",
+          "category",
+          "created_at",
+          "data_source_id",
+          "data_source_name",
+          "description",
+          "external_key",
+          "higher_is_better",
+          "id",
+          "metric_name",
+          "metric_unit",
+          "name",
+          "public_display",
+          "published_result_count",
+          "published_run_at",
+          "published_run_id",
+          "run_count",
+          "score_key",
+          "slug",
+          "sort_order",
+          "source_name",
+          "source_url",
+          "status",
+          "updated_at",
+          "version"
         ],
         "type": "object"
       },
@@ -1185,6 +2065,84 @@
           "variant_label",
           "virtual_model_id",
           "weight"
+        ],
+        "type": "object"
+      },
+      "ChannelCost": {
+        "properties": {
+          "channel_id": {
+            "type": "integer"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_cny": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_cny": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_code": {
+            "type": "string"
+          },
+          "upstream_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel_id",
+          "currency",
+          "input",
+          "input_cny",
+          "output",
+          "output_cny",
+          "provider_code",
+          "upstream_model"
         ],
         "type": "object"
       },
@@ -1825,6 +2783,9 @@
           "credit_limit_micro": {
             "type": "integer"
           },
+          "exclude_from_public_stats": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },
@@ -1837,6 +2798,7 @@
         },
         "required": [
           "credit_limit_micro",
+          "exclude_from_public_stats",
           "name",
           "tier",
           "type"
@@ -1866,6 +2828,124 @@
           "name",
           "password",
           "roles"
+        ],
+        "type": "object"
+      },
+      "CreateBenchmarkInput": {
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "higher_is_better": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_name": {
+            "type": "string"
+          },
+          "metric_unit": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "score_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "sort_order": {
+            "type": "integer"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "description",
+          "higher_is_better",
+          "metric_name",
+          "metric_unit",
+          "name",
+          "score_key",
+          "slug",
+          "sort_order",
+          "source_name",
+          "source_url",
+          "status"
+        ],
+        "type": "object"
+      },
+      "CreateBenchmarkRunInput": {
+        "properties": {
+          "cost_currency": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "publish": {
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkResultInput"
+            },
+            "type": "array"
+          },
+          "run_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cost_currency",
+          "notes",
+          "origin",
+          "publish",
+          "results",
+          "run_at"
         ],
         "type": "object"
       },
@@ -1920,6 +3000,29 @@
       },
       "CreatePriceSourceRequest": {
         "properties": {
+          "attribution": {
+            "type": "string"
+          },
+          "auto_publish": {
+            "type": "boolean"
+          },
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "fetcher": {
             "type": "string"
           },
@@ -1927,6 +3030,12 @@
             "type": "string"
           },
           "level": {
+            "type": "string"
+          },
+          "license": {
+            "type": "string"
+          },
+          "name": {
             "type": "string"
           },
           "provider_id": {
@@ -1939,15 +3048,30 @@
               }
             ]
           },
+          "public_display": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "type": "string"
+          },
           "url": {
             "type": "string"
           }
         },
         "required": [
+          "attribution",
+          "auto_publish",
+          "config",
+          "domain",
+          "enabled",
           "fetcher",
           "kind",
           "level",
+          "license",
+          "name",
           "provider_id",
+          "public_display",
+          "schedule",
           "url"
         ],
         "type": "object"
@@ -2010,6 +3134,47 @@
           "currency",
           "name",
           "protocol"
+        ],
+        "type": "object"
+      },
+      "CreatePublicAppRuleInput": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "app_key": {
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "merge_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "app_key",
+          "display_name",
+          "merge_into",
+          "note"
         ],
         "type": "object"
       },
@@ -2257,6 +3422,77 @@
         "required": [
           "data",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "DataSourceRun": {
+        "properties": {
+          "detail": {},
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "items_changed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "items_fetched": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_id": {
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "error",
+          "finished_at",
+          "id",
+          "items_changed",
+          "items_fetched",
+          "source_id",
+          "started_at",
+          "status"
         ],
         "type": "object"
       },
@@ -3028,6 +4264,34 @@
         ],
         "type": "object"
       },
+      "ListData_BenchmarkSummary": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ListData_DataSourceRun": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/DataSourceRun"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "ListData_FXRateInfo": {
         "properties": {
           "data": {
@@ -3070,11 +4334,39 @@
         ],
         "type": "object"
       },
+      "ListData_PublicAppRule": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PublicAppRule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "ListData_Role": {
         "properties": {
           "data": {
             "items": {
               "$ref": "#/components/schemas/Role"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ListData_String": {
+        "properties": {
+          "data": {
+            "items": {
+              "type": "string"
             },
             "type": "array"
           }
@@ -3187,6 +4479,86 @@
         ],
         "type": "object"
       },
+      "MarketPrice": {
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_cny": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_cny": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_id": {
+            "type": "integer"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "upstream_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "input",
+          "input_cny",
+          "level",
+          "observed_at",
+          "output",
+          "output_cny",
+          "source_id",
+          "source_name",
+          "upstream_model"
+        ],
+        "type": "object"
+      },
       "MeResponse": {
         "properties": {
           "break_glass": {
@@ -3248,6 +4620,24 @@
             },
             "type": "array"
           },
+          "benchmark_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "benchmark_origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "benchmark_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "capabilities": {
             "items": {
               "type": "string"
@@ -3273,6 +4663,18 @@
             "type": "array"
           },
           "currencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "data_source_run_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "design_arena_keys": {
             "items": {
               "type": "string"
             },
@@ -3320,6 +4722,12 @@
             },
             "type": "array"
           },
+          "model_alias_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "model_statuses": {
             "items": {
               "type": "string"
@@ -3327,6 +4735,18 @@
             "type": "array"
           },
           "model_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "offer_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "offer_types": {
             "items": {
               "type": "string"
             },
@@ -3351,6 +4771,18 @@
             "type": "array"
           },
           "provider_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "score_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_domains": {
             "items": {
               "type": "string"
             },
@@ -3385,11 +4817,16 @@
           "account_statuses",
           "account_types",
           "api_key_statuses",
+          "benchmark_categories",
+          "benchmark_origins",
+          "benchmark_statuses",
           "capabilities",
           "change_directions",
           "change_statuses",
           "channel_statuses",
           "currencies",
+          "data_source_run_statuses",
+          "design_arena_keys",
           "fetchers",
           "grant_sources",
           "ledger_balance_kinds",
@@ -3397,12 +4834,17 @@
           "listing_statuses",
           "member_roles",
           "meters",
+          "model_alias_statuses",
           "model_statuses",
           "model_types",
+          "offer_statuses",
+          "offer_types",
           "permissions",
           "protocols",
           "provider_key_statuses",
           "provider_statuses",
+          "score_keys",
+          "source_domains",
           "source_kinds",
           "source_levels",
           "tiers",
@@ -3530,6 +4972,286 @@
         ],
         "type": "object"
       },
+      "ModelAlias": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external_label": {
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "seen_count": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "confidence",
+          "decided_at",
+          "decided_by_name",
+          "external_label",
+          "first_seen_at",
+          "last_seen_at",
+          "method",
+          "namespace",
+          "seen_count",
+          "status",
+          "variant",
+          "virtual_model",
+          "virtual_model_id"
+        ],
+        "type": "object"
+      },
+      "Offer": {
+        "properties": {
+          "adopted_promotion_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "conditions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detection": {
+            "type": "string"
+          },
+          "discount_ratio": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "limits": {},
+          "offer_type": {
+            "type": "string"
+          },
+          "provider_code": {
+            "type": "string"
+          },
+          "quota": {},
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "upstream_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "adopted_promotion_id",
+          "conditions",
+          "decided_at",
+          "decided_by_name",
+          "detection",
+          "discount_ratio",
+          "ends_at",
+          "evidence_excerpt",
+          "evidence_url",
+          "first_seen_at",
+          "id",
+          "last_seen_at",
+          "limits",
+          "offer_type",
+          "provider_code",
+          "quota",
+          "source_id",
+          "starts_at",
+          "status",
+          "upstream_model"
+        ],
+        "type": "object"
+      },
       "Page_APIKeyListItem": {
         "properties": {
           "data": {
@@ -3634,11 +5356,89 @@
         ],
         "type": "object"
       },
+      "Page_ModelAlias": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAlias"
+            },
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "type": "object"
+      },
+      "Page_Offer": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "type": "object"
+      },
       "Page_PendingListing": {
         "properties": {
           "data": {
             "items": {
               "$ref": "#/components/schemas/PendingListing"
+            },
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "type": "object"
+      },
+      "Page_PriceComparisonRow": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PriceComparisonRow"
             },
             "type": "array"
           },
@@ -3969,6 +5769,94 @@
         ],
         "type": "object"
       },
+      "PriceComparisonRow": {
+        "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelCost"
+            },
+            "type": "array"
+          },
+          "margin_ratio": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "market": {
+            "items": {
+              "$ref": "#/components/schemas/MarketPrice"
+            },
+            "type": "array"
+          },
+          "sell_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sell_input": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sell_output": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model": {
+            "type": "string"
+          },
+          "virtual_model_id": {
+            "type": "integer"
+          },
+          "vs_market_lowest": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "channels",
+          "margin_ratio",
+          "market",
+          "sell_currency",
+          "sell_input",
+          "sell_output",
+          "virtual_model",
+          "virtual_model_id",
+          "vs_market_lowest"
+        ],
+        "type": "object"
+      },
       "PriceComponentInput": {
         "properties": {
           "meter": {
@@ -4181,9 +6069,28 @@
       },
       "PriceSourceInfo": {
         "properties": {
+          "attribution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_publish": {
+            "type": "boolean"
+          },
           "config": {},
+          "consecutive_failures": {
+            "type": "integer"
+          },
           "created_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "domain": {
             "type": "string"
           },
           "enabled": {
@@ -4198,6 +6105,27 @@
           "kind": {
             "type": "string"
           },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "last_success_at": {
             "anyOf": [
               {
@@ -4211,6 +6139,30 @@
           },
           "level": {
             "type": "string"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "observation_count_7d": {
             "type": "integer"
@@ -4235,6 +6187,9 @@
               }
             ]
           },
+          "public_display": {
+            "type": "boolean"
+          },
           "schedule": {
             "type": "string"
           },
@@ -4250,17 +6205,27 @@
           }
         },
         "required": [
+          "attribution",
+          "auto_publish",
           "config",
+          "consecutive_failures",
           "created_at",
+          "domain",
           "enabled",
           "fetcher",
           "id",
           "kind",
+          "last_error",
+          "last_run_at",
           "last_success_at",
           "level",
+          "license",
+          "name",
+          "next_run_at",
           "observation_count_7d",
           "provider_code",
           "provider_id",
+          "public_display",
           "schedule",
           "url"
         ],
@@ -4963,6 +6928,121 @@
           "price_sources",
           "protocol",
           "status"
+        ],
+        "type": "object"
+      },
+      "PublicAppCandidate": {
+        "properties": {
+          "app_key": {
+            "type": "string"
+          },
+          "app_name": {
+            "type": "string"
+          },
+          "app_url": {
+            "type": "string"
+          },
+          "distinct_accounts": {
+            "type": "integer"
+          },
+          "requests": {
+            "type": "integer"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicAppRule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tokens": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "app_key",
+          "app_name",
+          "app_url",
+          "distinct_accounts",
+          "requests",
+          "rule",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "PublicAppRule": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "app_key": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "merge_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "app_key",
+          "created_at",
+          "display_name",
+          "id",
+          "merge_into",
+          "note",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PublicAppsResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PublicAppCandidate"
+            },
+            "type": "array"
+          },
+          "min_distinct_accounts": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "min_distinct_accounts"
         ],
         "type": "object"
       },
@@ -5758,6 +7838,84 @@
         ],
         "type": "object"
       },
+      "SetModelAliasInput": {
+        "properties": {
+          "external_label": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "virtual_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "virtual_model_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "external_label",
+          "namespace",
+          "status",
+          "virtual_model",
+          "virtual_model_id"
+        ],
+        "type": "object"
+      },
+      "SetModelAliasResult": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelAlias"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "relinked_results": {
+            "type": "integer"
+          },
+          "reprojected_runs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias",
+          "relinked_results",
+          "reprojected_runs"
+        ],
+        "type": "object"
+      },
+      "SetOfferStatusRequest": {
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "SetSellPriceRequest": {
         "properties": {
           "components": {
@@ -5875,16 +8033,25 @@
       },
       "TodoCounts": {
         "properties": {
+          "aliases_suggested": {
+            "type": "integer"
+          },
           "channels_missing_cost": {
             "type": "integer"
           },
           "channels_negative_margin": {
             "type": "integer"
           },
+          "data_sources_failing": {
+            "type": "integer"
+          },
           "listings_pending": {
             "type": "integer"
           },
           "models_missing_sell_price": {
+            "type": "integer"
+          },
+          "offers_new": {
             "type": "integer"
           },
           "price_changes_blocked": {
@@ -5895,10 +8062,13 @@
           }
         },
         "required": [
+          "aliases_suggested",
           "channels_missing_cost",
           "channels_negative_margin",
+          "data_sources_failing",
           "listings_pending",
           "models_missing_sell_price",
+          "offers_new",
           "price_changes_blocked",
           "price_changes_pending"
         ],
@@ -6124,6 +8294,16 @@
               }
             ]
           },
+          "exclude_from_public_stats": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "anyOf": [
               {
@@ -6157,6 +8337,7 @@
         },
         "required": [
           "credit_limit_micro",
+          "exclude_from_public_stats",
           "name",
           "status",
           "tier"
@@ -6217,6 +8398,134 @@
           "password",
           "reset_totp",
           "roles",
+          "status"
+        ],
+        "type": "object"
+      },
+      "UpdateBenchmarkInput": {
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "higher_is_better": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "description",
+          "higher_is_better",
+          "metric_name",
+          "metric_unit",
+          "name",
+          "score_key",
+          "sort_order",
+          "source_name",
+          "source_url",
           "status"
         ],
         "type": "object"
@@ -6315,6 +8624,26 @@
       },
       "UpdatePriceSourceInput": {
         "properties": {
+          "attribution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_publish": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "config": {
             "anyOf": [
               {},
@@ -6324,6 +8653,46 @@
             ]
           },
           "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "public_display": {
             "anyOf": [
               {
                 "type": "boolean"
@@ -6355,8 +8724,14 @@
           }
         },
         "required": [
+          "attribution",
+          "auto_publish",
           "config",
           "enabled",
+          "license",
+          "name",
+          "provider_id",
+          "public_display",
           "schedule",
           "url"
         ],
@@ -8282,6 +10657,307 @@
         "x-permission": ""
       }
     },
+    "/benchmark-runs/{runID}": {
+      "delete": {
+        "operationId": "deleteBenchmarkRunsRunID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      },
+      "get": {
+        "operationId": "getBenchmarkRunsRunID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkRunDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      }
+    },
+    "/benchmark-runs/{runID}/publish": {
+      "post": {
+        "operationId": "postBenchmarkRunsRunIDPublish",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkRunDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/benchmarks": {
+      "get": {
+        "operationId": "getBenchmarks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListData_BenchmarkSummary"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      },
+      "post": {
+        "operationId": "postBenchmarks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBenchmarkInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Benchmark"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/benchmarks/{benchmarkID}": {
+      "get": {
+        "operationId": "getBenchmarksBenchmarkID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmarkID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      },
+      "patch": {
+        "operationId": "patchBenchmarksBenchmarkID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmarkID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBenchmarkInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Benchmark"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/benchmarks/{benchmarkID}/runs": {
+      "post": {
+        "operationId": "postBenchmarksBenchmarkIDRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmarkID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBenchmarkRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkRunDetail"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
     "/catalog/counts": {
       "get": {
         "operationId": "getCatalogCounts",
@@ -8796,6 +11472,98 @@
         "x-permission": ""
       }
     },
+    "/model-aliases": {
+      "get": {
+        "operationId": "getModelAliases",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ModelAlias"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      },
+      "put": {
+        "operationId": "putModelAliases",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetModelAliasInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetModelAliasResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/model-aliases/namespaces": {
+      "get": {
+        "operationId": "getModelAliasesNamespaces",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListData_String"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      }
+    },
     "/pending-model-listings": {
       "get": {
         "operationId": "getPendingModelListings",
@@ -9304,6 +12072,110 @@
           }
         },
         "x-permission": "pricing:write"
+      }
+    },
+    "/price-sources/{priceSourceID}/run": {
+      "post": {
+        "operationId": "postPriceSourcesPriceSourceIDRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "priceSourceID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceSourceInfo"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:write"
+      }
+    },
+    "/price-sources/{priceSourceID}/runs": {
+      "get": {
+        "operationId": "getPriceSourcesPriceSourceIDRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "priceSourceID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListData_DataSourceRun"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:read"
+      }
+    },
+    "/pricesync/price-comparison": {
+      "get": {
+        "operationId": "getPricesyncPriceComparison",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PriceComparisonRow"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:read"
       }
     },
     "/pricesync/reference-price-lookup": {
@@ -9946,6 +12818,129 @@
         "x-permission": "pricing:write"
       }
     },
+    "/public-app-rules": {
+      "get": {
+        "operationId": "getPublicAppRules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListData_PublicAppRule"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      },
+      "post": {
+        "operationId": "postPublicAppRules",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePublicAppRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicAppRule"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/public-app-rules/{ruleID}": {
+      "delete": {
+        "operationId": "deletePublicAppRulesRuleID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ruleID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
+    "/public-apps": {
+      "get": {
+        "operationId": "getPublicApps",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicAppsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      }
+    },
     "/request-logs": {
       "get": {
         "operationId": "getRequestLogs",
@@ -10094,6 +13089,168 @@
           }
         },
         "x-permission": ""
+      }
+    },
+    "/upstream-offers": {
+      "get": {
+        "operationId": "getUpstreamOffers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_Offer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:read"
+      }
+    },
+    "/upstream-offers/{offerID}": {
+      "get": {
+        "operationId": "getUpstreamOffersOfferID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offerID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Offer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:read"
+      }
+    },
+    "/upstream-offers/{offerID}/adopt": {
+      "post": {
+        "operationId": "postUpstreamOffersOfferIDAdopt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offerID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptOfferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdoptOfferResponse"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:write"
+      }
+    },
+    "/upstream-offers/{offerID}/status": {
+      "post": {
+        "operationId": "postUpstreamOffersOfferIDStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offerID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetOfferStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Offer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:write"
       }
     },
     "/virtual-models": {

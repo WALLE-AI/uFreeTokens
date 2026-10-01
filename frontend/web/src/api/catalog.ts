@@ -27,7 +27,11 @@ export interface CatalogModel {
   description?: string;
   providerDisplay?: string;
   tags?: string[];
-  scores?: Record<string, number>;
+  // scores 原样透传 virtual_model_metadata.scores：顶层 intelligence_index /
+  // coding_index / agentic_index 是数字，design_arena 是一层嵌套对象（技术
+  // 方案 §3.1），所以值类型不能写死成 number，由 data/models.ts 的
+  // normalizeScores 负责逐键校验。
+  scores?: Record<string, unknown>;
   status: 'active' | 'deprecated';
 }
 
@@ -54,7 +58,7 @@ interface RawCatalogModel {
   description?: string;
   provider_display?: string;
   tags?: string[];
-  scores?: Record<string, number>;
+  scores?: Record<string, unknown>;
   status: 'active' | 'deprecated';
 }
 

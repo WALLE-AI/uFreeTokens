@@ -14,6 +14,7 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
+	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 )
 
 // 运营后台的 OpenAPI 3.1 文档与前端 TypeScript 类型，都从同一份描述生成：
@@ -142,6 +143,18 @@ var routeSchemas = map[string]routeSchema{
 	"POST /channels/{channelID}/cost-price":                      {req: setCostPriceRequest{}, resp: priceBookIDResponse{}, status: http.StatusCreated},
 	"GET /catalog/counts":                                        {resp: admin.CatalogCounts{}},
 	"GET /channels/health":                                       {resp: admin.ChannelHealthReport{}},
+	"GET /benchmarks":                                            {resp: listData[admin.BenchmarkSummary]{}},
+	"POST /benchmarks":                                           {req: admin.CreateBenchmarkInput{}, resp: admin.Benchmark{}, status: http.StatusCreated},
+	"GET /benchmarks/{benchmarkID}":                              {resp: admin.BenchmarkDetail{}},
+	"PATCH /benchmarks/{benchmarkID}":                            {req: admin.UpdateBenchmarkInput{}, resp: admin.Benchmark{}},
+	"POST /benchmarks/{benchmarkID}/runs":                        {req: admin.CreateBenchmarkRunInput{}, resp: admin.BenchmarkRunDetail{}, status: http.StatusCreated},
+	"GET /benchmark-runs/{runID}":                                {resp: admin.BenchmarkRunDetail{}},
+	"POST /benchmark-runs/{runID}/publish":                       {resp: admin.BenchmarkRunDetail{}},
+	"DELETE /benchmark-runs/{runID}":                             {status: http.StatusNoContent},
+	"GET /public-apps":                                           {resp: publicAppsResponse{}},
+	"GET /public-app-rules":                                      {resp: listData[admin.PublicAppRule]{}},
+	"POST /public-app-rules":                                     {req: admin.CreatePublicAppRuleInput{}, resp: admin.PublicAppRule{}, status: http.StatusCreated},
+	"DELETE /public-app-rules/{ruleID}":                          {status: http.StatusNoContent},
 	"GET /fx-rates":                                              {resp: listData[admin.FXRateInfo]{}},
 	"GET /fx-rates/latest":                                       {resp: listData[admin.FXRateInfo]{}},
 	"POST /fx-rates":                                             {req: setFXRateRequest{}, resp: admin.FXRateInfo{}},
@@ -151,6 +164,16 @@ var routeSchemas = map[string]routeSchema{
 	"GET /price-sources/{priceSourceID}":                         {resp: admin.PriceSourceInfo{}},
 	"POST /price-sources":                                        {req: createPriceSourceRequest{}, resp: idResponse{}, status: http.StatusCreated},
 	"PATCH /price-sources/{priceSourceID}":                       {req: admin.UpdatePriceSourceInput{}, resp: admin.PriceSourceInfo{}},
+	"POST /price-sources/{priceSourceID}/run":                    {resp: admin.PriceSourceInfo{}, status: http.StatusAccepted},
+	"GET /price-sources/{priceSourceID}/runs":                    {resp: listData[admin.DataSourceRun]{}},
+	"GET /upstream-offers":                                       {resp: admin.Page[offers.Offer]{}},
+	"GET /upstream-offers/{offerID}":                             {resp: offers.Offer{}},
+	"POST /upstream-offers/{offerID}/status":                     {req: setOfferStatusRequest{}, resp: offers.Offer{}},
+	"POST /upstream-offers/{offerID}/adopt":                      {req: adoptOfferRequest{}, resp: adoptOfferResponse{}, status: http.StatusCreated},
+	"GET /pricesync/price-comparison":                            {resp: admin.Page[admin.PriceComparisonRow]{}},
+	"GET /model-aliases":                                         {resp: admin.Page[admin.ModelAlias]{}},
+	"GET /model-aliases/namespaces":                              {resp: listData[string]{}},
+	"PUT /model-aliases":                                         {req: admin.SetModelAliasInput{}, resp: admin.SetModelAliasResult{}},
 	"POST /channels/{channelID}/price-observations":              {req: priceObservationRequest{}, resp: ingestResultDTO{}, status: http.StatusCreated},
 	"POST /providers/{providerID}/price-observations":            {req: unmappedObservationRequest{}, resp: unmappedIngestResultDTO{}, status: http.StatusCreated},
 	"GET /price-change-requests":                                 {resp: admin.Page[admin.ChangeRequestSummary]{}},

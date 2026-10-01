@@ -32,7 +32,12 @@ export type StatusKind =
   | 'listing'
   | 'request'
   | 'usage_source'
-  | 'price_source';
+  | 'price_source'
+  | 'benchmark'
+  | 'benchmark_run'
+  | 'data_source_run'
+  | 'offer'
+  | 'model_alias';
 
 const ACTIVE_DISABLED: Record<string, StatusDef> = {
   active: { label: '启用', tone: 'green' },
@@ -97,6 +102,38 @@ export const STATUS_DICT: Record<StatusKind, Record<string, StatusDef>> = {
   price_source: {
     enabled: { label: '启用', tone: 'green' },
     disabled: { label: '停用', tone: 'gray' },
+  },
+  benchmark: {
+    draft: { label: '草稿', tone: 'purple' },
+    published: { label: '已发布', tone: 'green' },
+    archived: { label: '已归档', tone: 'gray' },
+  },
+  // 由 published / published_at 推导（见 pages/catalog/benchmarkShared.tsx runState）
+  benchmark_run: {
+    draft: { label: '草稿', tone: 'purple' },
+    published: { label: '当前发布', tone: 'green' },
+    history: { label: '历史发布', tone: 'gray', italic: true },
+  },
+  data_source_run: {
+    running: { label: '运行中', tone: 'blue' },
+    ok: { label: '成功', tone: 'green' },
+    unchanged: { label: '无变化', tone: 'gray' },
+    failed: { label: '失败', tone: 'red' },
+    rejected: { label: '异常熔断', tone: 'amber' },
+  },
+  offer: {
+    new: { label: '待确认', tone: 'purple' },
+    confirmed: { label: '已确认', tone: 'blue' },
+    adopted: { label: '已采用', tone: 'green' },
+    ignored: { label: '已忽略', tone: 'gray' },
+    expired: { label: '已过期', tone: 'gray', italic: true },
+  },
+  model_alias: {
+    suggested: { label: '待确认建议', tone: 'purple' },
+    unmatched: { label: '未匹配', tone: 'amber' },
+    auto: { label: '自动匹配', tone: 'blue' },
+    confirmed: { label: '人工确认', tone: 'green' },
+    ignored: { label: '平台无此模型', tone: 'gray' },
   },
 };
 

@@ -56,12 +56,22 @@ export function getAccount(id: number, signal?: AbortSignal) {
   return request<AccountWithWallet>(`/accounts/${id}`, { signal });
 }
 
-export function createAccount(body: { type: 'personal' | 'organization'; name: string; tier?: Tier; credit_limit_micro?: number }) {
+// exclude_from_public_stats：内部测试 / 压测 / 评测账户，流量不计入公开排行榜
+export function createAccount(body: {
+  type: 'personal' | 'organization';
+  name: string;
+  tier?: Tier;
+  credit_limit_micro?: number;
+  exclude_from_public_stats?: boolean;
+}) {
   return request<Account>('/accounts', { method: 'POST', body });
 }
 
 // PATCH 只返回 {account, wallet}，成员与赠送摘要需要重新 getAccount
-export function updateAccount(id: number, body: { name?: string; status?: AccountStatus; tier?: Tier; credit_limit_micro?: number }) {
+export function updateAccount(
+  id: number,
+  body: { name?: string; status?: AccountStatus; tier?: Tier; credit_limit_micro?: number; exclude_from_public_stats?: boolean },
+) {
   return request<Pick<AccountWithWallet, 'account' | 'wallet'>>(`/accounts/${id}`, { method: 'PATCH', body });
 }
 

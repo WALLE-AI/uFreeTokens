@@ -4,13 +4,18 @@ import type {
   BatchApproveResult,
   ChangeRequestDetail,
   ChangeRequestSummary,
+  DataSourceRun,
   ListData,
   ModelType,
+  Offer,
+  OfferStatus,
   Paginated,
   PendingListing,
+  PriceComparisonRow,
   PriceSource,
   PublishListingResult,
   ReferencePriceLookupResult,
+  SourceDomain,
   SourceKind,
   SourceLevel,
   Tier,
@@ -85,21 +90,103 @@ export function dismissListing(id: number, reason?: string) {
   return request<{ status: string }>(`/pending-model-listings/${id}/dismiss`, { method: 'POST', body: { reason: reason ?? '' } });
 }
 
-// ---------- 价格源 ----------
+// ---------- 数据源（价格 / 优惠 / 评测榜单，表名仍是 price_sources） ----------
 
-export function listPriceSources(q: { provider_id?: number; enabled?: boolean } = {}, signal?: AbortSignal) {
+export function listPriceSources(q: { provider_id?: number; enabled?: boolean; domain?: SourceDomain } = {}, signal?: AbortSignal) {
   return request<ListData<PriceSource>>('/price-sources', { query: { ...q }, signal });
 }
 
-export function createPriceSource(body: { provider_id?: number; level: SourceLevel; kind: SourceKind; fetcher: string; url?: string }) {
+export interface CreatePriceSourceBody {
+  provider_id?: number;
+  level: SourceLevel;
+  kind: SourceKind;
+  fetcher: string;
+  url?: string;
+  domain?: SourceDomain; // 默认 price
+  name?: string;
+  schedule?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+  license?: string;
+  attribution?: string;
+  public_display?: boolean;
+  auto_publish?: boolean;
+}
+
+export function createPriceSource(body: CreatePriceSourceBody) {
   return request<{ id: number }>('/price-sources', { method: 'POST', body });
 }
 
-export function updatePriceSource(
-  id: number,
-  body: { enabled?: boolean; url?: string; schedule?: string; config?: Record<string, unknown> },
-) {
+// PATCH：只传要改的字段；url / license / attribution 传空字符串表示清除，provider_id=0 表示解绑供应商
+export interface UpdatePriceSourceBody {
+  enabled?: boolean;
+  url?: string;
+  schedule?: string;
+  config?: Record<string, unknown>;
+  name?: string;
+  license?: string;
+  attribution?: string;
+  public_display?: boolean;
+  auto_publish?: boolean;
+  provider_id?: number;
+}
+
+export function updatePriceSource(id: number, body: UpdatePriceSourceBody) {
   return request<PriceSource>(`/price-sources/${id}`, { method: 'PATCH', body });
+}
+
+// 立即运行：把 next_run_at 置为现在，worker 约 1 分钟内拾取（202）；已停用的来源返回 400
+export function runPriceSourceNow(id: number) {
+  return request<PriceSource>(`/price-sources/${id}/run`, { method: 'POST' });
+}
+
+export function listDataSourceRuns(id: number, limit = 50, signal?: AbortSignal) {
+  return request<ListData<DataSourceRun>>(`/price-sources/${id}/runs`, { query: { limit }, signal });
+}
+
+// ---------- 优惠雷达 ----------
+
+export interface ListOffersQuery extends PageQuery {
+  status?: string;
+  offer_type?: string;
+  provider_code?: string;
+  q?: string;
+}
+
+export function listUpstreamOffers(q: ListOffersQuery = {}, signal?: AbortSignal) {
+  return request<Paginated<Offer>>('/upstream-offers', { query: { ...q }, signal });
+}
+
+export function getUpstreamOffer(id: number, signal?: AbortSignal) {
+  return request<Offer>(`/upstream-offers/${id}`, { signal });
+}
+
+// 已采用的情报不能再改状态（409）
+export function setUpstreamOfferStatus(id: number, status: Extract<OfferStatus, 'confirmed' | 'ignored' | 'new'>) {
+  return request<Offer>(`/upstream-offers/${id}/status`, { method: 'POST', body: { status } });
+}
+
+export interface AdoptOfferBody {
+  side: 'cost' | 'sell'; // cost：记录我方成本优惠（仅供毛利参考）；sell：对用户让利，立即参与计费
+  channel_id?: number; // side=cost 必填
+  virtual_model?: string; // side=sell 必填（虚拟模型名）
+  name?: string;
+  discount_ratio?: string; // 价格乘数，覆盖情报里的值；0 = 免费
+  starts_at?: string; // RFC3339
+  ends_at?: string;
+  priority?: number;
+  budget_total?: number; // 让利预算上限（微元）；不传 = 不限
+}
+
+// 带 Idempotency-Key：超时后重试不会重复生成促销
+export function adoptUpstreamOffer(id: number, body: AdoptOfferBody, idempotencyKey?: string) {
+  return request<{ promotion_id: number }>(`/upstream-offers/${id}/adopt`, { method: 'POST', body, idempotencyKey });
+}
+
+// ---------- 比价看板 ----------
+
+export function getPriceComparison(q: PageQuery & { q?: string } = {}, signal?: AbortSignal) {
+  return request<Paginated<PriceComparisonRow>>('/pricesync/price-comparison', { query: { ...q }, signal, timeoutMs: 60_000 });
 }
 
 // ---------- 参考价 ----------

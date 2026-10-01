@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { Model } from '../types';
 import { ProviderIcon } from './ProviderIcon';
+import { ModelBenchmarksSection } from './ModelBenchmarksSection';
 
 interface ModelDetailPageProps {
   model: Model;
@@ -402,7 +403,7 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
               { id: 'pricing', label: '价格方案', icon: <DollarSign className="w-3.5 h-3.5" /> },
               { id: 'performance', label: '性能表现', icon: <ActivityIcon className="w-3.5 h-3.5" /> },
               { id: 'uptime', label: '可用率与稳定性', icon: <Clock className="w-3.5 h-3.5" /> },
-              { id: 'benchmarks', label: '权威基准评测', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+              { id: 'benchmarks', label: '评测成绩', icon: <BarChart3 className="w-3.5 h-3.5" /> },
               { id: 'apps', label: '热门生态应用', icon: <Grid className="w-3.5 h-3.5" /> },
               { id: 'activity', label: '调用活跃度', icon: <TrendingUp className="w-3.5 h-3.5" /> },
               { id: 'faq', label: '常见问题解答', icon: <HelpCircle className="w-3.5 h-3.5" /> },
@@ -925,10 +926,10 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
                 <div>
                   <div className="flex items-center space-x-2">
                     <BarChart3 className="w-4 h-4 text-purple-600" />
-                    <h2 className="text-base font-bold text-gray-900">权威基准评测</h2>
+                    <h2 className="text-base font-bold text-gray-900">评测成绩 / Benchmarks</h2>
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
-                    标准化公开评测集测试得分。百分比数值越高代表能力越优，百分位排名展示了该模型在 uFreeTokens 全平台模型中的相对水准。
+                    该模型在已收录的公开评测榜单（LMArena、Epoch AI 等）上的成绩与排名，按评测分类分组；点击评测名称可查看完整榜单。
                   </p>
                 </div>
                 {onNavigateToBenchmarks && (
@@ -942,110 +943,18 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
                 )}
               </div>
 
-              {/* Big Score Card with Normal Distribution Curve */}
-              <div className="border border-gray-200 rounded-lg p-5 bg-white space-y-3 text-center">
-                <div className="text-3xl sm:text-4xl font-extrabold text-gray-900 font-mono">
-                  {model.scores.intelligenceIndex || '39.5'}
-                </div>
-                <div className="text-xs font-semibold text-gray-600">
-                  综合智能评测指数 (Artificial Analysis Intelligence Index)
-                </div>
-
-                <div className="max-w-md mx-auto h-16 relative">
-                  <svg className="w-full h-full" viewBox="0 0 300 60">
-                    <path
-                      d="M 10 55 Q 80 50, 120 20 T 150 5 T 180 20 T 220 50 T 290 55"
-                      fill="none"
-                      stroke="#e5e7eb"
-                      strokeWidth="2"
-                    />
-                    <line x1="210" y1="10" x2="210" y2="55" stroke="#7c3aed" strokeWidth="2" strokeDasharray="2 2" />
-                    <circle cx="210" cy="18" r="4" fill="#7c3aed" />
-                  </svg>
-                </div>
-                <div className="text-[11px] text-purple-700 font-semibold">
-                  超越全平台 82% 的对比模型
-                </div>
-              </div>
-
-              {/* Sub-benchmarks grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                {/* Reasoning category */}
-                <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-3">
-                  <div className="font-bold text-gray-900 text-xs border-b border-gray-100 pb-2">
-                    逻辑推演能力 (Reasoning)
-                  </div>
-                  <div className="space-y-2.5">
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">HLE (终极智力测试难题集)</span>
-                        <span className="font-mono font-bold text-gray-900">39.2%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-purple-600 rounded-full" style={{ width: '39.2%' }} />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">AA-LCR (超长文本长程推演)</span>
-                        <span className="font-mono font-bold text-gray-900">84.0%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-purple-600 rounded-full" style={{ width: '84.0%' }} />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">GDPval-AA (高经济价值专业任务)</span>
-                        <span className="font-mono font-bold text-gray-900">56.6%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-purple-600 rounded-full" style={{ width: '56.6%' }} />
-                      </div>
-                    </div>
+              {/* 运营录入的综合指数：只有真实录入（> 0）时才展示，不再用假数字兜底 */}
+              {model.scores.intelligenceIndex > 0 && (
+                <div className="border border-gray-200 rounded-lg p-4 bg-white flex items-center justify-between gap-4">
+                  <div className="text-xs font-semibold text-gray-600">综合智能评测指数 (Intelligence Index)</div>
+                  <div className="text-2xl font-extrabold text-gray-900 font-mono">
+                    {Math.round(model.scores.intelligenceIndex * 10) / 10}
                   </div>
                 </div>
+              )}
 
-                {/* Coding & Knowledge */}
-                <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-3">
-                  <div className="font-bold text-gray-900 text-xs border-b border-gray-100 pb-2">
-                    代码编程与常识知识 (Coding & Knowledge)
-                  </div>
-                  <div className="space-y-2.5">
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">SciCode (科学计算与算法代码)</span>
-                        <span className="font-mono font-bold text-blue-600">51.9%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-blue-600 rounded-full" style={{ width: '51.9%' }} />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">AA-Omniscience Accuracy (常识知识问答准确率)</span>
-                        <span className="font-mono font-bold text-emerald-600">46.4%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-emerald-600 rounded-full" style={{ width: '46.4%' }} />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-700 font-medium">防幻觉抵抗能力 (Non-Hallucination Rate)</span>
-                        <span className="font-mono font-bold text-amber-600">96.5%</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                        <div className="h-full bg-amber-500 rounded-full" style={{ width: '96.5%' }} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              {/* 公开评测榜单成绩：GET /v1/model-benchmarks?model=<id> */}
+              <ModelBenchmarksSection modelId={model.id} />
             </section>
 
             {/* 6. SECTION: Apps */}

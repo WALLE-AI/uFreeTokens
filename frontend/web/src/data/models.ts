@@ -674,27 +674,141 @@ function formatContextDisplay(tokens: number): string | null {
   return `${tokens} 上下文`;
 }
 
-// normalizeScores 从运营录入的自由格式 JSON（internal/console 的
-// virtual_model_metadata.scores，后端不解析其内部结构）里挑出我们前端认识
-// 的三个键；识别不到（运营还没按这个约定录入，或者干脆没录评分）时回退到
-// mock 覆盖表的值，再不行就是 0——0 分在 UI 上显眼到足以说明"这不是真实
-// 评分"，比编造一个看起来合理的数字更诚实。
-function normalizeScores(raw: Record<string, number> | undefined, fallback?: ModelScores): ModelScores {
-  const pick = (key: keyof ModelScores): number => {
-    const v = raw?.[key as string];
-    if (typeof v === 'number') return v;
-    return (fallback?.[key] as number) ?? 0;
-  };
-  return {
-    intelligenceIndex: pick('intelligenceIndex'),
-    codingIndex: pick('codingIndex'),
-    agenticIndex: pick('agenticIndex'),
-    // designArena 目前后端 GET /v1/catalog 还不返回这套嵌套结构（运营还没
-    // 约定 scores.design_arena.* 的键名），只能用 mock 覆盖表兜底演示；
-    // 真实模型没有 mockOverride 时就是 undefined，左侧栏对应筛选项会把它
-    // 当 0 分处理（技术方案阶段 B 会补上真实数据源）。
-    designArena: fallback?.designArena,
-  };
+// 顶层三个指数的键名：snake_case 是技术方案 §3.1 约定的正式键（后端
+// PUT /virtual-models/{id}/metadata 只接受这套），camelCase 是约定之前运营
+// 录入的旧写法——数据修正 SQL 跑完之前两种都可能出现，过渡期都认。
+const SCORE_INDEX_KEYS: ['intelligenceIndex' | 'codingIndex' | 'agenticIndex', string, string][] = [
+  ['intelligenceIndex', 'intelligence_index', 'intelligenceIndex'],
+  ['codingIndex', 'coding_index', 'codingIndex'],
+  ['agenticIndex', 'agentic_index', 'agenticIndex'],
+];
+
+// 公开评测榜单投影出来的可选成绩键（后端按 best variant 写入 scores）。
+// 和三个指数不同，缺失时保持 undefined（不回落到 0），图表/对比据此跳过没有
+// 该项成绩的模型。第三列同样兼容 camelCase 写法。
+export type ExternalScoreKey =
+  | 'arenaText'
+  | 'arenaChinese'
+  | 'arenaCoding'
+  | 'arenaWebdev'
+  | 'arenaVision'
+  | 'gpqaDiamond'
+  | 'sweBenchVerified'
+  | 'hle'
+  | 'terminalBench'
+  | 'aiderPolyglot'
+  | 'arcAgi2'
+  | 'livebench'
+  | 'epochEci'
+  | 'opencompass'
+  | 'superclue';
+
+const EXTERNAL_SCORE_KEYS: [ExternalScoreKey, string, string][] = [
+  ['arenaText', 'arena_text', 'arenaText'],
+  ['arenaChinese', 'arena_chinese', 'arenaChinese'],
+  ['arenaCoding', 'arena_coding', 'arenaCoding'],
+  ['arenaWebdev', 'arena_webdev', 'arenaWebdev'],
+  ['arenaVision', 'arena_vision', 'arenaVision'],
+  ['gpqaDiamond', 'gpqa_diamond', 'gpqaDiamond'],
+  ['sweBenchVerified', 'swe_bench_verified', 'sweBenchVerified'],
+  ['hle', 'hle', 'hle'],
+  ['terminalBench', 'terminal_bench', 'terminalBench'],
+  ['aiderPolyglot', 'aider_polyglot', 'aiderPolyglot'],
+  ['arcAgi2', 'arc_agi_2', 'arcAgi2'],
+  ['livebench', 'livebench', 'livebench'],
+  ['epochEci', 'epoch_eci', 'epochEci'],
+  ['opencompass', 'opencompass', 'opencompass'],
+  ['superclue', 'superclue', 'superclue'],
+];
+
+// 外部成绩键的展示元信息：label 用于对比弹窗/图表选择器，unit 决定格式化
+// 方式（elo 取整、percent 一位小数加 %、index 一位小数），source 是数据来源
+// 署名。
+export const EXTERNAL_SCORE_META: Record<ExternalScoreKey, { label: string; unit: 'elo' | 'percent' | 'index'; source: string }> = {
+  arenaText: { label: 'LMArena 文本', unit: 'elo', source: 'LMArena (CC BY 4.0)' },
+  arenaChinese: { label: 'LMArena 中文', unit: 'elo', source: 'LMArena (CC BY 4.0)' },
+  arenaCoding: { label: 'LMArena 编程', unit: 'elo', source: 'LMArena (CC BY 4.0)' },
+  arenaWebdev: { label: 'LMArena WebDev', unit: 'elo', source: 'LMArena (CC BY 4.0)' },
+  arenaVision: { label: 'LMArena 视觉', unit: 'elo', source: 'LMArena (CC BY 4.0)' },
+  gpqaDiamond: { label: 'GPQA Diamond', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  sweBenchVerified: { label: 'SWE-bench Verified', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  hle: { label: "Humanity's Last Exam", unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  terminalBench: { label: 'Terminal-Bench', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  aiderPolyglot: { label: 'Aider Polyglot', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  arcAgi2: { label: 'ARC-AGI-2', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  livebench: { label: 'LiveBench', unit: 'percent', source: 'Epoch AI (CC BY 4.0)' },
+  epochEci: { label: 'Epoch ECI', unit: 'index', source: 'Epoch AI (CC BY 4.0)' },
+  opencompass: { label: 'OpenCompass', unit: 'index', source: 'OpenCompass' },
+  superclue: { label: 'SuperCLUE', unit: 'index', source: 'SuperCLUE' },
+};
+
+export const EXTERNAL_SCORE_FIELDS: ExternalScoreKey[] = EXTERNAL_SCORE_KEYS.map(([field]) => field);
+
+// formatExternalScore 按 EXTERNAL_SCORE_META 的单位格式化一项外部成绩。
+export function formatExternalScore(key: ExternalScoreKey, value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return '—';
+  const unit = EXTERNAL_SCORE_META[key].unit;
+  if (unit === 'elo') return `${Math.round(value)} Elo`;
+  if (unit === 'percent') return `${value.toFixed(1)}%`;
+  return value.toFixed(1);
+}
+
+type DesignArenaScores = NonNullable<ModelScores['designArena']>;
+
+// design_arena 子键 → ModelScores.designArena 字段；第三列是旧 camelCase 写法
+// （注意 code 对应的旧键是 codeCategories，不是 code）。
+const DESIGN_ARENA_KEYS: [keyof DesignArenaScores, string, string][] = [
+  ['codeCategories', 'code', 'codeCategories'],
+  ['uiComponent', 'ui_component', 'uiComponent'],
+  ['gameDev', 'game_dev', 'gameDev'],
+  ['dataViz', 'data_viz', 'dataViz'],
+  ['threeD', 'three_d', 'threeD'],
+  ['image', 'image', 'image'],
+  ['video', 'video', 'video'],
+  ['svg', 'svg', 'svg'],
+];
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// pickNumber 先读正式键，读不到再读旧键；非数字一律当作没录入。
+function pickNumber(obj: Record<string, unknown> | undefined, key: string, legacyKey: string): number | undefined {
+  const v = obj?.[key] ?? obj?.[legacyKey];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+// normalizeScores 把 GET /v1/catalog 原样透传的 virtual_model_metadata.scores
+// 转成 ModelScores：识别 §3.1 约定的 snake_case 键（含嵌套的 design_arena），
+// 过渡期兼容旧 camelCase 键。识别不到（运营没录这一项）时逐项回退到 mock
+// 覆盖表的值，再不行就是 0——0 分在 UI 上显眼到足以说明"这不是真实评分"，
+// 比编造一个看起来合理的数字更诚实。
+function normalizeScores(raw: Record<string, unknown> | undefined, fallback?: ModelScores): ModelScores {
+  const scores: ModelScores = { intelligenceIndex: 0, codingIndex: 0, agenticIndex: 0 };
+  for (const [field, key, legacyKey] of SCORE_INDEX_KEYS) {
+    scores[field] = pickNumber(raw, key, legacyKey) ?? fallback?.[field] ?? 0;
+  }
+
+  // design_arena 是一层嵌套对象；真实数据和 mock 兜底都没有任何一项时保持
+  // undefined，左侧栏 Design Arena 筛选会把它当 0 分处理。
+  const rawArena = raw?.design_arena ?? raw?.designArena;
+  const arenaObj = isRecord(rawArena) ? rawArena : undefined;
+  const arena: DesignArenaScores = {};
+  let hasArena = false;
+  for (const [field, key, legacyKey] of DESIGN_ARENA_KEYS) {
+    const v = pickNumber(arenaObj, key, legacyKey) ?? fallback?.designArena?.[field];
+    if (v !== undefined) {
+      arena[field] = v;
+      hasArena = true;
+    }
+  }
+  if (hasArena) scores.designArena = arena;
+
+  for (const [field, key, legacyKey] of EXTERNAL_SCORE_KEYS) {
+    const v = pickNumber(raw, key, legacyKey) ?? fallback?.[field];
+    if (v !== undefined) scores[field] = v;
+  }
+  return scores;
 }
 
 // modelFromCatalog 把 GET /v1/catalog 的一条真实模型数据转成 Model——技术

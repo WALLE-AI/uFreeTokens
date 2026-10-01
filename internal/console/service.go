@@ -176,6 +176,8 @@ type MeInfo struct {
 	EmailVerified bool
 	AccountID     int64
 	AccountTier   string
+	// ExcludeFromPublicStats：账户已选择不计入公开排行榜（隐私设置，见 SetPublicStatsOptOut）。
+	ExcludeFromPublicStats bool
 }
 
 func (s *Service) Me(ctx context.Context, sess *SessionData) (*MeInfo, error) {
@@ -186,11 +188,38 @@ func (s *Service) Me(ctx context.Context, sess *SessionData) (*MeInfo, error) {
 		return nil, fmt.Errorf("console: query user: %w", err)
 	}
 	if err := s.pool.QueryRow(ctx,
-		`SELECT tier FROM accounts WHERE id = $1`, sess.AccountID,
-	).Scan(&info.AccountTier); err != nil {
+		`SELECT tier, exclude_from_public_stats FROM accounts WHERE id = $1`, sess.AccountID,
+	).Scan(&info.AccountTier, &info.ExcludeFromPublicStats); err != nil {
 		return nil, fmt.Errorf("console: query account: %w", err)
 	}
 	return info, nil
+}
+
+// ErrNotAccountAdmin：只有账户的 owner / admin 成员能修改账户级设置。
+var ErrNotAccountAdmin = errors.New("console: only account owners and admins can change this setting")
+
+// SetPublicStatsOptOut 是用户侧的"不计入公开排行榜"开关（docs/基准测试与排行榜数据服务技术方案.md
+// §8.4）：公开榜单以匿名、聚合形式展示模型用量，账户可以选择退出。与运营后台的
+// exclude_from_public_stats 是同一个字段；同步递增 version，避免运营后台按旧 ETag 覆盖。
+func (s *Service) SetPublicStatsOptOut(ctx context.Context, accountID, userID int64, exclude bool) error {
+	var role string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT role FROM account_members WHERE account_id = $1 AND user_id = $2`, accountID, userID,
+	).Scan(&role); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotAccountAdmin
+		}
+		return fmt.Errorf("console: query member role: %w", err)
+	}
+	if role != "owner" && role != "admin" {
+		return ErrNotAccountAdmin
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE accounts SET exclude_from_public_stats = $2, version = version + 1, updated_at = now()
+		 WHERE id = $1 AND exclude_from_public_stats IS DISTINCT FROM $2`, accountID, exclude); err != nil {
+		return fmt.Errorf("console: update public stats opt-out: %w", err)
+	}
+	return nil
 }
 
 // ListKeys 返回该账户名下的全部 API Key（不含明文/HMAC）。

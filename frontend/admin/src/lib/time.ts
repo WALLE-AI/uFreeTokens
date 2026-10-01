@@ -20,3 +20,17 @@ export function formatRelative(iso: string | null | undefined): string {
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
   return formatDateTime(iso).slice(0, 10);
 }
+
+// formatFromNow 同时支持过去与将来："3 小时后" / "2 天前"。用于下次运行、优惠截止等可能在将来的时间。
+export function formatFromNow(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const diff = Math.round((t - Date.now()) / 1000);
+  if (diff <= 0) return formatRelative(iso);
+  if (diff < 60) return '即将';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟后`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时后`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天后`;
+  return formatDateTime(iso).slice(0, 10);
+}

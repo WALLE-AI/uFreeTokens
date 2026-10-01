@@ -32,6 +32,7 @@
 │ 待办                       │
 │ ⚖ 调价审批          [ 7 ]  │  /pricing/changes        ← 红点：有 blocked 项
 │ ⊕ 待上架模型        [ 3 ]  │  /pricing/listings
+│ ◎ 优惠雷达          [ 5 ]  │  /pricing/offers         ← 待确认的上游优惠情报
 │                           │
 │ 供给                       │
 │ ⛁ 供应商                   │  /providers
@@ -39,7 +40,11 @@
 │                           │
 │ 目录与定价                  │
 │ ◫ 虚拟模型                 │  /models
-│ ¥ 价格源 & 汇率             │  /pricing/sources
+│ ⇆ 比价看板                 │  /pricing/comparison
+│ ⚗ 基准测试                 │  /benchmarks
+│ ⛓ 榜单模型映射      [ 2 ]  │  /catalog/model-aliases  ← 待确认的模糊匹配建议
+│ ▦ 公开应用榜               │  /public-apps
+│ ¥ 数据源 & 汇率      [ 1 ]  │  /pricing/sources        ← 仅在有数据源连续失败时显示（红）
 │                           │
 │ 用户与财务                  │
 │ ☺ 账户                     │  /accounts
@@ -282,7 +287,7 @@
    - 每行右侧实时显示"当前成本（取主渠道）"和毛利率，售价低于成本时整行标红并禁止提交；
    - 提交前展示新旧价格 diff（复用 `JsonDiff` 的表格形态），确认后生效。
 4. **渠道**：该模型下所有渠道的表格——上游账号、上游模型、优先级、权重、成本价、毛利率、近 24h 错误率。权重列用一条横向占比条可视化流量分配（复用 `RankingsPage` 100% 占比条）。"添加渠道"在此处发起，虚拟模型字段自动带入。
-5. **展示元数据**：左侧表单（display_name / description / provider_display / tags / scores 三项指数），右侧**实时预览 web 模型卡片**（所见即所得）。scores 用三个数字输入框而不是自由 JSON，从而强制遵守 web 约定的 `intelligenceIndex/codingIndex/agenticIndex` 键名。
+5. **展示元数据**：左侧表单（display_name / description / provider_display / tags / scores 三项指数 + Design Arena 八个分项），右侧**实时预览 web 模型卡片**（所见即所得）。scores 用数字输入框而不是自由 JSON，从而强制遵守后端白名单的 snake_case 键名：`intelligence_index/coding_index/agentic_index` 与嵌套的 `design_arena.{code,ui_component,game_dev,data_viz,three_d,image,video,svg}`（技术方案 §3.1；读取时兼容旧的 camelCase 键，保存一律 snake_case）。
 6. **操作记录**：审计日志时间线。
 
 ### 5.5 账户详情与资金操作
@@ -374,7 +379,10 @@
 /                              工作台
 /pricing/changes[?status=&id=]  调价审批（id 为收件箱当前选中项）
 /pricing/listings               待上架模型
-/pricing/sources                价格源 & 汇率
+/pricing/offers[?status=&offer_type=&provider_code=&q=&id=]  优惠雷达
+/pricing/comparison[?q=]        比价看板（售价 / 渠道成本 / 市场价）
+/pricing/sources[?domain=&enabled=]  数据源（价格 / 优惠 / 评测榜单）& 汇率
+/catalog/model-aliases[?namespace=&status=&q=]  榜单模型映射
 /providers                      供应商列表
 /providers/new                  接入向导
 /providers/:id                  供应商详情（上游账号、密钥、价格源）

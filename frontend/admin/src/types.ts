@@ -48,6 +48,10 @@ export interface TodoCounts {
   channels_negative_margin: number;
   channels_missing_cost: number;
   models_missing_sell_price: number;
+  // 外部数据采集：新发现的优惠情报、待确认的榜单模型映射、连续失败的数据源
+  offers_new: number;
+  aliases_suggested: number;
+  data_sources_failing: number;
 }
 
 export type AdminEnv = 'production' | 'staging' | 'dev';
@@ -242,12 +246,34 @@ export interface VirtualModelSummary {
   min_margin_ratio: DecimalString | null;
 }
 
-// admin.VirtualModelMetadata；scores 前端约定 intelligenceIndex/codingIndex/agenticIndex
-export interface ModelScores {
-  intelligenceIndex?: number;
-  codingIndex?: number;
-  agenticIndex?: number;
-}
+// admin.VirtualModelMetadata 的 scores。键名由后端白名单固定（internal/admin/scores.go，
+// 技术方案 §3.1）：顶层 intelligence_index / coding_index / agentic_index，外加一层
+// 嵌套的 design_arena；值必须是数字，其他键 PUT 时返回 400。
+// 外部评测榜单导入时按 benchmarks.score_key 投影进来的单项分数也在这里（arena_text 等）。
+export type ScoreKey =
+  | 'intelligence_index'
+  | 'coding_index'
+  | 'agentic_index'
+  | 'arena_text'
+  | 'arena_chinese'
+  | 'arena_coding'
+  | 'arena_webdev'
+  | 'arena_vision'
+  | 'gpqa_diamond'
+  | 'swe_bench_verified'
+  | 'hle'
+  | 'terminal_bench'
+  | 'aider_polyglot'
+  | 'arc_agi_2'
+  | 'livebench'
+  | 'epoch_eci'
+  | 'opencompass'
+  | 'superclue';
+export type DesignArenaKey = 'code' | 'ui_component' | 'game_dev' | 'data_viz' | 'three_d' | 'image' | 'video' | 'svg';
+
+export type ModelScores = Partial<Record<ScoreKey, number>> & {
+  design_arena?: Partial<Record<DesignArenaKey, number>>;
+};
 
 export interface VirtualModelMetadata {
   display_name: string | null;
@@ -326,10 +352,14 @@ export interface Channel {
 
 export type SourceLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 export type SourceKind = 'api' | 'html' | 'dataset' | 'billing' | 'manual';
+// 数据源领域：price 价格 / offer 优惠情报 / benchmark 评测榜单（price_sources 表已泛化为数据源）
+export type SourceDomain = 'price' | 'offer' | 'benchmark';
 
 // admin.PriceSourceInfo
 export interface PriceSource {
   id: number;
+  domain: SourceDomain;
+  name: string;
   provider_id: number | null;
   provider_code: string | null;
   level: SourceLevel;
@@ -339,9 +369,133 @@ export interface PriceSource {
   schedule: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  license: string | null;
+  attribution: string | null; // 对外展示时必须带的署名文案
+  public_display: boolean; // 许可证是否允许在公开页展示（false = 仅后台可见）
+  auto_publish: boolean; // 榜单：映射完整且无异常时自动发布导入的 run
+  next_run_at: ISODateTime | null;
+  last_run_at: ISODateTime | null;
   last_success_at: ISODateTime | null;
+  last_error: string | null;
+  consecutive_failures: number;
   observation_count_7d: number;
   created_at: ISODateTime;
+}
+
+export type DataSourceRunStatus = 'running' | 'ok' | 'unchanged' | 'failed' | 'rejected';
+
+// admin.DataSourceRun：一次抓取的运行记录（GET /price-sources/{id}/runs）
+export interface DataSourceRun {
+  id: number;
+  source_id: number;
+  started_at: ISODateTime;
+  finished_at: ISODateTime | null;
+  status: DataSourceRunStatus;
+  items_fetched: number | null;
+  items_changed: number | null;
+  error: string | null;
+  detail: unknown;
+}
+
+// ---------- 优惠雷达 ----------
+
+export type OfferType = 'free_model' | 'discount' | 'off_peak' | 'free_quota' | 'new_user_credit' | 'price_cut';
+export type OfferStatus = 'new' | 'confirmed' | 'ignored' | 'expired' | 'adopted';
+export type OfferDetection = 'structured' | 'price_diff' | 'llm_extract' | 'manual';
+
+// offers.Offer：市场上观测到的上游优惠情报（只进情报库，采用后才生成 promotions）
+export interface Offer {
+  id: number;
+  source_id: number | null;
+  source_name?: string | null;
+  provider_code: string;
+  upstream_model: string | null; // null = 账号级 / 全场优惠
+  offer_type: OfferType;
+  discount_ratio: DecimalString | null; // 价格乘数："0" = 免费，"0.5" = 五折
+  quota: unknown;
+  limits: unknown;
+  starts_at: ISODateTime | null;
+  ends_at: ISODateTime | null;
+  conditions: string | null;
+  evidence_url: string | null;
+  evidence_excerpt: string | null;
+  detection: OfferDetection;
+  status: OfferStatus;
+  adopted_promotion_id: number | null;
+  decided_by_name: string | null;
+  decided_at: ISODateTime | null;
+  first_seen_at: ISODateTime;
+  last_seen_at: ISODateTime;
+}
+
+// ---------- 比价看板 ----------
+
+// admin.ChannelCost：渠道成本价（每百万 tokens，原币种 + 折人民币）
+export interface ChannelCost {
+  channel_id: number;
+  provider_code: string;
+  upstream_model: string;
+  currency: string | null;
+  input: DecimalString | null;
+  output: DecimalString | null;
+  input_cny: DecimalString | null;
+  output_cny: DecimalString | null;
+}
+
+// admin.MarketPrice：各价格源对同一模型的最新观测价
+export interface MarketPrice {
+  source_id: number;
+  source_name: string;
+  level: string;
+  upstream_model: string;
+  currency: string;
+  input: DecimalString | null;
+  output: DecimalString | null;
+  input_cny: DecimalString | null;
+  output_cny: DecimalString | null;
+  observed_at: ISODateTime;
+}
+
+// admin.PriceComparisonRow。margin_ratio：售价对最低成本的毛利率（输入:输出 = 3:1 混合），
+// 负数 = 亏损；vs_market_lowest：售价 / 市场最低价，> 1 表示我们更贵。
+export interface PriceComparisonRow {
+  virtual_model_id: number;
+  virtual_model: string;
+  sell_currency: string | null;
+  sell_input: DecimalString | null;
+  sell_output: DecimalString | null;
+  channels: ChannelCost[] | null;
+  market: MarketPrice[] | null;
+  margin_ratio: DecimalString | null;
+  vs_market_lowest: DecimalString | null;
+}
+
+// ---------- 榜单模型映射 ----------
+
+export type ModelAliasStatus = 'auto' | 'suggested' | 'confirmed' | 'ignored' | 'unmatched';
+
+// admin.ModelAlias。status=suggested 时 virtual_model_id 只是模糊匹配给出的候选，尚未生效。
+export interface ModelAlias {
+  namespace: string;
+  external_label: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null;
+  status: ModelAliasStatus;
+  method: string;
+  confidence: number | null;
+  variant: string | null;
+  seen_count: number;
+  first_seen_at: ISODateTime;
+  last_seen_at: ISODateTime;
+  decided_by_name: string | null;
+  decided_at: ISODateTime | null;
+}
+
+// admin.SetModelAliasResult
+export interface SetModelAliasResult {
+  alias: ModelAlias | null;
+  relinked_results: number; // 重新关联的已导入榜单成绩条数
+  reprojected_runs: number; // 重新投影进 scores 的已发布 run 数
 }
 
 export type ChangeStatus = 'pending' | 'auto_approved' | 'approved' | 'rejected' | 'applied' | 'superseded' | 'blocked';
@@ -498,6 +652,8 @@ export interface Account {
   status: AccountStatus;
   tier: Tier;
   credit_limit_micro: Micro;
+  // 内部测试 / 压测 / 评测账户：流量不计入公开排行榜（技术方案 §3.2）
+  exclude_from_public_stats: boolean;
   created_at: ISODateTime;
 }
 
@@ -790,6 +946,16 @@ export interface MetaEnums {
   fetchers: string[];
   listing_statuses: string[];
   member_roles: string[];
+  source_domains: string[];
+  offer_types: string[];
+  offer_statuses: string[];
+  model_alias_statuses: string[];
+  data_source_run_statuses: string[];
+  benchmark_categories: string[];
+  benchmark_statuses: string[];
+  benchmark_origins: string[];
+  score_keys: string[];
+  design_arena_keys: string[];
   permissions: Permission[];
 }
 
@@ -874,4 +1040,140 @@ export interface BatchItemResult {
   id: number;
   ok: boolean;
   error?: { code: string; message: string };
+}
+
+// ---------- 基准测试（技术方案 §3.2 / §3.5） ----------
+
+export type BenchmarkCategory =
+  | 'general'
+  | 'coding'
+  | 'agents'
+  | 'reasoning'
+  | 'chinese'
+  | 'search'
+  | 'media'
+  | 'artifacts'
+  | 'embedding';
+export type BenchmarkStatus = 'draft' | 'published' | 'archived';
+export type BenchmarkOrigin = 'manual' | 'import' | 'self_eval';
+export type BenchmarkCostCurrency = 'USD' | 'CNY';
+
+// admin.Benchmark
+export interface Benchmark {
+  id: number;
+  slug: string;
+  name: string;
+  category: BenchmarkCategory;
+  description: string;
+  metric_name: string;
+  metric_unit: string;
+  higher_is_better: boolean;
+  source_name: string | null;
+  source_url: string | null;
+  status: BenchmarkStatus;
+  sort_order: number;
+  // 外部榜单导入：来源数据源、外部键（tabular boards[].key）、模型名映射命名空间
+  data_source_id: number | null;
+  data_source_name: string | null;
+  external_key: string | null;
+  alias_namespace: string | null;
+  score_key: string | null; // 发布时投影进 virtual_model_metadata.scores 的键
+  public_display: boolean; // false = 来源许可证不允许对外展示，仅后台可见
+  version: number;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+// admin.BenchmarkSummary：列表项，附 run 数与当前已发布 run 的摘要
+export interface BenchmarkSummary extends Benchmark {
+  run_count: number;
+  published_run_id: number | null;
+  published_run_at: ISODateTime | null;
+  published_result_count: number;
+}
+
+// admin.BenchmarkRun。published = 当前对外展示的 run；published_at 非空但
+// published=false 表示曾经发布、已被更新的 run 取代（保留为历史）。
+export interface BenchmarkRun {
+  id: number;
+  benchmark_id: number;
+  origin: BenchmarkOrigin;
+  run_at: ISODateTime;
+  notes: string;
+  cost_currency: BenchmarkCostCurrency;
+  published: boolean;
+  published_at: ISODateTime | null;
+  created_by: number | null;
+  created_at: ISODateTime;
+  result_count: number;
+}
+
+// admin.BenchmarkDetail：runs 按 run_at 倒序
+export interface BenchmarkDetail extends Benchmark {
+  runs: BenchmarkRun[];
+}
+
+// admin.BenchmarkResult。cost_per_task_micro 是 run.cost_currency 的微单位（1,000,000 = 1 USD/CNY）
+export interface BenchmarkResult {
+  model_label: string;
+  virtual_model_id: number | null;
+  virtual_model: string | null; // 关联模型的当前名称（只读）
+  score: number;
+  cost_per_task_micro: number | null;
+  avg_duration_ms: number | null;
+  error_rate: number | null; // 0..1
+  sample_count: number | null;
+  extra: unknown;
+}
+
+// admin.BenchmarkRunDetail：results 按成绩从好到差排序
+export interface BenchmarkRunDetail extends BenchmarkRun {
+  results: BenchmarkResult[];
+}
+
+// admin.BenchmarkResultInput（POST /benchmarks/{id}/runs 的 results[]）
+export interface BenchmarkResultInput {
+  model_label: string;
+  virtual_model_id?: number | null;
+  virtual_model?: string | null; // 按名称关联；不存在时整个 run 400
+  score: number;
+  cost_per_task_micro?: number | null;
+  avg_duration_ms?: number | null;
+  error_rate?: number | null;
+  sample_count?: number | null;
+  extra?: Record<string, unknown> | null;
+}
+
+// ---------- 公开应用榜治理（技术方案 §8.2） ----------
+
+// X-Title / HTTP-Referer 是调用方自报的，运营可以屏蔽冒名应用、合并别名、改展示名
+export type PublicAppRuleAction = 'block' | 'merge' | 'rename';
+
+// admin.PublicAppRule
+export interface PublicAppRule {
+  id: number;
+  app_key: string; // url:https://host 或 name:<小写 X-Title>
+  action: PublicAppRuleAction;
+  merge_into: string | null; // action=merge 时的目标 app_key
+  display_name: string | null; // 覆盖展示名（rename 必填，block/merge 可选）
+  note: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+// admin.PublicAppCandidate：未经隐私阈值过滤的原始自报应用，按 tokens 倒序，最多 500 个
+export interface PublicAppCandidate {
+  app_key: string;
+  app_name: string;
+  app_url: string;
+  requests: number;
+  tokens: number;
+  distinct_accounts: number;
+  rule: PublicAppRule | null;
+}
+
+// GET /public-apps 的响应：min_distinct_accounts 是网关公开榜单的隐私阈值（rankings_min_accounts）
+export interface PublicAppsResponse {
+  data: PublicAppCandidate[];
+  min_distinct_accounts: number;
 }

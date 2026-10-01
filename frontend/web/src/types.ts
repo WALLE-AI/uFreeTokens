@@ -4,6 +4,26 @@ export interface ModelScores {
   intelligenceIndex: number;
   codingIndex: number;
   agenticIndex: number;
+  // 以下是后端从公开评测榜单自动投影出来的成绩（GET /v1/catalog 的 scores，
+  // snake_case 键，取该模型最好的变体）；没有成绩时为 undefined。
+  // LMArena Elo 评分（约 1000–1600）。
+  arenaText?: number;
+  arenaChinese?: number;
+  arenaCoding?: number;
+  arenaWebdev?: number;
+  arenaVision?: number;
+  // 百分制（0–100）。
+  gpqaDiamond?: number;
+  sweBenchVerified?: number;
+  hle?: number;
+  terminalBench?: number;
+  aiderPolyglot?: number;
+  arcAgi2?: number;
+  livebench?: number;
+  // Epoch Capabilities Index（约 100–170）。
+  epochEci?: number;
+  opencompass?: number;
+  superclue?: number;
   designArena?: {
     codeCategories?: number;
     uiComponent?: number;

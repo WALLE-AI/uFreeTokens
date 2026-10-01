@@ -1,0 +1,104 @@
+---
+title: Rankings & benchmark data
+description: The public, no-auth rankings and benchmark endpoints, how rankings are calculated, and how to attribute your app with the X-Title / HTTP-Referer headers.
+section: guides
+order: 90
+translatedFrom: 5204538ea965
+---
+
+The [Rankings](/rankings) and [Benchmarks](/benchmarks) pages on the website are powered by the public endpoints below, which you can also call directly.
+
+## Endpoints
+
+These endpoints **do not require an API key** (calling them with a key returns exactly the same content) and only support `GET`:
+
+| Endpoint | Description | Query parameters |
+| --- | --- | --- |
+| `GET /v1/rankings/models` | Model ranking by token usage, with period-over-period change | `period`, `limit`, `series` |
+| `GET /v1/rankings/authors` | Token share by model author | `period` |
+| `GET /v1/rankings/speed` | Model ranking by median (P50) output speed | `period` |
+| `GET /v1/rankings/tools` | Ranking by tool-calling requests | `period` |
+| `GET /v1/rankings/multimodal` | Ranking by image-input requests | `period` |
+| `GET /v1/rankings/apps` | App ranking by token usage, see [App attribution](#app-attribution) | `period` |
+| `GET /v1/benchmarks` | Published benchmarks with model count, latest run and the three champions | `category` |
+| `GET /v1/benchmarks/{slug}` | Full leaderboard of a benchmark's latest published run | — |
+
+Query parameters:
+
+| Parameter | Values | Description |
+| --- | --- | --- |
+| `period` | `day`, `week`, `month` | Statistics period; applies to all rankings endpoints |
+| `limit` | 1–100 | `/v1/rankings/models` only; number of models returned |
+| `series` | `day` | `/v1/rankings/models` only; includes a daily series per model for trend charts |
+| `category` | `agents`, `media`, `artifacts`, `reasoning`, `search` | `/v1/benchmarks` only; filters by category, all categories when omitted |
+
+### Examples
+
+```bash title="cURL"
+curl "{{BASE_URL}}/v1/rankings/models?period=week&limit=20&series=day"
+```
+
+```bash title="cURL"
+curl "{{BASE_URL}}/v1/benchmarks?category=reasoning"
+```
+
+In benchmark results:
+
+- `model` is the ID of a model listed on the platform (usable directly in API calls). It is `null` when the evaluated model is not available on the platform, in which case only the display name `model_label` is given.
+- `cost_per_task_micro` is the average cost per task in millionths of `run.cost_currency` (`USD` or `CNY`); divide by 1,000,000 to get the amount.
+- `run.origin` of `self_eval` means the results were measured by the platform through its own gateway; `manual` and `import` mean published external results, with the source given in `source_name` and `source_url`.
+- The three champions: `quality` is the best-scoring model; `value` is the cheapest per task among models scoring at least the median; `speed` is the fastest on average among models scoring at least the median.
+- A benchmark that does not exist or is not published returns `404 not_found`.
+
+### Caching, rate limits and shutdown
+
+- Responses carry `Cache-Control: public, max-age=300`, so data may be up to 5 minutes old. Please don't poll aggressively.
+- Requests are rate limited per client IP. When exceeded, you get `429 rate_limit_exceeded` with `Retry-After`; see [Rate limits](/docs/en/rate-limits).
+- The platform may temporarily switch public data off (for example while fixing a calculation issue). The endpoints then return `503 service_unavailable`; retry later.
+
+## How rankings are calculated
+
+- **Successful requests only**: input + output tokens of successful requests are counted. Failed requests do not affect rankings.
+- **Internal accounts excluded**: traffic from the platform's internal testing, load-testing and evaluation accounts is excluded.
+- **At least 3 distinct accounts**: a model (or app) used by fewer than 3 distinct accounts in the period is not listed on its own and is folded into "Others", so that rankings cannot reveal a single customer's usage.
+- **Per-account cap**: a single account counts for at most 20% of a model's total for the period; anything above that is excluded from the ranking to discourage inflating usage.
+- **Beijing-time days**: days are cut in the `Asia/Shanghai` time zone, and only complete days are included — the most recent day is yesterday.
+- **Absolute numbers may be hidden**: the platform may publish only shares and ranks without absolute token counts; rely on the share fields in that case.
+
+## Privacy and opting out
+
+Rankings only publish anonymous, aggregated token usage — never request content. An account owner or admin can opt the account out under Dashboard → "数据隐私" (Data privacy), which calls `PUT /console/settings/public-stats`: today's and yesterday's rankings reflect it within about 30 minutes, older history after the next daily rebuild.
+
+## App attribution
+
+If you call uFreeTokens from your own app, add the following request headers so your app can appear in the apps ranking:
+
+| Header | Required | Description |
+| --- | --- | --- |
+| `X-Title` | Yes | App name, up to 64 characters; longer values are truncated |
+| `HTTP-Referer` | No | App URL such as `https://your.app`; only the scheme and host are kept, path and query are dropped |
+
+They apply to `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings` and other model endpoints, and do not affect authentication or billing:
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Title: My App" \
+  -H "HTTP-Referer: https://your.app" \
+  -d '{"model": "deepseek-ai/DeepSeek-V4-Flash", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Only apps that **declare `X-Title`** and are used by **at least 3 distinct accounts** in the period appear in `/v1/rankings/apps`. Calls without these headers still count toward model rankings but are not attributed to any app.
+
+<Callout type="info">
+
+Don't put personal information or secrets in these headers — app names and domains are shown publicly in the rankings.
+
+</Callout>
+
+## Related
+
+- [Models and model IDs](/docs/en/models)
+- [Rate limits](/docs/en/rate-limits)
+- [Error handling](/docs/en/errors)
