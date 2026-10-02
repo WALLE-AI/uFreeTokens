@@ -41,6 +41,7 @@ export interface WizardState {
     code: string;
     name: string;
     protocol: Protocol;
+    presetId: string; // 选用的供应商预设（data/providerPresets.ts），空 = 自定义
     createdId: number | null; // 新建成功后锁定，重复点击不重复创建
   };
   account: {
@@ -71,7 +72,7 @@ export interface WizardState {
 
 export const INITIAL_STATE: WizardState = {
   step: 1,
-  provider: { mode: 'existing', existingId: '', code: '', name: '', protocol: 'openai', createdId: null },
+  provider: { mode: 'existing', existingId: '', code: '', name: '', protocol: 'openai', presetId: '', createdId: null },
   account: {
     mode: 'new',
     existingId: '',
@@ -100,28 +101,49 @@ export const INITIAL_STATE: WizardState = {
 
 const STORAGE_KEY = 'uft_admin_provider_wizard';
 
-export function loadState(): WizardState {
+// 已有供应商追加模型（/providers/:id/models/add）按供应商分开存，不和接入向导互相覆盖
+export const addModelsStorageKey = (providerId: number) => `uft_admin_add_models_${providerId}`;
+
+export function loadState(key = STORAGE_KEY, fallback: WizardState = INITIAL_STATE): WizardState {
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_STATE;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return fallback;
     const parsed = JSON.parse(raw) as WizardState;
     // 进行中的导入在刷新后视为中断：running → pending，可以重新执行
     const results: Record<string, ImportResult> = {};
     for (const [k, v] of Object.entries(parsed.results ?? {})) {
       results[k] = v.state === 'running' ? { state: 'pending' } : v;
     }
-    return { ...INITIAL_STATE, ...parsed, results };
+    return { ...fallback, ...parsed, results };
   } catch {
-    return INITIAL_STATE;
+    return fallback;
   }
 }
 
-export function saveState(s: WizardState) {
-  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+export function saveState(s: WizardState, key = STORAGE_KEY) {
+  sessionStorage.setItem(key, JSON.stringify(s));
 }
 
-export function clearState() {
-  sessionStorage.removeItem(STORAGE_KEY);
+export function clearState(key = STORAGE_KEY) {
+  sessionStorage.removeItem(key);
+}
+
+// seedForExisting：已有供应商追加模型的初始状态，供应商与上游账号都已确定，直接从 ③ 选择模型开始
+export function seedForExisting(provider: { id: number; protocol: Protocol }, account: { id: number; cost_multiplier: string } | null): WizardState {
+  return {
+    ...INITIAL_STATE,
+    step: 3,
+    provider: { ...INITIAL_STATE.provider, mode: 'existing', existingId: String(provider.id), protocol: provider.protocol },
+    account: account
+      ? { ...INITIAL_STATE.account, mode: 'existing', existingId: String(account.id), existingMultiplier: account.cost_multiplier }
+      : { ...INITIAL_STATE.account, mode: 'existing' },
+  };
+}
+
+// 追加模式是否有未完成的工作（已经选了模型或开始导入）
+export function isAppendDirty(s: WizardState): boolean {
+  if (s.finished) return false;
+  return s.selected.length > 0 || Object.keys(s.results).length > 0;
 }
 
 export function isDirty(s: WizardState): boolean {

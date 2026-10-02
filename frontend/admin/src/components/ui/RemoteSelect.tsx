@@ -8,6 +8,7 @@ export interface RemoteOption<T = unknown> {
   value: string;
   label: string;
   hint?: string;
+  icon?: React.ReactNode; // 选项前的小图标（例如供应商品牌图标）
   data?: T; // 调用方需要的原始对象（例如供应商的 protocol）
 }
 
@@ -139,6 +140,7 @@ export function RemoteSelect<T>({ value, onChange, load, resolve, placeholder = 
                     onClick={() => pick(o)}
                     className={cn('w-full text-left px-2.5 py-1.5 rounded hover:bg-gray-50 cursor-pointer flex items-center gap-2', o.value === value && 'bg-purple-50 text-purple-700')}
                   >
+                    {o.icon}
                     <span className="truncate">{o.label}</span>
                     {o.hint && <span className="ml-auto text-[11px] text-gray-400 truncate">{o.hint}</span>}
                   </button>

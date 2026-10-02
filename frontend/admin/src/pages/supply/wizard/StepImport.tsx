@@ -6,7 +6,7 @@ import { importModels } from '../../../api/catalog';
 import { Button } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
 import type { ImportModelItemInput, ImportModelRow } from '../../../types';
-import { resolvedAccountId, type ImportResult, type RowConfig, type WizardState } from './state';
+import { resolvedAccountId, resolvedProviderId, type ImportResult, type RowConfig, type WizardState } from './state';
 import { StepFooter, type StepProps } from './ui';
 
 // 每批提交的模型数：服务端逐个模型各自一个事务导入，分批只是为了进度可见、可中途停止。
@@ -43,9 +43,10 @@ function toResult(r: ImportModelRow): ImportResult {
 // ⑤ 确认导入：先调用 import-models?dry_run 让服务端核算售价与毛利、确认平台现状，
 // 再分批正式导入（每个模型在服务端各自一个事务：建/复用虚拟模型 → 建/复用渠道 →
 // 成本价 → 售价，失败不留半成品），逐行显示结果，部分失败时只重试失败项。
-export function StepImport({ state, update, goto, onRestart }: StepProps & { onRestart: () => void }) {
+export function StepImport({ state, update, goto, onRestart, mode = 'onboard' }: StepProps & { onRestart: () => void }) {
   const navigate = useNavigate();
   const accountId = resolvedAccountId(state);
+  const providerId = resolvedProviderId(state);
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
 
@@ -158,13 +159,19 @@ export function StepImport({ state, update, goto, onRestart }: StepProps & { onR
             <CheckCircle2 className="w-3.5 h-3.5" /> 全部 {ids.length} 个模型导入完成，约 10 秒后网关生效
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Button onClick={onRestart}>继续接入</Button>
-            <Button
-              variant="primary"
-              onClick={() => navigate(ids.length === 1 && state.results[ids[0]]?.vmId ? `/models/${state.results[ids[0]]?.vmId}` : '/models')}
-            >
-              查看已导入模型
-            </Button>
+            <Button onClick={onRestart}>{mode === 'append' ? '继续添加模型' : '继续接入'}</Button>
+            {mode === 'append' && providerId !== null ? (
+              <Button variant="primary" onClick={() => navigate(`/providers/${providerId}#models`)}>
+                返回供应商
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={() => navigate(ids.length === 1 && state.results[ids[0]]?.vmId ? `/models/${state.results[ids[0]]?.vmId}` : '/models')}
+              >
+                查看已导入模型
+              </Button>
+            )}
           </div>
         </div>
       ) : (

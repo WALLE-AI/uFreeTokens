@@ -1,4 +1,6 @@
 import { getChannel, getProvider, getVirtualModel, listChannels, listProviderAccounts, listProviders, listVirtualModels } from './catalog';
+import { createElement } from 'react';
+import { ProviderIcon } from '../components/ui/ProviderIcon';
 import type { RemoteOption } from '../components/ui';
 import type { ChannelSummary, Paginated, Provider, ProviderAccountSummary, ProviderSummary, VirtualModelSummary } from '../types';
 
@@ -7,7 +9,11 @@ import type { ChannelSummary, Paginated, Provider, ProviderAccountSummary, Provi
 // searchProviders 按关键字搜索供应商（服务端分页的第一页，20 条）。
 export async function searchProviders(q: string, signal: AbortSignal): Promise<RemoteOption<ProviderSummary>[]> {
   const res = await listProviders({ q: q || undefined, page_size: 20, sort: 'code' }, signal);
-  return res.data.map((p) => ({ value: String(p.id), label: `${p.name}（${p.code}）`, hint: p.protocol, data: p }));
+  return res.data.map((p) => ({ value: String(p.id), label: `${p.name}（${p.code}）`, hint: p.protocol, icon: providerIcon(p), data: p }));
+}
+
+function providerIcon(p: ProviderSummary) {
+  return createElement(ProviderIcon, { code: p.code, name: p.name, size: 'sm' });
 }
 
 export async function providerLabel(id: string, signal: AbortSignal): Promise<string> {
@@ -18,7 +24,7 @@ export async function providerLabel(id: string, signal: AbortSignal): Promise<st
 // searchProviderCodes 同 searchProviders，但选项值是供应商 code（优惠雷达等按 code 筛选的接口用）。
 export async function searchProviderCodes(q: string, signal: AbortSignal): Promise<RemoteOption<ProviderSummary>[]> {
   const res = await listProviders({ q: q || undefined, page_size: 20, sort: 'code' }, signal);
-  return res.data.map((p) => ({ value: p.code, label: `${p.name}（${p.code}）`, hint: p.protocol, data: p }));
+  return res.data.map((p) => ({ value: p.code, label: `${p.name}（${p.code}）`, hint: p.protocol, icon: providerIcon(p), data: p }));
 }
 
 // searchVirtualModels 按关键字搜索虚拟模型（不含已废弃），选项值是模型 id。

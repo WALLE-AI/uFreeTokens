@@ -1,8 +1,9 @@
 import { describeError } from '../../api/errors';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { ArrowLeft, Ban, CheckCircle2, KeyRound, Pencil, Plug, Plus } from 'lucide-react';
-import { getProvider, updateProvider } from '../../api/catalog';
+import { ArrowLeft, Ban, CheckCircle2, KeyRound, PackagePlus, Pencil, Plug, Plus } from 'lucide-react';
+import { useCan } from '../../api/auth';
+import { getProvider, listChannels, updateProvider } from '../../api/catalog';
 import { AuditTimeline } from '../../components/audit/AuditTimeline';
 import {
   AnchorNav,
@@ -13,13 +14,15 @@ import {
   Field,
   FormModal,
   Input,
+  ProviderIcon,
   SectionTitle,
   StatusBadge,
   useToast,
   type Column,
 } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
-import type { ProviderAccountSummary } from '../../types';
+import type { ChannelSummary, ProviderAccountSummary } from '../../types';
+import { MarginText, PriceBriefCell } from '../catalog/shared';
 import { AccountDrawer, AccountFormModal, UpstreamModelsModal } from './accounts';
 import { ProtocolBadge, Stat } from './common';
 import { CreateSourceModal, PriceSourcesTable } from './sources';
@@ -46,6 +49,18 @@ export default function ProviderDetailPage() {
   const [creatingSource, setCreatingSource] = useState(false);
 
   const p = detail.data;
+  // 供应商的模型 = 其上游账号下的渠道
+  const channels = useAsync((signal) => listChannels({ provider_id: id, page_size: 20 }, signal), [id, reloadKey]);
+  const canAddModels = useCan('catalog:read');
+  const activeAccountCount = p?.accounts.filter((a) => a.status === 'active').length ?? 0;
+  const addModelsBlocked = !canAddModels
+    ? '没有 catalog:read 权限'
+    : p?.status !== 'active'
+      ? '供应商已停用'
+      : activeAccountCount === 0
+        ? '还没有启用的上游账号'
+        : null;
+  const addModels = (accountId?: number) => navigate(`/providers/${id}/models/add${accountId ? `?account_id=${accountId}` : ''}`);
 
   const rename = async () => {
     setBusy(true);
@@ -124,6 +139,24 @@ export default function ProviderDetailPage() {
     { key: 'status', header: '状态', render: (a) => <StatusBadge kind="provider_account" value={a.status} /> },
   ];
 
+  const channelColumns: Column<ChannelSummary>[] = [
+    {
+      key: 'vm',
+      header: '虚拟模型',
+      render: (c) => (
+        <Link to={`/models/${c.virtual_model_id}`} onClick={(e) => e.stopPropagation()} className="font-mono text-gray-900 hover:text-purple-600 truncate inline-block max-w-56" title={c.virtual_model_name}>
+          {c.virtual_model_name}
+        </Link>
+      ),
+    },
+    { key: 'upstream', header: '上游模型', render: (c) => <span className="font-mono text-gray-600 truncate inline-block max-w-48" title={c.upstream_model}>{c.upstream_model}</span> },
+    { key: 'account', header: '上游账号', render: (c) => <span className="text-gray-600 whitespace-nowrap">{c.provider_account_name}</span> },
+    { key: 'cost', header: '成本（原币种）', numeric: true, render: (c) => <PriceBriefCell price={c.cost_price} /> },
+    { key: 'sell', header: '售价 ¥', numeric: true, render: (c) => <PriceBriefCell price={c.sell_price} /> },
+    { key: 'margin', header: '毛利率', numeric: true, render: (c) => <MarginText ratio={c.margin_ratio} /> },
+    { key: 'status', header: '状态', render: (c) => <StatusBadge kind="channel" value={c.status} /> },
+  ];
+
   return (
     <DataState loading={detail.loading} error={detail.error} onRetry={detail.reload} skeleton="cards">
       {p && (
@@ -134,12 +167,18 @@ export default function ProviderDetailPage() {
               供应商
             </Button>
             <div className="flex items-center gap-2 min-w-0">
+              <ProviderIcon code={p.code} name={p.name} />
               <h1 className="text-xl font-bold text-gray-900 truncate">{p.name}</h1>
               <span className="font-mono text-xs text-gray-400">{p.code}</span>
               <ProtocolBadge protocol={p.protocol} />
               <StatusBadge kind="provider" value={p.status} />
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <span title={addModelsBlocked ?? undefined}>
+                <Button variant="primary" icon={<PackagePlus className="w-3.5 h-3.5" />} onClick={() => addModels()} disabled={!!addModelsBlocked}>
+                  添加模型
+                </Button>
+              </span>
               <Button
                 icon={<Pencil className="w-3.5 h-3.5" />}
                 onClick={() => {
@@ -185,6 +224,7 @@ export default function ProviderDetailPage() {
             <AnchorNav
               items={[
                 { id: 'accounts', label: '上游账号' },
+                { id: 'models', label: '模型 / 渠道' },
                 { id: 'sources', label: '价格源' },
                 { id: 'audit', label: '操作记录' },
               ]}
@@ -211,8 +251,40 @@ export default function ProviderDetailPage() {
                     { label: '管理密钥', icon: <KeyRound className="w-3.5 h-3.5" />, onClick: (a) => setDrawerAccount(a.id) },
                     { label: '编辑账号', icon: <Pencil className="w-3.5 h-3.5" />, onClick: (a) => setAccountForm({ open: true, account: a }) },
                     { label: '测试连接', icon: <Plug className="w-3.5 h-3.5" />, onClick: (a) => setTesting(a.id) },
+                    ...(addModelsBlocked === null
+                      ? [{ label: '添加模型', icon: <PackagePlus className="w-3.5 h-3.5" />, onClick: (a: ProviderAccountSummary) => addModels(a.id) }]
+                      : []),
                   ]}
                 />
+              </section>
+
+              <section>
+                <SectionTitle
+                  id="models"
+                  actions={
+                    <div className="flex items-center gap-2">
+                      {p.channel_count > 0 && (
+                        <Link to={`/channels?provider_id=${p.id}`} className="text-xs text-purple-600 hover:underline">
+                          查看全部 {p.channel_count} 条
+                        </Link>
+                      )}
+                      <Button size="sm" icon={<PackagePlus className="w-3.5 h-3.5" />} onClick={() => addModels()} disabled={!!addModelsBlocked} title={addModelsBlocked ?? undefined}>
+                        添加模型
+                      </Button>
+                    </div>
+                  }
+                >
+                  模型 / 渠道
+                </SectionTitle>
+                <DataState loading={channels.loading} error={channels.error} onRetry={channels.reload} skeleton="table">
+                  <DataTable
+                    columns={channelColumns}
+                    rows={channels.data?.data ?? []}
+                    rowKey={(c) => c.id}
+                    onRowClick={(c) => navigate(`/channels/${c.id}`)}
+                    empty="还没有模型，点击「添加模型」从上游列表导入"
+                  />
+                </DataState>
               </section>
 
               <section>

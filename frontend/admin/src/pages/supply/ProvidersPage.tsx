@@ -11,6 +11,7 @@ import {
   FilterBar,
   PageHeader,
   Pagination,
+  ProviderIcon,
   Select,
   StatusBadge,
   useToast,
@@ -74,9 +75,12 @@ export default function ProvidersPage() {
       header: '供应商',
       sortable: true,
       render: (p) => (
-        <div className="min-w-0">
-          <div className="font-medium text-gray-900 truncate">{p.name}</div>
-          <div className="font-mono text-[11px] text-gray-400">{p.code}</div>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <ProviderIcon code={p.code} name={p.name} />
+          <div className="min-w-0">
+            <div className="font-medium text-gray-900 truncate">{p.name}</div>
+            <div className="font-mono text-[11px] text-gray-400">{p.code}</div>
+          </div>
         </div>
       ),
     },

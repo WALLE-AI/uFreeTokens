@@ -9,6 +9,8 @@ export interface StepProps {
   goto: (step: Step) => void;
   secret: string;
   setSecret: (v: string) => void;
+  // onboard = 接入新供应商五步向导；append = 已有供应商追加模型（只有 ③④⑤）
+  mode?: 'onboard' | 'append';
 }
 
 export const STEPS: Array<{ step: Step; label: string }> = [
@@ -20,10 +22,20 @@ export const STEPS: Array<{ step: Step; label: string }> = [
 ];
 
 // 顶部步骤条：已完成的步骤可点击回退，后面的步骤不能跳过去
-export function StepBar({ current, onJump, locked }: { current: Step; onJump: (s: Step) => void; locked?: boolean }) {
+export function StepBar({
+  current,
+  onJump,
+  locked,
+  steps = STEPS,
+}: {
+  current: Step;
+  onJump: (s: Step) => void;
+  locked?: boolean;
+  steps?: Array<{ step: Step; label: string }>;
+}) {
   return (
     <ol className="flex items-center gap-2 overflow-x-auto">
-      {STEPS.map(({ step, label }, i) => {
+      {steps.map(({ step, label }, i) => {
         const done = step < current;
         const active = step === current;
         return (
@@ -45,7 +57,7 @@ export function StepBar({ current, onJump, locked }: { current: Step; onJump: (s
                   active ? 'bg-purple-600 text-white' : done ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-400',
                 )}
               >
-                {done ? <Check className="w-3 h-3" /> : step}
+                {done ? <Check className="w-3 h-3" /> : i + 1}
               </span>
               {label}
             </button>

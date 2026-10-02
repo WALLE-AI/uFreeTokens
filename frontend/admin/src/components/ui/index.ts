@@ -17,3 +17,5 @@ export * from './CommandPalette';
 export * from './Detail';
 export * from './Controls';
 export * from './RemoteSelect';
+export * from './ProviderIcon';
+export * from './ProviderPresetPicker';

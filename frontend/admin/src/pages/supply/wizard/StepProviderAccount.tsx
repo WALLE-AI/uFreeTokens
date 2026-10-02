@@ -1,8 +1,9 @@
 import { describeError } from '../../../api/errors';
 import { useState } from 'react';
-import { CheckCircle2, Eye, EyeOff, Lock, Plug, XCircle } from 'lucide-react';
-import { addProviderKey, createProvider, createProviderAccount, getProvider, listUpstreamModels } from '../../../api/catalog';
-import { Button, ConfirmDialog, DataState, Field, IconButton, Input, RemoteSelect, SegmentedToggle, Select } from '../../../components/ui';
+import { CheckCircle2, ExternalLink, Eye, EyeOff, Info, Lock, Plug, XCircle } from 'lucide-react';
+import { addProviderKey, createProvider, createProviderAccount, getProvider, listProviders, listUpstreamModels } from '../../../api/catalog';
+import { Button, ConfirmDialog, DataState, Field, IconButton, Input, ProviderIcon, ProviderPresetPicker, RemoteSelect, SegmentedToggle, Select } from '../../../components/ui';
+import { PROVIDER_PRESETS, findPreset, hasPlaceholder, type ProviderPreset } from '../../../data/providerPresets';
 import { useAsync } from '../../../hooks/useAsync';
 import { cn } from '../../../lib/cn';
 import type { Protocol, ProviderSummary } from '../../../types';
@@ -24,6 +25,15 @@ export function StepProvider({ state, update, goto }: StepProps) {
   const p = state.provider;
   const locked = p.createdId !== null;
   const codeValid = /^[a-z0-9][a-z0-9_-]{1,39}$/.test(p.code);
+  // 新建时检查 code 是否已被占用（选了预设时最常见：该厂商早就接入过）
+  const duplicate = useAsync(
+    (signal) =>
+      p.mode === 'new' && !locked && codeValid
+        ? listProviders({ q: p.code, page_size: 20 }, signal).then((r) => r.data.find((x) => x.code === p.code) ?? null)
+        : Promise.resolve(null),
+    [p.mode, locked, codeValid, p.code],
+  );
+  const dup = duplicate.data ?? null;
 
   const setProvider = (patch: Partial<WizardState['provider']>) =>
     update((s) => ({
@@ -38,11 +48,29 @@ export function StepProvider({ state, update, goto }: StepProps) {
       selected: [],
     }));
 
+  const applyPreset = (preset: ProviderPreset | null) => {
+    if (!preset) {
+      setProvider({ presetId: '' });
+      return;
+    }
+    setProvider({ presetId: preset.id, code: preset.id, name: preset.name, protocol: preset.protocol });
+  };
+
+  const switchToExisting = (target: ProviderSummary) => {
+    setPicked(target);
+    setProvider({ mode: 'existing', existingId: String(target.id) });
+  };
+
   const next = async () => {
     setError(null);
     if (p.mode === 'existing') {
       const found = picked ?? providerDetail.data;
-      update((s) => ({ ...s, provider: { ...s.provider, protocol: found?.protocol ?? s.provider.protocol } }));
+      update((s) =>
+        prefillAccount(
+          { ...s, provider: { ...s.provider, protocol: found?.protocol ?? s.provider.protocol, presetId: findPreset(found?.code)?.id ?? '' } },
+          found?.code,
+        ),
+      );
       goto(2);
       return;
     }
@@ -53,7 +81,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
     setBusy(true);
     try {
       const created = await createProvider({ code: p.code.trim(), name: p.name.trim(), protocol: p.protocol });
-      update((s) => ({ ...s, provider: { ...s.provider, createdId: created.id }, account: { ...s.account, mode: 'new' } }));
+      update((s) => prefillAccount({ ...s, provider: { ...s.provider, createdId: created.id }, account: { ...s.account, mode: 'new' } }, created.code));
       goto(2);
     } catch (err) {
       setError(describeError(err, '创建供应商失败'));
@@ -62,7 +90,7 @@ export function StepProvider({ state, update, goto }: StepProps) {
     }
   };
 
-  const canNext = p.mode === 'existing' ? !!p.existingId : locked || (codeValid && !!p.name.trim());
+  const canNext = p.mode === 'existing' ? !!p.existingId : locked || (codeValid && !!p.name.trim() && !dup);
   const selected = picked ?? providerDetail.data ?? null;
 
   return (
@@ -92,7 +120,8 @@ export function StepProvider({ state, update, goto }: StepProps) {
             />
           </Field>
           {selected && (
-            <div className="mt-3 bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs flex flex-wrap gap-x-6 gap-y-1 text-gray-600">
+            <div className="mt-3 bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs flex flex-wrap items-center gap-x-6 gap-y-1 text-gray-600">
+              <ProviderIcon code={selected.code} name={selected.name} size="sm" />
               <span>
                 协议 <ProtocolBadge protocol={selected.protocol} />
               </span>
@@ -109,6 +138,9 @@ export function StepProvider({ state, update, goto }: StepProps) {
               <Lock className="w-3.5 h-3.5" /> 已创建供应商 #{p.createdId}（{p.code}），以下信息已锁定
             </div>
           )}
+          <Field label="供应商预设" hint={`内置 ${PROVIDER_PRESETS.length} 个常见供应商，选择后自动填写 code、名称、协议和 Base URL（均可修改）`}>
+            <ProviderPresetPicker value={p.presetId ?? ''} disabled={locked} onChange={applyPreset} />
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Code" required hint="小写字母、数字、- 或 _，创建后不可修改" error={p.code && !codeValid ? '格式不正确' : undefined}>
               <Input mono value={p.code} disabled={locked} invalid={!!p.code && !codeValid} onChange={(e) => setProvider({ code: e.target.value.toLowerCase() })} placeholder="deepseek" autoFocus />
@@ -117,6 +149,17 @@ export function StepProvider({ state, update, goto }: StepProps) {
               <Input value={p.name} disabled={locked} onChange={(e) => setProvider({ name: e.target.value })} placeholder="DeepSeek" />
             </Field>
           </div>
+          {dup && (
+            <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-center gap-2">
+              <ProviderIcon code={dup.code} name={dup.name} size="sm" />
+              <span className="flex-1">
+                code <span className="font-mono">{dup.code}</span> 已被供应商「{dup.name}」占用。
+              </span>
+              <Button size="sm" onClick={() => switchToExisting(dup)}>
+                改为选择已有供应商
+              </Button>
+            </div>
+          )}
           <Field label="协议" required>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {PROTOCOL_OPTIONS.map((o) => (
@@ -143,6 +186,23 @@ export function StepProvider({ state, update, goto }: StepProps) {
       <StepFooter onNext={next} nextDisabled={!canNext} nextLoading={busy} nextLabel={p.mode === 'new' && !locked ? '创建并继续' : '下一步'} />
     </div>
   );
+}
+
+// prefillAccount：进入第 ② 步前，按供应商预设预填新建上游账号的 Base URL 和名称。
+// 用户手改过的 Base URL（不等于任何预设地址）不覆盖；已创建的账号不动。
+function prefillAccount(s: WizardState, code: string | undefined): WizardState {
+  const preset = findPreset(s.provider.presetId) ?? findPreset(code);
+  if (!preset || s.account.createdId !== null) return s;
+  const url = s.account.baseURL.trim();
+  const untouched = !url || PROVIDER_PRESETS.some((x) => x.baseUrl === url);
+  return {
+    ...s,
+    account: {
+      ...s.account,
+      baseURL: untouched ? preset.baseUrl : s.account.baseURL,
+      name: s.account.name.trim() ? s.account.name : `${code ?? preset.id}-main`,
+    },
+  };
 }
 
 // ② 上游账号与密钥 + 测试连接
@@ -172,6 +232,8 @@ export function StepAccount({ state, update, goto, secret, setSecret }: StepProp
     }));
 
   const multInvalid = !(Number(a.multiplier) > 0);
+  const preset = findPreset(state.provider.presetId) ?? findPreset(state.provider.code);
+  const urlPlaceholder = mode === 'new' && !locked && hasPlaceholder(a.baseURL);
 
   // ensureAccountAndKey：按需创建账号、添加密钥；已创建/已添加的不会重复提交
   const ensureAccountAndKey = async (): Promise<number> => {
@@ -243,11 +305,33 @@ export function StepAccount({ state, update, goto, secret, setSecret }: StepProp
   const selectedExisting = accounts.data?.data.find((x) => String(x.id) === a.existingId);
   const canProceed =
     mode === 'new'
-      ? locked || (!!a.name.trim() && !!a.baseURL.trim() && !multInvalid && !!secret.trim())
+      ? locked || (!!a.name.trim() && !!a.baseURL.trim() && !urlPlaceholder && !multInvalid && !!secret.trim())
       : !!a.existingId;
 
   return (
     <div className="max-w-2xl space-y-5">
+      {preset && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-600 flex items-start gap-2.5">
+          <ProviderIcon code={preset.id} name={preset.name} size="md" />
+          <div className="flex-1 min-w-0 space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-gray-900">{preset.name}</span>
+              {preset.keyless && <span className="text-[10px] px-1 rounded bg-emerald-50 text-emerald-700">免密钥</span>}
+              {preset.keyUrl && (
+                <a href={preset.keyUrl} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 text-purple-700 hover:underline">
+                  获取 API Key <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+            {preset.note && (
+              <div className="flex items-start gap-1 text-gray-500">
+                <Info className="w-3 h-3 mt-0.5 shrink-0" /> {preset.note}
+              </div>
+            )}
+            {preset.keyless && <div className="text-gray-500">系统要求至少一把密钥：没有真实密钥时可随意填一个占位值（上游按匿名请求处理）。</div>}
+          </div>
+        </div>
+      )}
       <DataState loading={accounts.loading} error={accounts.error} onRetry={accounts.reload} skeleton="text">
         {hasAccounts && (
           <SegmentedToggle
@@ -296,8 +380,20 @@ export function StepAccount({ state, update, goto, secret, setSecret }: StepProp
                 <Input mono value={a.multiplier} disabled={locked} invalid={multInvalid} onChange={(e) => setAccount({ multiplier: e.target.value }, false)} />
               </Field>
             </div>
-            <Field label="Base URL" required hint="OpenAI 兼容协议填到 /v1，例如 https://api.deepseek.com/v1">
-              <Input mono value={a.baseURL} disabled={locked} onChange={(e) => setAccount({ baseURL: e.target.value })} placeholder="https://…" />
+            <Field
+              label="Base URL"
+              required
+              hint="OpenAI 兼容协议填到 /v1，例如 https://api.deepseek.com/v1"
+              error={urlPlaceholder ? 'Base URL 里还有未替换的 {…} 占位符' : undefined}
+            >
+              <Input
+                mono
+                value={a.baseURL}
+                disabled={locked}
+                invalid={urlPlaceholder}
+                onChange={(e) => setAccount({ baseURL: e.target.value })}
+                placeholder={preset?.baseUrl ?? 'https://…'}
+              />
             </Field>
           </div>
         )}

@@ -17,7 +17,7 @@ const STATUS_LABEL: Record<PlatformStatus, { label: string; className: string; t
 };
 
 // ③ 选择模型：上游模型 + 本平台状态 + 参考价
-export function StepModels({ state, update, goto }: StepProps) {
+export function StepModels({ state, update, goto, mode = 'onboard' }: StepProps) {
   const accountId = resolvedAccountId(state);
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState<'all' | PlatformStatus>('all');
@@ -281,7 +281,7 @@ export function StepModels({ state, update, goto }: StepProps) {
       </div>
 
       <StepFooter
-        onBack={() => goto(2)}
+        onBack={mode === 'append' ? undefined : () => goto(2)}
         onNext={next}
         nextDisabled={state.selected.length === 0 || !state.statusChecked}
         nextLabel={`下一步：为 ${state.selected.length} 个模型定价`}
