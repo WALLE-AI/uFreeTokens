@@ -3,8 +3,22 @@ title: Changelog
 description: Developer-facing API and behavior changes to uFreeTokens, newest first.
 section: changelog
 order: 0
-translatedFrom: 168914c91c0a
+translatedFrom: 7ddaa1a39ec0
 ---
+
+## 2026-10-02
+
+- **Unified multi-provider interface**: the same endpoints can be served by different upstream providers; the gateway normalizes each provider's paths, parameters, responses and errors to the OpenAI shapes documented here. If the upstream fails mid-stream, you now receive a chunk with an `error` field instead of a silent truncation.
+- **New `limits` field in `GET /v1/catalog`**: lists a model's interface constraints (e.g. `b64_json` only, a fixed audio format, a maximum upload size). See [Interface constraints](/docs/en/models#interface-constraints).
+- **New `POST /v1/rerank`**: document reranking, billed on input tokens. See [Rerank](/docs/en/rerank).
+- **New `POST /v1/images/generations`**: image generation. Responses use the OpenAI-style `data[].url` (temporary links) and are billed per generated image. See [Image generation](/docs/en/images).
+- **New `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`**: speech synthesis (returns an audio file, supports streaming, billed per character) and speech recognition (`multipart/form-data` upload, billed by audio duration). See [Speech synthesis and recognition](/docs/en/audio).
+- **Images in `/v1/messages`**: `image` blocks (`base64` or `url`) in `content` are now forwarded to vision models; previously they were dropped.
+- **Image token estimation**: each image in a chat request is now estimated at a fixed 1,500 tokens instead of by its base64 byte size. Previously, large images could be wrongly judged to exceed the context window and return `503 no_available_channel`.
+- **Model type validation**: calling an endpoint with a model that does not support it (e.g. an embedding model on `/v1/chat/completions`) now returns `404 model_not_found` directly, instead of being forwarded upstream and returning `400`.
+- **New error codes**: request bodies over 20 MB return `413 request_too_large` (previously `400 invalid_request`); unsupported request or file formats for speech recognition return `415 unsupported_media_type`.
+- **Clearer error messages**: when the upstream rejects parameters, `message` includes the upstream's reason; `503 no_available_channel` now says whether the cause is capabilities, context length or channel health.
+- **New `GET /v1/usage` fields**: `total_images`, `total_input_chars`, `total_audio_ms`.
 
 ## 2026-10-01
 

@@ -38,6 +38,17 @@ export interface AccountDetailResponse {
   active_grants_summary: GrantsSummary;
 }
 
+export interface AccountDialect {
+  provider_account_id: number;
+  provider_code: string;
+  protocol: string;
+  dialect: unknown;
+  effective: Dialect | null;
+  endpoints: Record<string, boolean> | null;
+  suggested_preset?: string;
+  history: DialectVersion[] | null;
+}
+
 export interface AccountMember {
   user_id: number;
   email: string | null;
@@ -134,6 +145,11 @@ export interface AuditLogEntry {
   after: unknown;
   ip: string;
   created_at: string;
+}
+
+export interface Auth {
+  validation?: Validation;
+  alternate_hosts?: string[] | null;
 }
 
 export interface BatchApproveRequest {
@@ -296,6 +312,10 @@ export interface BenchmarkSummary {
   published_run_id: number | null;
   published_run_at: string | null;
   published_result_count: number;
+}
+
+export interface Catalog {
+  list_paths?: string[] | null;
 }
 
 export interface CatalogCounts {
@@ -474,6 +494,14 @@ export interface ChannelSummary {
   pending_change_request_id: number | null;
 }
 
+export interface Chat {
+  thinking_default?: Record<string, unknown> | null;
+  force_single_tool_call?: boolean;
+  strict_messages?: boolean;
+  single_system_message?: boolean;
+  min_max_tokens?: number;
+}
+
 export interface ComponentChange {
   meter: string;
   service_tier: string;
@@ -486,6 +514,7 @@ export interface ComponentChange {
 export interface CostCNY {
   input: string | null;
   output: string | null;
+  media?: MeterPrice[] | null;
   fx_rate: string;
   fx_date: string | null;
   fx_missing: boolean;
@@ -551,6 +580,7 @@ export interface CreateChannelInput {
   experiment_key: string;
   variant_label: string;
   allowed_account_ids: number[] | null;
+  param_overrides: Record<string, unknown> | null;
 }
 
 export interface CreatePriceSourceRequest {
@@ -575,6 +605,7 @@ export interface CreateProviderAccountRequest {
   name: string;
   base_url: string;
   cost_multiplier: string | null;
+  dialect: unknown;
 }
 
 export interface CreateProviderInput {
@@ -666,8 +697,55 @@ export interface DecideChangeRequestBody {
   confirm_blocked: boolean;
 }
 
+export interface Dialect {
+  preset?: string;
+  endpoints?: Record<string, Endpoint | null> | null;
+  errors?: Errors;
+  chat?: Chat;
+  transport?: Transport;
+  auth?: Auth;
+  catalog?: Catalog;
+  region?: string;
+  notes?: string;
+}
+
+export interface DialectPreset {
+  name: string;
+  notes: string;
+  dialect: unknown;
+}
+
+export interface DialectVersion {
+  dialect: unknown;
+  saved_at: string;
+  saved_by: number | null;
+}
+
 export interface DismissListingRequest {
   reason: string;
+}
+
+export interface Endpoint {
+  supported?: boolean | null;
+  codec?: string;
+  by_model?: ModelRule[] | null;
+  url?: string;
+  path?: string;
+  defaults?: Record<string, unknown> | null;
+  force?: Record<string, unknown> | null;
+  drop?: string[] | null;
+  rename?: Record<string, string> | null;
+  transforms?: string[] | null;
+  voice_map?: Record<string, string> | null;
+  size_map?: Record<string, string> | null;
+  usage?: Record<string, string[] | null> | null;
+  limits?: Limits;
+}
+
+export interface Errors {
+  body_error_field?: string;
+  in_band_patterns?: string[] | null;
+  challenge_is_transient?: boolean;
 }
 
 export interface EvidenceInfo {
@@ -743,6 +821,9 @@ export interface ImportModelItem {
   sell_input: string | null;
   sell_output: string | null;
   keep_existing_sell: boolean;
+  cost_components: PreviewPrice[] | null;
+  sell_components: PreviewPrice[] | null;
+  param_overrides: Record<string, unknown> | null;
 }
 
 export interface ImportModelResult {
@@ -766,6 +847,7 @@ export interface ImportModelResultItem {
   sell_output: string | null;
   margin_ratio: string | null;
   publish_sell_price: boolean;
+  components?: PreviewComponent[] | null;
   errors: string[] | null;
   ok: boolean;
   result?: ImportModelResult | null;
@@ -806,6 +888,13 @@ export interface LedgerEntry {
   ref_id: string;
   grant_id: number | null;
   created_at: string;
+}
+
+export interface Limits {
+  b64_only?: boolean;
+  max_file_bytes?: number;
+  response_formats?: string[] | null;
+  audio_formats?: string[] | null;
 }
 
 export interface ListData_AdminUser {
@@ -906,6 +995,15 @@ export interface MeResponse {
   totp_enabled: boolean;
 }
 
+export interface MetaCodecsResponse {
+  codecs: string[] | null;
+  transforms: string[] | null;
+}
+
+export interface MetaDialectPresetsResponse {
+  data: DialectPreset[] | null;
+}
+
 export interface MetaEnumsResponse {
   tiers: string[] | null;
   protocols: string[] | null;
@@ -944,6 +1042,12 @@ export interface MetaEnumsResponse {
   permissions: string[] | null;
 }
 
+export interface MeterPrice {
+  meter: string;
+  unit: string;
+  price: string;
+}
+
 export interface Metrics {
   requests: number;
   success: number;
@@ -978,6 +1082,12 @@ export interface ModelAlias {
   last_seen_at: string;
   decided_by_name: string | null;
   decided_at: string | null;
+}
+
+export interface ModelRule {
+  match: string;
+  codec?: string;
+  supported?: boolean | null;
 }
 
 export interface Offer {
@@ -1109,6 +1219,20 @@ export interface PendingListing {
   decided_at: string | null;
 }
 
+export interface PreviewComponent {
+  meter: string;
+  unit: string;
+  cost_cny: string | null;
+  sell: string;
+  margin_ratio: string | null;
+}
+
+export interface PreviewPrice {
+  meter: string;
+  unit: string;
+  price: string;
+}
+
 export interface PriceBookIDResponse {
   price_book_id: number;
 }
@@ -1132,6 +1256,7 @@ export interface PriceBrief {
   currency: string;
   input: string | null;
   output: string | null;
+  media?: MeterPrice[] | null;
   effective_from: string;
 }
 
@@ -1229,6 +1354,8 @@ export interface PricingPreviewItem {
   sell_input: string | null;
   sell_output: string | null;
   markup_percent: string | null;
+  cost_components: PreviewPrice[] | null;
+  sell_components: PreviewPrice[] | null;
 }
 
 export interface PricingPreviewResult {
@@ -1247,6 +1374,7 @@ export interface PricingPreviewResultItem {
   sell_output: string | null;
   margin_ratio: string | null;
   negative_margin: boolean;
+  components?: PreviewComponent[] | null;
 }
 
 export interface Provider {
@@ -1440,6 +1568,9 @@ export interface RequestLogDetail {
   latency_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  image_count: number | null;
+  input_chars: number | null;
+  audio_ms: number | null;
   usage_source: string;
   charged_amount_micro: number | null;
   list_amount_micro: number | null;
@@ -1481,6 +1612,9 @@ export interface RequestLogItem {
   latency_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  image_count: number | null;
+  input_chars: number | null;
+  audio_ms: number | null;
   usage_source: string;
   charged_amount_micro: number | null;
   list_amount_micro: number | null;
@@ -1496,6 +1630,10 @@ export interface Role {
 export interface SetCostPriceRequest {
   currency: string;
   components: PriceComponentInput[] | null;
+}
+
+export interface SetDialectRequest {
+  dialect: unknown;
 }
 
 export interface SetFXRateRequest {
@@ -1575,6 +1713,12 @@ export interface TodoCounts {
 
 export interface TotpCodeRequest {
   code: string;
+}
+
+export interface Transport {
+  extra_headers?: Record<string, string> | null;
+  timeout_ms?: number;
+  keyless?: boolean;
 }
 
 export interface UnmappedIngestResultDTO {
@@ -1687,6 +1831,7 @@ export interface UpdateProviderKeyInput {
 }
 
 export interface UpdateVirtualModelInput {
+  type: string | null;
   status: string | null;
   visible_tiers: string[] | null | null;
   capabilities: string[] | null | null;
@@ -1735,6 +1880,12 @@ export interface UsageResult {
   totals: Metrics;
   groups: UsageGroup[] | null;
   series: UsagePoint[] | null;
+}
+
+export interface Validation {
+  method?: string;
+  url?: string;
+  model?: string;
 }
 
 export interface ValidationIssue {

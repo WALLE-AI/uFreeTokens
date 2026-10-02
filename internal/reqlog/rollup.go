@@ -75,7 +75,8 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) (i
 	cols := append([]string{"bucket", "account_id", "api_key_id", "virtual_model", "virtual_model_id", "channel_id", "provider_id",
 		"requests", "success", "estimated", "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens",
 		"charged_micro", "list_micro", "cost_micro",
-		"speed_requests", "speed_output_tokens", "speed_gen_ms", "tool_requests", "tool_tokens", "image_requests", "image_tokens"}, append(append(lat, ttft...), spd...)...)
+		"speed_requests", "speed_output_tokens", "speed_gen_ms", "tool_requests", "tool_tokens", "image_requests", "image_tokens",
+		"image_count", "input_chars", "audio_ms"}, append(append(lat, ttft...), spd...)...)
 	selects := append([]string{
 		"date_trunc('hour', rl.created_at) AS bucket", "rl.account_id", "rl.api_key_id", "rl.virtual_model",
 		"max(COALESCE(rl.virtual_model_id, (SELECT vm.id FROM virtual_models vm WHERE vm.name = rl.virtual_model)))", "rl.channel_id", "pa.provider_id",
@@ -93,6 +94,10 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) (i
 		"COALESCE(sum(COALESCE(rl.input_tokens, 0) + COALESCE(rl.output_tokens, 0)) FILTER (WHERE " + toolCond + "), 0)",
 		"count(*) FILTER (WHERE " + imageCond + ")",
 		"COALESCE(sum(COALESCE(rl.input_tokens, 0) + COALESCE(rl.output_tokens, 0)) FILTER (WHERE " + imageCond + "), 0)",
+		// 多模态用量（迁移 00031）
+		"COALESCE(sum(rl.image_count) FILTER (WHERE rl.status = 'success'), 0)",
+		"COALESCE(sum(rl.input_chars) FILTER (WHERE rl.status = 'success'), 0)",
+		"COALESCE(sum(rl.audio_ms) FILTER (WHERE rl.status = 'success'), 0)",
 	}, append(append(histogramExprs("latency_ms", "rl.status = 'success'"), histogramExprs("ttft_ms", "rl.status = 'success' AND rl.is_stream")...),
 		speedHistogramExprs()...)...)
 	updates := make([]string, 0, len(cols))

@@ -1,0 +1,165 @@
+---
+title: 语音合成与识别
+description: 通过 POST /v1/audio/speech 把文字合成为语音（按字符计费），通过 POST /v1/audio/transcriptions 把音频识别为文字（按时长计费）。
+section: guides
+order: 46
+---
+
+语音相关的两个接口都与 OpenAI Audio API 兼容，可以直接使用 OpenAI SDK：
+
+| 接口 | 作用 | 模型要求 | 计费 |
+| --- | --- | --- | --- |
+| `POST /v1/audio/speech` | 语音合成（TTS）：文字 → 音频 | `type` 为 `audio`、`capabilities` 含 `tts` | 按输入字符数 |
+| `POST /v1/audio/transcriptions` | 语音识别（ASR）：音频 → 文字 | `type` 为 `audio`、`capabilities` 含 `asr` | 按音频时长 |
+
+用语音合成模型调用识别接口（或反过来）会返回 `404 model_not_found`。
+
+```bash title="列出语音模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "audio") | "\(.name)  \(.capabilities)"'
+```
+
+## 语音合成
+
+### 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `model` | string | 是 | 具备 `tts` 能力的模型 ID |
+| `input` | string | 是 | 要合成的文本，最多 4096 个字符 |
+| `voice` | string | 是 | 音色，见下文 |
+| `response_format` | string | 否 | `mp3`（默认）、`wav`、`opus`、`pcm` 等，取决于模型 |
+| `speed` | number | 否 | 语速，如 `1.0` |
+| `stream` | boolean | 否 | 为 `true` 时边生成边返回音频 |
+
+CosyVoice 系列模型使用短音色名：`alex`、`anna`、`bella`、`benjamin`、`charles`、`claire`、`david`、`diana`。网关会自动补上上游需要的前缀，你只需要传短名。
+
+### 响应
+
+响应体就是音频文件本身，`Content-Type` 与格式对应（如 `audio/mpeg`）。少数模型只能输出固定格式（如 wav），这类模型在 `GET /v1/catalog` 中带有 `limits.audio_formats`，请以响应的 `Content-Type` 为准，见[接口约束](/docs/zh/models#接口约束)。`stream: true` 时音频按块返回，可以边收边播——这是普通的分块二进制传输，**不是** SSE，不需要按 `data:` 行解析。
+
+### 计费
+
+按 `input` 的**字符数**计费（模型售价中的 `input_char` 计量项，单位为"每百万字符"），中英文、标点、空格都按 1 个字符计。字符数在请求时就能确定，所以预扣即实扣；流式请求中途断开也按全额计费。
+
+### 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/audio/speech \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "input": "今天天气很好，我们一起去公园散步吧。",
+    "voice": "alex",
+    "response_format": "mp3"
+  }' \
+  --output speech.mp3
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with client.audio.speech.with_streaming_response.create(
+    model="FunAudioLLM/CosyVoice2-0.5B",
+    input="今天天气很好，我们一起去公园散步吧。",
+    voice="alex",
+    response_format="mp3",
+) as resp:
+    resp.stream_to_file("speech.mp3")
+```
+
+```ts title="Node.js"
+import { writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const resp = await client.audio.speech.create({
+  model: "FunAudioLLM/CosyVoice2-0.5B",
+  input: "今天天气很好，我们一起去公园散步吧。",
+  voice: "alex",
+  response_format: "mp3",
+});
+await writeFile("speech.mp3", Buffer.from(await resp.arrayBuffer()));
+```
+
+</CodeTabs>
+
+## 语音识别
+
+### 请求格式
+
+以 `multipart/form-data` 上传：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `file` | 是 | 音频文件，支持 flac、m4a、mp3、mp4、mpeg、mpga、oga、ogg、wav、webm（按文件扩展名判断） |
+| `model` | 是 | 具备 `asr` 能力的模型 ID |
+| `language` | 否 | 语言提示，如 `zh`、`en` |
+| `response_format` | 否 | `json`（默认）、`text`、`srt`、`verbose_json`、`vtt`，取决于模型；受限的模型见目录中的 `limits.response_formats` |
+| 其它字段 | 否 | 原样透传给上游 |
+
+- 整个请求不能超过 **20 MB**，超过时返回 `413 request_too_large`；长音频请切分后分别识别。
+- 不是 multipart 请求，或文件格式不在上表中时，返回 `415 unsupported_media_type`。
+
+### 响应
+
+上游响应原样返回，默认格式：
+
+```json
+{"text": "今天天气很好，我们一起去公园散步吧。", "usage": {"type": "duration", "seconds": 3}}
+```
+
+### 计费
+
+按**音频时长**计费（`audio_second` 计量项，单位为"每秒"，按毫秒折算，不向上取整到整秒）。时长依次取上游返回的 `usage.seconds` 或 `duration`；上游没有返回时，WAV 文件按文件头精确计算，其他格式按文件大小估算。部分模型可能还按次收取少量费用（`request` 计量项），以目录中的售价为准。
+
+### 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/audio/transcriptions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -F "file=@speech.mp3" \
+  -F "model=FunAudioLLM/SenseVoiceSmall"
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with open("speech.mp3", "rb") as f:
+    resp = client.audio.transcriptions.create(model="FunAudioLLM/SenseVoiceSmall", file=f)
+print(resp.text)
+```
+
+```ts title="Node.js"
+import { createReadStream } from "node:fs";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const resp = await client.audio.transcriptions.create({
+  model: "FunAudioLLM/SenseVoiceSmall",
+  file: createReadStream("speech.mp3"),
+});
+console.log(resp.text);
+```
+
+</CodeTabs>
+
+语音接口不计入 TPM 限流，只受 RPM 和并发限制。
+
+## 相关
+
+- [语音合成 API 参考](/docs/zh/api/createSpeech)
+- [语音识别 API 参考](/docs/zh/api/createTranscription)
+- [计费与余额](/docs/zh/billing)

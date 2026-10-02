@@ -136,6 +136,8 @@
 | POST | /fx-rates | `pricing:write` |
 | GET | /fx-rates/latest | `pricing:read` |
 | GET | /me | `（已登录即可）` |
+| GET | /meta/codecs | `（已登录即可）` |
+| GET | /meta/dialect-presets | `（已登录即可）` |
 | GET | /meta/enums | `（已登录即可）` |
 | GET | /model-aliases | `catalog:read` |
 | PUT | /model-aliases | `catalog:write` |
@@ -162,6 +164,8 @@
 | POST | /provider-accounts | `provider_key:write` |
 | GET | /provider-accounts/{providerAccountID} | `catalog:read` |
 | PATCH | /provider-accounts/{providerAccountID} | `catalog:write` |
+| GET | /provider-accounts/{providerAccountID}/dialect | `catalog:read` |
+| PUT | /provider-accounts/{providerAccountID}/dialect | `provider_key:write` |
 | POST | /provider-accounts/{providerAccountID}/import-models | `catalog:read` |
 | POST | /provider-accounts/{providerAccountID}/keys | `provider_key:write` |
 | GET | /provider-accounts/{providerAccountID}/upstream-models | `provider_key:write` |

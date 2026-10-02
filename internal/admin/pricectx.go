@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -17,22 +18,37 @@ import (
 //     运行时不参与计价，这里如实反映运行时行为，不假装有分档售价。
 //   - 非 CNY 成本价按 fx_rates 里 quote='CNY'、effective_date <= 今天 的最新汇率折算，
 //     再乘以 provider_accounts.cost_multiplier。
-//   - 毛利率只看"基础"计量项：input / output，unit=per_1m_tokens，service_tier=default，
-//     tier_min_input=0，不带时段窗口；取两者中较小的那个（保守口径，任一项亏钱都要暴露）。
+//   - 毛利率只看"基础"计量项：input / output（unit=per_1m_tokens）以及多模态计量项
+//     image / input_char / audio_second / request（mediaMeterSQL），service_tier=default，
+//     tier_min_input=0，不带时段窗口；售价与成本按 meter+unit 配对，取最差的一项
+//     （保守口径，任一项亏钱都要暴露）。
 
-// PriceBrief 是列表里展示的价格摘要：只有基础 input/output 单价。
+// mediaMeterSQL 是参与毛利计算的非 token 计量项（多模态技术方案 §5），与迁移 00031
+// 里 v_admin_channel_margin 的口径一致。
+const mediaMeterSQL = `('image','input_char','audio_second','request')`
+
+// PriceBrief 是列表里展示的价格摘要：基础 input/output 单价，以及多模态计量项。
 type PriceBrief struct {
 	PriceBookID   int64            `json:"price_book_id"`
 	Currency      string           `json:"currency"`
 	Input         *decimal.Decimal `json:"input"`
 	Output        *decimal.Decimal `json:"output"`
+	Media         []MeterPrice     `json:"media,omitempty"`
 	EffectiveFrom time.Time        `json:"effective_from"`
+}
+
+// MeterPrice 是一个非 token 计量项的单价（如 image / per_image）。
+type MeterPrice struct {
+	Meter string          `json:"meter"`
+	Unit  string          `json:"unit"`
+	Price decimal.Decimal `json:"price"`
 }
 
 // CostCNY 是折算成人民币（含 cost_multiplier）后的成本单价。
 type CostCNY struct {
 	Input   *decimal.Decimal `json:"input"`
 	Output  *decimal.Decimal `json:"output"`
+	Media   []MeterPrice     `json:"media,omitempty"`
 	FXRate  decimal.Decimal  `json:"fx_rate"`
 	FXDate  *time.Time       `json:"fx_date"`
 	Missing bool             `json:"fx_missing"` // 非 CNY 且没有可用汇率：无法折算
@@ -96,8 +112,11 @@ func (s *Service) loadCurrentBriefs(ctx context.Context, kind, keyColumn string,
 		   (SELECT unit_price FROM price_components c WHERE c.price_book_id = cur.id AND c.meter = 'input'
 		      AND c.unit = 'per_1m_tokens' AND c.service_tier = 'default' AND c.tier_min_input = 0 AND c.window_start_min IS NULL LIMIT 1),
 		   (SELECT unit_price FROM price_components c WHERE c.price_book_id = cur.id AND c.meter = 'output'
-		      AND c.unit = 'per_1m_tokens' AND c.service_tier = 'default' AND c.tier_min_input = 0 AND c.window_start_min IS NULL LIMIT 1)
-		 FROM cur`, keyColumn),
+		      AND c.unit = 'per_1m_tokens' AND c.service_tier = 'default' AND c.tier_min_input = 0 AND c.window_start_min IS NULL LIMIT 1),
+		   (SELECT json_agg(json_build_object('meter', c.meter, 'unit', c.unit, 'price', c.unit_price) ORDER BY c.meter, c.unit)
+		      FROM price_components c WHERE c.price_book_id = cur.id AND c.meter IN %[2]s
+		      AND c.service_tier = 'default' AND c.tier_min_input = 0 AND c.window_start_min IS NULL)
+		 FROM cur`, keyColumn, mediaMeterSQL),
 		kind, ids)
 	if err != nil {
 		return nil, fmt.Errorf("admin: query current %s price books: %w", kind, err)
@@ -106,9 +125,15 @@ func (s *Service) loadCurrentBriefs(ctx context.Context, kind, keyColumn string,
 	out := map[int64]*PriceBrief{}
 	for rows.Next() {
 		var key int64
+		var media []byte
 		b := &PriceBrief{}
-		if err := rows.Scan(&key, &b.PriceBookID, &b.Currency, &b.EffectiveFrom, &b.Input, &b.Output); err != nil {
+		if err := rows.Scan(&key, &b.PriceBookID, &b.Currency, &b.EffectiveFrom, &b.Input, &b.Output, &media); err != nil {
 			return nil, fmt.Errorf("admin: scan price brief: %w", err)
+		}
+		if len(media) > 0 {
+			if err := json.Unmarshal(media, &b.Media); err != nil {
+				return nil, fmt.Errorf("admin: decode media prices: %w", err)
+			}
 		}
 		out[key] = b
 	}
@@ -139,10 +164,13 @@ func (pc *priceContext) costInCNY(cost *PriceBrief, multiplier decimal.Decimal) 
 		return &v
 	}
 	out.Input, out.Output = conv(cost.Input), conv(cost.Output)
+	for _, m := range cost.Media {
+		out.Media = append(out.Media, MeterPrice{Meter: m.Meter, Unit: m.Unit, Price: *conv(&m.Price)})
+	}
 	return out
 }
 
-// marginRatio = min over {input, output} of (1 - 成本CNY/售价)。任一方缺失返回 nil。
+// marginRatio = min over {input, output, 配对的多模态计量项} of (1 - 成本CNY/售价)。都缺失返回 nil。
 func marginRatio(sell *PriceBrief, cost *CostCNY) *decimal.Decimal {
 	if sell == nil || cost == nil || cost.Missing || (sell.Currency != "" && sell.Currency != "CNY") {
 		return nil
@@ -159,5 +187,13 @@ func marginRatio(sell *PriceBrief, cost *CostCNY) *decimal.Decimal {
 	}
 	check(sell.Input, cost.Input)
 	check(sell.Output, cost.Output)
+	for _, sm := range sell.Media {
+		for _, cm := range cost.Media {
+			if sm.Meter == cm.Meter && sm.Unit == cm.Unit {
+				sp, cp := sm.Price, cm.Price
+				check(&sp, &cp)
+			}
+		}
+	}
 	return worst
 }

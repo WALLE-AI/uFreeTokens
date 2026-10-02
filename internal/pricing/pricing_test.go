@@ -148,3 +148,35 @@ func TestCharge_UnmatchedMeterIsIgnoredNotError(t *testing.T) {
 		t.Errorf("Charge() = %d, want 10_000_000 (output ignored, no matching component)", got)
 	}
 }
+
+// TestCharge_MediaMeters 覆盖多模态计量项：按张、按百万字符、按秒（毫秒折算成小数秒，
+// 不按整秒向上取整），以及与按次计费叠加。
+func TestCharge_MediaMeters(t *testing.T) {
+	book := Book{Components: []Component{
+		{Meter: MeterImage, Unit: UnitPerImage, UnitPrice: dec("0.1")},
+		{Meter: MeterInputChar, Unit: UnitPer1MChars, UnitPrice: dec("50")},
+		{Meter: MeterAudioSecond, Unit: UnitPerSecond, UnitPrice: dec("0.001")},
+		{Meter: MeterRequest, Unit: UnitPerRequest, UnitPrice: dec("0.002")},
+	}}
+	cases := []struct {
+		name string
+		u    Usage
+		want int64
+	}{
+		{"2 images", Usage{Images: 2}, 200_000},
+		{"1000 chars", Usage{InputChars: 1000}, 50_000},
+		{"2.5 seconds", Usage{AudioMillis: 2500}, 2_500},
+		{"seconds + request", Usage{AudioMillis: 1000, RequestCount: 1}, 3_000},
+	}
+	for _, c := range cases {
+		got, matched := Charge(book, c.u, "", time.Now(), RoundCeil)
+		if !matched || got != c.want {
+			t.Errorf("%s: Charge() = %d (matched=%v), want %d", c.name, got, matched, c.want)
+		}
+	}
+	// 价格表里没有对应计量项时不计费、也不算匹配
+	if got, matched := Charge(Book{Components: []Component{{Meter: MeterInput, Unit: UnitPer1MTokens, UnitPrice: dec("1")}}},
+		Usage{Images: 3}, "", time.Now(), RoundCeil); got != 0 || matched {
+		t.Errorf("unpriced meter: Charge() = %d matched=%v, want 0 false", got, matched)
+	}
+}

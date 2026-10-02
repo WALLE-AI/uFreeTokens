@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/WALLE-AI/uFreeTokens/internal/dialect"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 )
@@ -67,6 +68,12 @@ type ProviderAccount struct {
 	BaseURL        string
 	CostMultiplier decimal.Decimal
 	Status         string
+	// Dialect 是合并后的供应商方言（provider_accounts.extra.dialect，可引用内置预设，
+	// 见 internal/dialect）；nil = 没有方言，按协议原样透传。
+	Dialect *dialect.Dialect
+	// DialectError 非空表示方言配置无法解析：账号被视为不可用（Status 置为
+	// dialect_error，路由不会选它的渠道），而不是带着错误的方言继续转发。
+	DialectError string
 }
 
 type ProviderKey struct {
@@ -448,7 +455,7 @@ func (s *Store) loadMetadata(ctx context.Context, snap *Snapshot) error {
 
 func (s *Store) loadProviderAccounts(ctx context.Context, snap *Snapshot) error {
 	rows, err := s.pool.Query(ctx,
-		`SELECT pa.id, pa.provider_id, p.code, p.protocol, pa.name, pa.base_url, pa.cost_multiplier, pa.status
+		`SELECT pa.id, pa.provider_id, p.code, p.protocol, pa.name, pa.base_url, pa.cost_multiplier, pa.status, pa.extra->'dialect'
 		 FROM provider_accounts pa JOIN providers p ON p.id = pa.provider_id
 		 WHERE pa.status = 'active' AND p.status = 'active'`)
 	if err != nil {
@@ -458,10 +465,16 @@ func (s *Store) loadProviderAccounts(ctx context.Context, snap *Snapshot) error 
 
 	for rows.Next() {
 		a := &ProviderAccount{}
+		var dialectRaw []byte
 		if err := rows.Scan(&a.ID, &a.ProviderID, &a.ProviderCode, &a.Protocol, &a.Name, &a.BaseURL,
-			&a.CostMultiplier, &a.Status); err != nil {
+			&a.CostMultiplier, &a.Status, &dialectRaw); err != nil {
 			return fmt.Errorf("catalog: scan provider_account: %w", err)
 		}
+		d, err := dialect.Load("", dialectRaw)
+		if err != nil {
+			a.DialectError, a.Status = err.Error(), "dialect_error"
+		}
+		a.Dialect = d
 		snap.ProviderAccounts[a.ID] = a
 	}
 	return rows.Err()

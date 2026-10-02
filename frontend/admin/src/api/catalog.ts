@@ -71,7 +71,7 @@ export function getProviderAccount(id: number, signal?: AbortSignal) {
   return request<ProviderAccountDetail>(`/provider-accounts/${id}`, { signal });
 }
 
-export function createProviderAccount(body: { provider_id: number; name: string; base_url: string; cost_multiplier?: string }) {
+export function createProviderAccount(body: { provider_id: number; name: string; base_url: string; cost_multiplier?: string; dialect?: unknown }) {
   return request<ProviderAccount>('/provider-accounts', { method: 'POST', body });
 }
 
@@ -157,6 +157,7 @@ export function createVirtualModel(body: CreateVirtualModelBody) {
 export function updateVirtualModel(
   id: number,
   body: {
+    type?: ModelType;
     status?: ModelStatus;
     visible_tiers?: Tier[];
     capabilities?: string[];
@@ -313,4 +314,41 @@ export function importModels(
 // 上游 Key 冷却状态与最近的健康事件；判定阈值由服务端给出。类型直接用后端生成的定义。
 export function getChannelHealth(windowMinutes = 15, signal?: AbortSignal) {
   return request<G.ChannelHealthReport>('/channels/health', { query: { window_minutes: windowMinutes }, signal });
+}
+
+// ---------- 供应商方言（多供应商接口统一技术实施方案 §3.3） ----------
+
+export interface DialectVersion {
+  dialect: unknown;
+  saved_at: string;
+  saved_by: number | null;
+}
+
+export interface AccountDialect {
+  provider_account_id: number;
+  provider_code: string;
+  protocol: string;
+  dialect: unknown; // 账号上保存的原始配置，null = 没有方言
+  effective: { preset?: string; notes?: string } & Record<string, unknown>;
+  endpoints: Record<string, boolean>;
+  suggested_preset?: string;
+  history: DialectVersion[];
+}
+
+export interface DialectPreset {
+  name: string;
+  notes: string;
+  dialect: unknown;
+}
+
+export function getAccountDialect(id: number, signal?: AbortSignal) {
+  return request<AccountDialect>(`/provider-accounts/${id}/dialect`, { signal });
+}
+
+export function setAccountDialect(id: number, dialect: unknown) {
+  return request<AccountDialect>(`/provider-accounts/${id}/dialect`, { method: 'PUT', body: { dialect } });
+}
+
+export function listDialectPresets(signal?: AbortSignal) {
+  return request<{ data: DialectPreset[] }>('/meta/dialect-presets', { signal });
 }

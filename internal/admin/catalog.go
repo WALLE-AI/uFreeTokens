@@ -76,6 +76,8 @@ type CreateProviderAccountInput struct {
 	Name           string
 	BaseURL        string
 	CostMultiplier *decimal.Decimal // nil = 1（不打折）
+	// Dialect 是可选的供应商方言（如 {"preset":"openrouter"}），见 internal/dialect。
+	Dialect json.RawMessage
 }
 
 // CreateProviderAccount 建一个上游账号。BaseURL 按 urlpolicy.go 校验（https、
@@ -98,11 +100,19 @@ func (s *Service) CreateProviderAccount(ctx context.Context, in CreateProviderAc
 		return nil, err
 	}
 	in.BaseURL = baseURL
+	dialectRaw, err := normalizeDialect(in.Dialect)
+	if err != nil {
+		return nil, err
+	}
+	extra := "{}"
+	if dialectRaw != nil {
+		extra = `{"dialect":` + string(dialectRaw) + `}`
+	}
 	pa := &ProviderAccount{ProviderID: in.ProviderID, Name: in.Name, BaseURL: in.BaseURL, CostMultiplier: mult}
 	if err := s.db(ctx).QueryRow(ctx,
-		`INSERT INTO provider_accounts (provider_id, name, base_url, cost_multiplier, status)
-		 VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
-		in.ProviderID, in.Name, in.BaseURL, mult,
+		`INSERT INTO provider_accounts (provider_id, name, base_url, cost_multiplier, status, extra)
+		 VALUES ($1, $2, $3, $4, 'active', $5::jsonb) RETURNING id`,
+		in.ProviderID, in.Name, in.BaseURL, mult, extra,
 	).Scan(&pa.ID); err != nil {
 		return nil, fmt.Errorf("admin: insert provider_account: %w", err)
 	}
@@ -193,6 +203,9 @@ func (s *Service) CreateVirtualModel(ctx context.Context, in CreateVirtualModelI
 	if in.ContextWindow <= 0 || in.MaxOutput <= 0 {
 		return nil, errors.New("admin: context_window and max_output must be positive")
 	}
+	if err := validateTypeCapabilities(in.Type, in.Capabilities); err != nil {
+		return nil, err
+	}
 	tiers := in.VisibleTiers
 	if len(tiers) == 0 {
 		tiers = []string{"free", "pro", "enterprise"}
@@ -218,6 +231,38 @@ func (s *Service) CreateVirtualModel(ctx context.Context, in CreateVirtualModelI
 		return nil, fmt.Errorf("admin: insert virtual_model: %w", err)
 	}
 	return vm, nil
+}
+
+// validateTypeCapabilities：audio 模型必须且只能声明 tts（语音合成）或 asr（语音识别）
+// 之一——网关按这个能力决定模型服务 /v1/audio/speech 还是 /v1/audio/transcriptions；
+// 其他类型不能带这两个能力。
+func validateTypeCapabilities(typ string, caps []string) error {
+	tts, asr := slices.Contains(caps, "tts"), slices.Contains(caps, "asr")
+	if typ == "audio" && tts == asr {
+		return invalid("audio models must have exactly one of the capabilities tts (speech synthesis) or asr (transcription)")
+	}
+	if typ != "audio" && (tts || asr) {
+		return invalid("capabilities tts/asr are only valid for audio models")
+	}
+	return nil
+}
+
+// requiredMeters 返回某类模型售价/成本价必须包含的计量项（任一组满足即可）。
+func requiredMeters(typ string, caps []string) [][]string {
+	switch typ {
+	case "chat":
+		return [][]string{{"input", "output"}}
+	case "embedding", "rerank":
+		return [][]string{{"input"}}
+	case "image":
+		return [][]string{{"image"}}
+	case "audio":
+		if slices.Contains(caps, "tts") {
+			return [][]string{{"input_char"}}
+		}
+		return [][]string{{"audio_second"}, {"request"}}
+	}
+	return nil
 }
 
 var ErrVirtualModelNotFound = errors.New("admin: virtual model not found")
@@ -326,12 +371,31 @@ type CreateChannelInput struct {
 	// AllowedAccountIDs 给这个渠道配专属账户白名单（Phase 4）：空 = 公共渠道，
 	// 非空则只有列在里面的账户能路由到它，语义和 AllowedTiers 完全对称。
 	AllowedAccountIDs []int64 `json:"allowed_account_ids"`
+	// ParamOverrides 是渠道级请求参数覆盖（nil = 空对象）。
+	ParamOverrides map[string]any `json:"param_overrides"`
 }
 
 // CreateChannel 把一个虚拟模型接到某个上游账号上（技术方案 §6.3，路由的最小单位）。
 func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Channel, error) {
 	if in.UpstreamModel == "" {
 		return nil, errors.New("admin: upstream_model is required")
+	}
+	// 上架校验（多供应商实施方案 §7）：上游账号的协议与方言必须能服务该模型的端点。
+	// 虚拟模型或上游账号不存在时跳过校验，交给下面的 INSERT 按外键约束报 422 invalid_reference。
+	var vmType string
+	var vmCaps []string
+	err := s.db(ctx).QueryRow(ctx, `SELECT type, capabilities FROM virtual_models WHERE id = $1`, in.VirtualModelID).Scan(&vmType, &vmCaps)
+	if err != nil && !isNoRows(err) {
+		return nil, fmt.Errorf("admin: load virtual model: %w", err)
+	}
+	if err == nil {
+		reason, serr := s.accountServes(ctx, in.ProviderAccountID, vmType, vmCaps, in.UpstreamModel)
+		if serr != nil && serr != ErrProviderAccountNotFound {
+			return nil, serr
+		}
+		if reason != "" {
+			return nil, invalid("%s", reason)
+		}
 	}
 	if (in.ExperimentKey == "") != (in.VariantLabel == "") {
 		return nil, errors.New("admin: experiment_key and variant_label must be set together")
@@ -341,14 +405,18 @@ func (s *Service) CreateChannel(ctx context.Context, in CreateChannelInput) (*Ch
 		weight = 100
 	}
 
+	overrides := in.ParamOverrides
+	if overrides == nil {
+		overrides = map[string]any{}
+	}
 	ch := &Channel{
 		VirtualModelID: in.VirtualModelID, ProviderAccountID: in.ProviderAccountID,
 		UpstreamModel: in.UpstreamModel, Priority: in.Priority, Weight: weight,
 	}
 	if err := s.db(ctx).QueryRow(ctx,
-		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, allowed_account_ids, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, 'active') RETURNING id, experiment_key, variant_label, allowed_account_ids`,
-		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel, in.AllowedAccountIDs,
+		`INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, priority, weight, allowed_tiers, experiment_key, variant_label, allowed_account_ids, param_overrides, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), $9, $10, 'active') RETURNING id, experiment_key, variant_label, allowed_account_ids`,
+		in.VirtualModelID, in.ProviderAccountID, in.UpstreamModel, in.Priority, weight, in.AllowedTiers, in.ExperimentKey, in.VariantLabel, in.AllowedAccountIDs, overrides,
 	).Scan(&ch.ID, &ch.ExperimentKey, &ch.VariantLabel, &ch.AllowedAccountIDs); err != nil {
 		return nil, fmt.Errorf("admin: insert channel: %w", err)
 	}
@@ -391,10 +459,21 @@ type PriceComponentInput struct {
 var validMeters = map[string]bool{
 	string(pricing.MeterInput): true, string(pricing.MeterInputCacheRead): true, string(pricing.MeterInputCacheWrite): true,
 	string(pricing.MeterOutput): true, string(pricing.MeterOutputReasoning): true, string(pricing.MeterRequest): true,
+	string(pricing.MeterImage): true, string(pricing.MeterInputChar): true, string(pricing.MeterAudioSecond): true,
 }
 var validUnits = map[string]bool{
 	string(pricing.UnitPer1MTokens): true, string(pricing.UnitPerRequest): true,
-	string(pricing.UnitPerImage): true, string(pricing.UnitPerSecond): true,
+	string(pricing.UnitPerImage): true, string(pricing.UnitPerSecond): true, string(pricing.UnitPer1MChars): true,
+}
+
+// meterUnits 限定多模态计量项只能配对应的单位（多模态技术方案 §5）：例如 image 配
+// per_1m_tokens 会让 1 张图按百万分之一计价，属于录入错误。token 类计量项不受限，
+// 保持原有行为。
+var meterUnits = map[string]string{
+	string(pricing.MeterImage):       string(pricing.UnitPerImage),
+	string(pricing.MeterInputChar):   string(pricing.UnitPer1MChars),
+	string(pricing.MeterAudioSecond): string(pricing.UnitPerSecond),
+	string(pricing.MeterRequest):     string(pricing.UnitPerRequest),
 }
 
 type SetSellPriceInput struct {
@@ -547,6 +626,9 @@ func validateComponents(components []PriceComponentInput) error {
 		}
 		if !validUnits[c.Unit] {
 			return fmt.Errorf("admin: invalid unit %q", c.Unit)
+		}
+		if want, ok := meterUnits[c.Meter]; ok && c.Unit != want {
+			return invalid("meter %s must use unit %s, got %s", c.Meter, want, c.Unit)
 		}
 		if c.UnitPrice.IsNegative() {
 			return fmt.Errorf("admin: unit_price must not be negative (meter=%s)", c.Meter)

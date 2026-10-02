@@ -31,6 +31,7 @@ import { formatDateTime } from '../../lib/time';
 import type { ActiveStatus, ProviderAccountSummary, ProviderKey, UpstreamModel } from '../../types';
 import { upstreamErrorHint } from './common';
 import { Can } from '../../components/ui/Can';
+import { DialectSection } from './DialectSection';
 
 // ---------- 新建 / 编辑上游账号 ----------
 
@@ -374,6 +375,8 @@ export function AccountDrawer({
                 </div>
               )}
             </div>
+
+            <DialectSection accountId={a.id} onSaved={changed} />
 
             <div>
               <SectionTitle>操作记录</SectionTitle>

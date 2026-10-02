@@ -26,7 +26,16 @@ type Usage struct {
 	CacheWriteTokens int64
 	OutputTokens     int64
 	ReasoningTokens  int64
-	Source           UsageSource
+	// 多模态用量（迁移 00031）：图像生成张数、语音合成输入字符数、语音识别音频时长（毫秒）。
+	Images      int64
+	InputChars  int64
+	AudioMillis int64
+	// Requests 是按次计费的次数（0 或 1），只在模型配置了 request 计量项时参与计价。
+	Requests int64
+	// UpstreamCost 是上游自己报告的本次成本（如 OpenRouter 的 usage.cost，单位是上游
+	// 币种），只用于对账（request_logs.upstream_cost），不参与计价；0 = 上游没报告。
+	UpstreamCost float64
+	Source       UsageSource
 }
 
 // ToPricing 转换成计价层使用的 pricing.Usage（两者字段含义一致，分包是为了不让
@@ -38,11 +47,16 @@ func (u Usage) ToPricing() pricing.Usage {
 		CacheWriteTokens: u.CacheWriteTokens,
 		OutputTokens:     u.OutputTokens,
 		ReasoningTokens:  u.ReasoningTokens,
+		RequestCount:     u.Requests,
+		Images:           u.Images,
+		InputChars:       u.InputChars,
+		AudioMillis:      u.AudioMillis,
 	}
 }
 
 // IsZero 判断是否完全没有提取到任何用量（用于判断上游是否根本没返回 usage 字段）。
 func (u Usage) IsZero() bool {
 	return u.InputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
-		u.OutputTokens == 0 && u.ReasoningTokens == 0
+		u.OutputTokens == 0 && u.ReasoningTokens == 0 &&
+		u.Images == 0 && u.InputChars == 0 && u.AudioMillis == 0 && u.Requests == 0
 }

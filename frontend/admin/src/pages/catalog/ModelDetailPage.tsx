@@ -7,14 +7,14 @@ import { errorMessage } from '../../api/errors';
 import { AuditTimeline } from '../../components/audit/AuditTimeline';
 import { PriceComponentEditor } from '../../components/pricing/PriceComponentEditor';
 import { UsageTrend } from '../../components/stats/UsageTrend';
-import { AnchorNav, Button, ConfirmDialog, DataState, EmptyState, Field, FormModal, Input, StatusBadge, useToast } from '../../components/ui';
+import { AnchorNav, Button, ConfirmDialog, DataState, EmptyState, Field, FormModal, Input, Select, StatusBadge, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { formatDateTime } from '../../lib/time';
-import type { ModelStatus, Tier, VirtualModelDetail } from '../../types';
+import type { ModelStatus, ModelType, Tier, VirtualModelDetail } from '../../types';
 import { ModelChannelsSection } from './ModelChannelsSection';
 import { ModelMetadataSection } from './ModelMetadataSection';
 import { PriceBookHistory, PriceComponentsTable } from './PriceBookViews';
-import { MarginText, TIER_OPTIONS, TagInput, formatContext, formatPrice } from './shared';
+import { MODEL_TYPE_OPTIONS, MarginText, TIER_OPTIONS, TagInput, formatContext, formatPrice } from './shared';
 import { Can } from '../../components/ui/Can';
 
 // 虚拟模型详情（UI_DESIGN.md §3.2 详情模板 + §5.4）。
@@ -244,6 +244,7 @@ function EditBasicModal({ open, onClose, model, onSaved }: { open: boolean; onCl
   const toast = useToast();
   const [tiers, setTiers] = useState<Tier[]>(model.visible_tiers);
   const [caps, setCaps] = useState<string[]>(model.capabilities);
+  const [type, setType] = useState<string>(model.type);
   const [aliases, setAliases] = useState<string[]>(model.aliases);
   const [ctx, setCtx] = useState(String(model.context_window));
   const [maxOut, setMaxOut] = useState(String(model.max_output));
@@ -256,6 +257,7 @@ function EditBasicModal({ open, onClose, model, onSaved }: { open: boolean; onCl
     setLastOpen(true);
     setTiers(model.visible_tiers);
     setCaps(model.capabilities);
+    setType(model.type);
     setAliases(model.aliases);
     setCtx(String(model.context_window));
     setMaxOut(String(model.max_output));
@@ -273,6 +275,7 @@ function EditBasicModal({ open, onClose, model, onSaved }: { open: boolean; onCl
     const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
     if (!same(tiers, model.visible_tiers)) body.visible_tiers = tiers;
     if (!same(caps, model.capabilities)) body.capabilities = caps;
+    if (type !== model.type) body.type = type as ModelType;
     if (!same(aliases, model.aliases)) body.aliases = aliases;
     if (Number(ctx) !== model.context_window) body.context_window = Number(ctx);
     if (Number(maxOut) !== model.max_output) body.max_output = Number(maxOut);
@@ -318,7 +321,13 @@ function EditBasicModal({ open, onClose, model, onSaved }: { open: boolean; onCl
           <Input mono value={maxOut} invalid={!!maxErr} onChange={(e) => setMaxOut(e.target.value)} />
         </Field>
       </div>
-      <Field label="能力" hint="例如 stream、tools、vision；回车或逗号添加">
+      <Field
+        label="类型"
+        hint="决定模型可用于哪个接口；改类型后请按新类型发布售价（图像按张、语音合成按百万字符、语音识别按秒）。语音模型需在能力里填 tts 或 asr"
+      >
+        <Select value={type} onChange={(e) => setType(e.target.value)} options={MODEL_TYPE_OPTIONS} />
+      </Field>
+      <Field label="能力" hint="例如 stream、tools、vision（可输入图片）、tts（语音合成）、asr（语音识别）；回车或逗号添加">
         <TagInput value={caps} onChange={setCaps} placeholder="添加能力…" />
       </Field>
       <Field label="别名" hint="用户也可以用这些名称调用该模型">

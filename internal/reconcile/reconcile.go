@@ -134,10 +134,76 @@ func (r *Reconciler) CheckLedgerVsRequestLogs(ctx context.Context, from, to time
 	return &LedgerVsLogs{WindowStart: from, WindowEnd: to, LedgerTotal: ledgerTotal, RequestLogsTotal: logsTotal}, nil
 }
 
+// UpstreamCostDrift 是一个渠道在窗口内「按成本价计算的成本」与「上游报告的成本」的
+// 偏差（多供应商实施方案 §8）：偏差大通常意味着成本价录错，或上游调价了。
+type UpstreamCostDrift struct {
+	ChannelID      int64
+	VirtualModel   string
+	Requests       int64
+	CostCNY        float64 // sum(request_logs.cost_amount) / 1e6
+	UpstreamCNY    float64 // sum(request_logs.upstream_cost) × 供应商币种汇率
+	UpstreamNative float64 // sum(request_logs.upstream_cost)，供应商币种
+	Currency       string
+}
+
+// Ratio 是偏差比例 |成本 − 上游| / 上游。
+func (d UpstreamCostDrift) Ratio() float64 {
+	if d.UpstreamCNY == 0 {
+		return 0
+	}
+	diff := d.CostCNY - d.UpstreamCNY
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff / d.UpstreamCNY
+}
+
+// UpstreamCostDriftThreshold 是告警阈值（偏差超过 20%）。
+const UpstreamCostDriftThreshold = 0.2
+
+// CheckUpstreamCost 找出窗口内上游报告了成本、且与按成本价计算的成本偏差超过阈值的
+// 渠道。只统计同时有 cost_amount 与 upstream_cost 的成功请求；供应商币种没有汇率时跳过。
+func (r *Reconciler) CheckUpstreamCost(ctx context.Context, from, to time.Time) ([]UpstreamCostDrift, error) {
+	rows, err := r.pool.Query(ctx, `
+		WITH fx AS (
+			SELECT DISTINCT ON (base) base, rate FROM fx_rates
+			WHERE quote = 'CNY' AND effective_date <= CURRENT_DATE ORDER BY base, effective_date DESC
+		)
+		SELECT rl.channel_id, max(rl.virtual_model), count(*), p.currency,
+		       sum(rl.cost_amount)::float8 / 1e6, sum(rl.upstream_cost)::float8,
+		       sum(rl.upstream_cost)::float8 * CASE WHEN p.currency = 'CNY' THEN 1 ELSE max(fx.rate)::float8 END
+		FROM request_logs rl
+		JOIN channels c ON c.id = rl.channel_id
+		JOIN provider_accounts pa ON pa.id = c.provider_account_id
+		JOIN providers p ON p.id = pa.provider_id
+		LEFT JOIN fx ON fx.base = p.currency
+		WHERE rl.created_at >= $1 AND rl.created_at < $2 AND rl.status = 'success'
+		  AND rl.cost_amount IS NOT NULL AND rl.upstream_cost IS NOT NULL
+		GROUP BY rl.channel_id, p.currency
+		HAVING p.currency = 'CNY' OR max(fx.rate) IS NOT NULL`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile: query upstream cost: %w", err)
+	}
+	defer rows.Close()
+	var out []UpstreamCostDrift
+	for rows.Next() {
+		var d UpstreamCostDrift
+		if err := rows.Scan(&d.ChannelID, &d.VirtualModel, &d.Requests, &d.Currency, &d.CostCNY, &d.UpstreamNative, &d.UpstreamCNY); err != nil {
+			return nil, fmt.Errorf("reconcile: scan upstream cost: %w", err)
+		}
+		if d.Ratio() > UpstreamCostDriftThreshold {
+			out = append(out, d)
+		}
+	}
+	return out, rows.Err()
+}
+
 // Report 汇总一次对账运行的全部发现。
 type Report struct {
 	WalletDiscrepancies []WalletDiscrepancy
 	LedgerVsLogs        *LedgerVsLogs
+	// UpstreamCostDrifts 是成本价与上游报告成本偏差过大的渠道（只告警，不影响 Clean）。
+	UpstreamCostDrifts []UpstreamCostDrift
 }
 
 // Clean 判断本次对账是否完全没有发现问题。
@@ -160,5 +226,9 @@ func (r *Reconciler) Run(ctx context.Context, lookback, buffer time.Duration) (*
 		return nil, err
 	}
 
-	return &Report{WalletDiscrepancies: discrepancies, LedgerVsLogs: ledgerVsLogs}, nil
+	drifts, err := r.CheckUpstreamCost(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return &Report{WalletDiscrepancies: discrepancies, LedgerVsLogs: ledgerVsLogs, UpstreamCostDrifts: drifts}, nil
 }

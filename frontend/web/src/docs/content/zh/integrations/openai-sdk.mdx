@@ -168,6 +168,65 @@ console.log(resp.usage);
 
 传入非 `embedding` 类型的模型会返回 `404 model_not_found`。更多说明见 [Embeddings](/docs/zh/embeddings)。
 
+## 图片、图像生成与语音
+
+SDK 的其它方法也可以直接使用，模型需要是对应的类型（见[模型类型与接口](/docs/zh/models#模型类型与接口)）：
+
+<CodeTabs>
+
+```python title="Python"
+# 图片理解：image_url 分段，见「图片理解」
+client.chat.completions.create(
+    model=os.environ["VISION_MODEL"],
+    messages=[{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+        {"type": "text", "text": "图片里有什么？"},
+    ]}],
+)
+
+# 图像生成
+img = client.images.generate(model="Kwai-Kolors/Kolors", prompt="水彩风格的橘猫", size="1024x1024")
+print(img.data[0].url)  # 临时链接，请及时下载
+
+# 语音合成
+with client.audio.speech.with_streaming_response.create(
+    model="FunAudioLLM/CosyVoice2-0.5B", input="你好，欢迎使用 uFreeTokens。", voice="alex",
+) as resp:
+    resp.stream_to_file("hello.mp3")
+
+# 语音识别
+with open("hello.mp3", "rb") as f:
+    print(client.audio.transcriptions.create(model="FunAudioLLM/SenseVoiceSmall", file=f).text)
+```
+
+```ts title="Node.js"
+import { createReadStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
+
+// 图像生成
+const img = await client.images.generate({ model: "Kwai-Kolors/Kolors", prompt: "水彩风格的橘猫", size: "1024x1024" });
+console.log(img.data[0].url); // 临时链接，请及时下载
+
+// 语音合成
+const speech = await client.audio.speech.create({
+  model: "FunAudioLLM/CosyVoice2-0.5B",
+  input: "你好，欢迎使用 uFreeTokens。",
+  voice: "alex",
+});
+await writeFile("hello.mp3", Buffer.from(await speech.arrayBuffer()));
+
+// 语音识别
+const text = await client.audio.transcriptions.create({
+  model: "FunAudioLLM/SenseVoiceSmall",
+  file: createReadStream("hello.mp3"),
+});
+console.log(text.text);
+```
+
+</CodeTabs>
+
+OpenAI SDK 没有重排序方法，`/v1/rerank` 请直接发 HTTP 请求，见[重排序](/docs/zh/rerank)。
+
 ## 列出可用模型
 
 ```python title="Python"

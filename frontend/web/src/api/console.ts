@@ -207,10 +207,17 @@ export interface ConsoleLogEntry {
   createdAt: string;
   apiKeyId: number;
   virtualModel: string;
+  // endpoint 是 request_logs.endpoint（chat.completions / embeddings / rerank /
+  // images.generations / audio.speech / audio.transcriptions）。
+  endpoint: string;
   status: string;
   httpStatus: number;
   inputTokens: number;
   outputTokens: number;
+  // 多模态用量：生成图片张数、语音合成字符数、语音识别时长（毫秒）。
+  images: number;
+  inputChars: number;
+  audioMillis: number;
   chargedAmountMicro: number;
   latencyMillis: number;
   usageSource: string;
@@ -221,10 +228,14 @@ interface RawLogEntry {
   created_at: string;
   api_key_id: number;
   virtual_model: string;
+  endpoint?: string;
   status: string;
   http_status: number;
   input_tokens: number;
   output_tokens: number;
+  images?: number;
+  input_chars?: number;
+  audio_ms?: number;
   charged_amount_micro: number;
   latency_ms: number;
   usage_source: string;
@@ -236,10 +247,14 @@ function mapLogEntry(raw: RawLogEntry): ConsoleLogEntry {
     createdAt: raw.created_at,
     apiKeyId: raw.api_key_id,
     virtualModel: raw.virtual_model,
+    endpoint: raw.endpoint ?? '',
     status: raw.status,
     httpStatus: raw.http_status,
     inputTokens: raw.input_tokens,
     outputTokens: raw.output_tokens,
+    images: raw.images ?? 0,
+    inputChars: raw.input_chars ?? 0,
+    audioMillis: raw.audio_ms ?? 0,
     chargedAmountMicro: raw.charged_amount_micro,
     latencyMillis: raw.latency_ms,
     usageSource: raw.usage_source,

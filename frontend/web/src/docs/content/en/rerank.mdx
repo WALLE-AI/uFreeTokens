@@ -1,0 +1,112 @@
+---
+title: Rerank
+description: Score and sort candidate documents by relevance to a query with POST /v1/rerank, commonly used as the second stage of RAG retrieval, billed on input tokens.
+section: guides
+order: 42
+translatedFrom: 326e0b26497a
+---
+
+`POST /v1/rerank` takes a query and a list of candidate documents and returns them sorted from most to least relevant. A typical use is two-stage retrieval in RAG: first recall a few dozen candidates with [embeddings](/docs/en/embeddings), then rerank them with a rerank model and pass the top few to a chat model.
+
+The request and response shape matches the rerank APIs of Cohere / Jina / SiliconFlow. The OpenAI SDK has no rerank method, so send plain HTTP requests.
+
+## Choose a rerank model
+
+Only models whose catalog `type` is `rerank` work with this endpoint; other types return `404 model_not_found`:
+
+```bash title="List rerank models"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "rerank") | .name'
+```
+
+## Request parameters
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | string | Yes | Rerank model ID |
+| `query` | string | Yes | The query |
+| `documents` | array | Yes | Candidate documents, 1–1000 items; usually an array of strings |
+| `top_n` | integer | No | Return only the N most relevant results |
+| `return_documents` | boolean | No | Whether to include the document text in the results |
+| Other fields | — | No | Passed to the upstream as-is; support depends on the model |
+
+## Response
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<the model ID you requested>",
+  "results": [
+    {"index": 1, "relevance_score": 0.9871},
+    {"index": 2, "relevance_score": 0.0213}
+  ],
+  "meta": {"billed_units": {"input_tokens": 46}}
+}
+```
+
+- `results` are sorted by `relevance_score` in descending order; `index` is the document's position in the request's `documents` array.
+- `id` is rewritten to this request's Request ID and `model` to the model ID you requested; other fields come from the upstream.
+
+## Billing
+
+Billed on **input tokens** (the `input` meter of the model's price). Usage is taken from the upstream's `meta.billed_units.input_tokens`, `meta.tokens.input_tokens` or `usage.total_tokens`, in that order; if none is present it is estimated from the request body size. Before the request, an amount based on the request body size is pre-authorized; failed requests are not charged.
+
+## Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/rerank \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "BAAI/bge-reranker-v2-m3",
+    "query": "What new phone did Apple release?",
+    "documents": ["It is sunny in Beijing today.", "Apple introduced a new iPhone at its fall event.", "Apples are rich in vitamins."],
+    "top_n": 2
+  }'
+```
+
+```python title="Python"
+import os
+import requests
+
+resp = requests.post(
+    "{{BASE_URL}}/v1/rerank",
+    headers={"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"},
+    json={
+        "model": "BAAI/bge-reranker-v2-m3",
+        "query": "What new phone did Apple release?",
+        "documents": ["It is sunny in Beijing today.", "Apple introduced a new iPhone at its fall event.", "Apples are rich in vitamins."],
+        "top_n": 2,
+    },
+)
+resp.raise_for_status()
+for r in resp.json()["results"]:
+    print(r["index"], r["relevance_score"])
+```
+
+```ts title="Node.js"
+const resp = await fetch("{{BASE_URL}}/v1/rerank", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "BAAI/bge-reranker-v2-m3",
+    query: "What new phone did Apple release?",
+    documents: ["It is sunny in Beijing today.", "Apple introduced a new iPhone at its fall event.", "Apples are rich in vitamins."],
+    top_n: 2,
+  }),
+});
+if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+console.log((await resp.json()).results);
+```
+
+</CodeTabs>
+
+## Related
+
+- [Rerank API reference](/docs/en/api/createRerank)
+- [Embeddings](/docs/en/embeddings)
+- [Billing](/docs/en/billing)

@@ -95,6 +95,11 @@ var routeSchemas = map[string]routeSchema{
 	"PATCH /admin-users/{adminUserID}": {req: adminauth.UpdateAdminInput{}, resp: adminauth.AdminUser{}},
 	"GET /admin-roles":                 {resp: listData[adminauth.Role]{}},
 	"GET /meta/enums":                  {resp: metaEnumsResponse{}},
+	"GET /meta/dialect-presets":        {resp: metaDialectPresetsResponse{}},
+	"GET /meta/codecs":                 {resp: metaCodecsResponse{}},
+
+	"GET /provider-accounts/{providerAccountID}/dialect": {resp: admin.AccountDialect{}},
+	"PUT /provider-accounts/{providerAccountID}/dialect": {req: setDialectRequest{}, resp: admin.AccountDialect{}},
 
 	"GET /accounts":                                              {resp: admin.Page[admin.AccountSummary]{}},
 	"POST /accounts":                                             {req: admin.CreateAccountInput{}, resp: admin.Account{}, status: http.StatusCreated},

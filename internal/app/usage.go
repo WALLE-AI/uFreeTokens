@@ -30,6 +30,9 @@ type usageTotals struct {
 	TotalRequests           int64 `json:"total_requests"`
 	TotalInputTokens        int64 `json:"total_input_tokens"`
 	TotalOutputTokens       int64 `json:"total_output_tokens"`
+	TotalImages             int64 `json:"total_images"`
+	TotalInputChars         int64 `json:"total_input_chars"`
+	TotalAudioMillis        int64 `json:"total_audio_ms"`
 	TotalChargedAmountMicro int64 `json:"total_charged_amount_micro"`
 }
 
@@ -69,11 +72,13 @@ func usageHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		var totals usageTotals
 		if err := pool.QueryRow(r.Context(),
-			`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(charged_amount), 0)
+			`SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			        COALESCE(SUM(image_count), 0), COALESCE(SUM(input_chars), 0), COALESCE(SUM(audio_ms), 0), COALESCE(SUM(charged_amount), 0)
 			 FROM request_logs
 			 WHERE account_id = $1 AND status = 'success' AND ($2::timestamptz IS NULL OR created_at >= $2)`,
 			principal.AccountID, since,
-		).Scan(&totals.TotalRequests, &totals.TotalInputTokens, &totals.TotalOutputTokens, &totals.TotalChargedAmountMicro); err != nil {
+		).Scan(&totals.TotalRequests, &totals.TotalInputTokens, &totals.TotalOutputTokens,
+			&totals.TotalImages, &totals.TotalInputChars, &totals.TotalAudioMillis, &totals.TotalChargedAmountMicro); err != nil {
 			httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to load usage totals.")
 			return
 		}

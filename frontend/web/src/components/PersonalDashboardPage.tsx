@@ -52,6 +52,15 @@ import { ConnectKeyModal } from './ConnectKeyModal';
 import { LoginModal } from './LoginModal';
 import { RegisterModal } from './RegisterModal';
 
+
+// usageLabel 是调用日志里的用量列：图像按张、语音合成按字符、语音识别按秒，其余按 token。
+function usageLabel(log: ConsoleLogEntry): string {
+  if (log.images > 0) return `${log.images} 张`;
+  if (log.inputChars > 0) return `${log.inputChars.toLocaleString()} 字`;
+  if (log.audioMillis > 0) return `${(log.audioMillis / 1000).toFixed(1)} 秒`;
+  return `${(log.inputTokens + log.outputTokens).toLocaleString()} tok`;
+}
+
 export interface ApiKeyItem {
   id: string;
   name: string;
@@ -1101,7 +1110,7 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                         </span>
                         <span className="flex-1 font-semibold text-gray-900 truncate">{log.virtualModel}</span>
                         <span className="w-24 shrink-0 text-right font-mono text-gray-500">
-                          {(log.inputTokens + log.outputTokens).toLocaleString()} tok
+                          {usageLabel(log)}
                         </span>
                         <span className="w-20 shrink-0 text-right font-mono text-gray-700">
                           {microToDisplay(log.chargedAmountMicro)}

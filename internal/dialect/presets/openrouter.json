@@ -1,0 +1,13 @@
+{
+  "notes": "实测认证 2026-10-02：chat/embeddings/rerank/speech/transcriptions 可直接透传；图像走 /images 且只返回 b64_json；TTS 不传 response_format 时默认返回 PCM；HTTP 200 中可能带 error；GET /models 不鉴权（Key 校验需要用 /key）；Google、OpenAI 模型存在地区限制。",
+  "endpoints": {
+    "images": {"path": "/images", "limits": {"b64_only": true}},
+    "speech": {"defaults": {"response_format": "mp3"}},
+    "transcriptions": {"limits": {"response_formats": ["json", "verbose_json"]}},
+    "rerank": {"usage": {"input_tokens": ["usage.total_tokens", "usage.search_units"]}}
+  },
+  "errors": {"body_error_field": "error"},
+  "transport": {"extra_headers": {"HTTP-Referer": "https://ufreetokens.com", "X-Title": "uFreeTokens"}},
+  "auth": {"validation": {"method": "url", "url": "{origin}/api/v1/key"}},
+  "catalog": {"list_paths": ["/models?output_modalities=all", "/embeddings/models"]}
+}

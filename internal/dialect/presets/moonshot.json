@@ -1,0 +1,7 @@
+{
+  "notes": "待认证（来自官方文档与 freellmapi）：只提供对话。",
+  "endpoints": {
+    "embeddings": {"supported": false}, "rerank": {"supported": false}, "images": {"supported": false},
+    "speech": {"supported": false}, "transcriptions": {"supported": false}
+  }
+}

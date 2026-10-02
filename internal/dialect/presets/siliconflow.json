@@ -1,0 +1,6 @@
+{
+  "notes": "实测认证 2026-10-02：7 种能力全部可用。CosyVoice 的音色需要带上游模型名前缀。",
+  "endpoints": {
+    "speech": {"transforms": ["voice_prefix_upstream_model"]}
+  }
+}

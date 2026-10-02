@@ -1,0 +1,4 @@
+report.xml
+run.log
+__pycache__/
+.pytest_cache/

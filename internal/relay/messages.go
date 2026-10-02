@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -22,21 +21,15 @@ import (
 // "chat.completions"，不区分客户端用的是哪种协议入口进来的（已知限制）。
 //
 // 已知范围限制（和 internal/adapter.AnthropicAdapter 保持对称，理由见那边的
-// 包注释）：不支持 tool/function calling；content 数组只识别文本块；非 200
+// 包注释）：不支持 tool/function calling；content 数组只识别 text 与 image 块；非 200
 // 的错误响应直接透传 OpenAI 形状的错误体，不翻译成 Anthropic 的
 // {"type":"error",...} 形状。
 func (s *Service) Messages(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	requestID := httpx.RequestIDFromContext(ctx)
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, s.Cfg.MaxUpstreamBody))
-	if err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "Failed to read request body.")
-		return
-	}
-	var anthropicBody map[string]any
-	if err := json.Unmarshal(body, &anthropicBody); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "Request body is not valid JSON.")
+	_, anthropicBody, ok := s.readJSON(w, r)
+	if !ok {
 		return
 	}
 	openAIBody, err := anthropicRequestToOpenAI(anthropicBody)
@@ -93,8 +86,7 @@ func anthropicRequestToOpenAI(body map[string]any) (map[string]any, error) {
 		if role == "tool" {
 			return nil, errors.New("relay: tool-result messages are not supported on /v1/messages yet")
 		}
-		text, _ := extractAnthropicText(msg["content"])
-		outMessages = append(outMessages, map[string]any{"role": role, "content": text})
+		outMessages = append(outMessages, map[string]any{"role": role, "content": anthropicContentToOpenAI(msg["content"])})
 	}
 
 	out := map[string]any{"model": body["model"], "messages": outMessages}
@@ -109,11 +101,78 @@ func anthropicRequestToOpenAI(body map[string]any) (map[string]any, error) {
 	}
 	if v, ok := body["stream"]; ok {
 		out["stream"] = v
+		// 流式时显式要 usage：有的上游（百炼、方舟）只在最后一个 choices 为空的
+		// usage-only chunk 里返回用量，而 ChatCompletions 只有在客户端自己要了
+		// include_usage 时才转发这个 chunk。这里的"客户端"是 messagesResponseWriter，
+		// 它把 usage 折进 message_delta，不会把原始 chunk 透给 Anthropic 客户端。
+		if stream, _ := v.(bool); stream {
+			out["stream_options"] = map[string]any{"include_usage": true}
+		}
 	}
 	if v, ok := body["stop_sequences"]; ok {
 		out["stop"] = v
 	}
 	return out, nil
+}
+
+// anthropicContentToOpenAI 翻译一条消息的 content：没有图片时拼成纯文本字符串
+// （与之前的行为一致）；有图片时保留为 OpenAI 的 content 数组——text 块转
+// {"type":"text"}，image 块（source.type 为 base64 或 url）转 {"type":"image_url"}。
+// 其他类型的块（tool_use、document 等）忽略。
+func anthropicContentToOpenAI(content any) any {
+	blocks, ok := content.([]any)
+	if !ok {
+		text, _ := extractAnthropicText(content)
+		return text
+	}
+	hasImage := false
+	for _, b := range blocks {
+		if m, _ := b.(map[string]any); m != nil && m["type"] == "image" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		text, _ := extractAnthropicText(content)
+		return text
+	}
+	parts := make([]any, 0, len(blocks))
+	for _, b := range blocks {
+		m, _ := b.(map[string]any)
+		if m == nil {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			if text, _ := m["text"].(string); text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": text})
+			}
+		case "image":
+			if url := anthropicImageURL(m["source"]); url != "" {
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+			}
+		}
+	}
+	return parts
+}
+
+// anthropicImageURL 把 Anthropic 的 image source 转成 OpenAI image_url.url：
+// {"type":"base64","media_type","data"} -> data URL；{"type":"url","url"} -> 原 URL。
+func anthropicImageURL(source any) string {
+	src, _ := source.(map[string]any)
+	switch src["type"] {
+	case "base64":
+		mediaType, _ := src["media_type"].(string)
+		data, _ := src["data"].(string)
+		if mediaType == "" || data == "" {
+			return ""
+		}
+		return "data:" + mediaType + ";base64," + data
+	case "url":
+		url, _ := src["url"].(string)
+		return url
+	}
+	return ""
 }
 
 // extractAnthropicText 从 Anthropic 的 content 字段（字符串，或

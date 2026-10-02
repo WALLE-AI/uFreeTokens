@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/WALLE-AI/uFreeTokens/internal/dialect"
 	"github.com/WALLE-AI/uFreeTokens/internal/secretbox"
 )
 
@@ -82,43 +83,77 @@ func (s *Service) ListUpstreamModels(ctx context.Context, providerAccountID int6
 		return nil, fmt.Errorf("admin: decrypt provider_key: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models", nil)
-	if err != nil {
-		return nil, fmt.Errorf("admin: build upstream request: %w", err)
+	// 供应商方言：列模型路径（OpenRouter 的 /models 默认只列对话模型）、附加请求头、
+	// Key 校验方式（/models 不鉴权的供应商要另调校验地址，否则无效 Key 也能"列出模型"）。
+	var d *dialect.Dialect
+	if _, _, extra, err := s.loadAccountExtra(ctx, providerAccountID); err == nil {
+		d, _ = dialect.Load("", extra["dialect"])
 	}
-	req.Header.Set("Authorization", "Bearer "+secret)
-
-	resp, err := s.upstreamHTTPClient().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("admin: call upstream /models: %w: %w", ErrUpstreamUnavailable, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("admin: read upstream /models response: %w: %w", ErrUpstreamUnavailable, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		snippet := body
-		if len(snippet) > 500 {
-			snippet = snippet[:500]
+	get := func(url string) ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("admin: build upstream request: %w", err)
 		}
-		return nil, fmt.Errorf("admin: upstream /models returned status %d (%s): %w", resp.StatusCode, snippet, ErrUpstreamUnavailable)
+		if d == nil || !d.Transport.Keyless {
+			req.Header.Set("Authorization", "Bearer "+secret)
+		}
+		if d != nil {
+			for k, v := range d.Transport.ExtraHeaders {
+				req.Header.Set(k, v)
+			}
+		}
+		resp, err := s.upstreamHTTPClient().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("admin: call upstream %s: %w: %w", url, ErrUpstreamUnavailable, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		if err != nil {
+			return nil, fmt.Errorf("admin: read upstream response: %w: %w", ErrUpstreamUnavailable, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			snippet := body
+			if len(snippet) > 500 {
+				snippet = snippet[:500]
+			}
+			return nil, fmt.Errorf("admin: upstream %s returned status %d (%s): %w", url, resp.StatusCode, snippet, ErrUpstreamUnavailable)
+		}
+		return body, nil
 	}
 
-	var parsed struct {
-		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-		} `json:"data"`
+	base := strings.TrimRight(baseURL, "/")
+	if d != nil && d.Auth.Validation.Method == "url" && d.Auth.Validation.URL != "" {
+		if _, err := get(strings.ReplaceAll(d.Auth.Validation.URL, "{origin}", dialect.Origin(baseURL))); err != nil {
+			return nil, err
+		}
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("admin: decode upstream /models response: %w: %w", ErrUpstreamUnavailable, err)
+	paths := []string{"/models"}
+	if d != nil && len(d.Catalog.ListPaths) > 0 {
+		paths = d.Catalog.ListPaths
 	}
 
-	out := make([]UpstreamModel, 0, len(parsed.Data))
-	for _, m := range parsed.Data {
-		out = append(out, UpstreamModel{ID: m.ID, OwnedBy: m.OwnedBy})
+	out := []UpstreamModel{}
+	seen := map[string]bool{}
+	for _, p := range paths {
+		body, err := get(base + p)
+		if err != nil {
+			return nil, err
+		}
+		var parsed struct {
+			Data []struct {
+				ID      string `json:"id"`
+				OwnedBy string `json:"owned_by"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("admin: decode upstream %s response: %w: %w", p, ErrUpstreamUnavailable, err)
+		}
+		for _, m := range parsed.Data {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				out = append(out, UpstreamModel{ID: m.ID, OwnedBy: m.OwnedBy})
+			}
+		}
 	}
 	return out, nil
 }

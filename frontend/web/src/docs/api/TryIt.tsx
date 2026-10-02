@@ -7,6 +7,7 @@ import { parseSSE } from '../../api/sse';
 import { CopyButton } from '../components/CopyButton';
 import { useLocale, useT } from '../i18n';
 import type { OperationEntry } from './openapi';
+import { fileFields, isMultipart } from './openapi';
 import { exampleBody } from './snippets';
 
 interface Result {
@@ -15,6 +16,20 @@ interface Result {
   requestId: string;
   body: string;
   errorCode?: string;
+  // 二进制响应（语音合成的音频、图片）用 Blob URL 播放/预览；JSON 里的 data[].url 是生成的图片。
+  mediaUrl?: string;
+  mediaType?: string;
+  imageUrls?: string[];
+}
+
+// imageUrlsOf 取图像生成响应 data[].url，用于在调试面板里直接预览。
+function imageUrlsOf(text: string): string[] {
+  try {
+    const data = JSON.parse(text)?.data;
+    return Array.isArray(data) ? data.map((d: { url?: unknown }) => d?.url).filter((u: unknown): u is string => typeof u === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function pretty(text: string): string {
@@ -44,6 +59,8 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
   const needsKey = op['x-auth'] !== 'none';
   const queryParams = (op.parameters ?? []).filter((p) => p.in === 'query');
   const initialBody = tryItBody(entry);
+  const multipart = isMultipart(entry);
+  const uploads = multipart ? fileFields(entry) : [];
 
   const [tempKey, setTempKey] = useState('');
   const [query, setQuery] = useState<Record<string, string>>({});
@@ -51,12 +68,22 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState('');
   const [result, setResult] = useState<Result | null>(null);
+  const [files, setFiles] = useState<Record<string, File>>({});
   const abortRef = useRef<AbortController | null>(null);
+
+  // 释放上一次响应的 Blob URL，避免内存泄漏。
+  useEffect(() => {
+    const url = result?.mediaUrl;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [result?.mediaUrl]);
 
   // 切换接口时重置；离开页面时中止进行中的请求。
   useEffect(() => {
     setBody(initialBody === undefined ? '' : JSON.stringify(initialBody, null, 2));
     setQuery({});
+    setFiles({});
     setResult(null);
     setProblem('');
     return () => abortRef.current?.abort();
@@ -79,13 +106,25 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
       }
     }
 
+    if (multipart && uploads.some((f) => !files[f])) {
+      setProblem(t('fileMissing'));
+      return;
+    }
+    let form: FormData | undefined;
+    if (multipart) {
+      form = new FormData();
+      for (const f of uploads) form.append(f, files[f], files[f].name);
+      for (const [k, v] of Object.entries((payload ?? {}) as Record<string, unknown>)) form.append(k, String(v));
+    }
+
     const qs = Object.entries(query)
       .filter(([, v]) => v.trim())
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v.trim())}`)
       .join('&');
     const headers: Record<string, string> = {};
     if (needsKey && key) headers.Authorization = `Bearer ${key}`;
-    if (payload !== undefined) headers['Content-Type'] = 'application/json';
+    // multipart 的 Content-Type（含 boundary）由浏览器根据 FormData 生成。
+    if (payload !== undefined && !multipart) headers['Content-Type'] = 'application/json';
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -96,12 +135,23 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
       const res = await fetch(resolveURL(`${entry.path}${qs ? `?${qs}` : ''}`), {
         method: entry.method,
         headers,
-        body: payload !== undefined ? JSON.stringify(payload) : undefined,
+        body: form ?? (payload !== undefined ? JSON.stringify(payload) : undefined),
         signal: controller.signal,
       });
       const base = { status: res.status, requestId: res.headers.get('X-Request-Id') ?? '' };
-      const isSSE = res.ok && (res.headers.get('Content-Type') ?? '').includes('text/event-stream') && res.body;
-      if (isSSE) {
+      const contentType = res.headers.get('Content-Type') ?? '';
+      const isSSE = res.ok && contentType.includes('text/event-stream') && res.body;
+      const isMedia = res.ok && /^(audio|image|video)\//.test(contentType);
+      if (isMedia) {
+        const blob = await res.blob();
+        setResult({
+          ...base,
+          ms: Math.round(performance.now() - started),
+          body: `(${contentType}, ${blob.size} bytes)`,
+          mediaUrl: URL.createObjectURL(blob),
+          mediaType: contentType,
+        });
+      } else if (isSSE) {
         let text = '';
         for await (const data of parseSSE(res.body!)) {
           text += `data: ${data}\n\n`;
@@ -118,7 +168,7 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
             // 非 JSON 错误体（比如网关没起、反代返回的 HTML），按原文展示。
           }
         }
-        setResult({ ...base, ms: Math.round(performance.now() - started), body: pretty(text), errorCode });
+        setResult({ ...base, ms: Math.round(performance.now() - started), body: pretty(text), errorCode, imageUrls: res.ok ? imageUrlsOf(text) : [] });
       }
     } catch (e) {
       if ((e as Error).name !== 'AbortError') setProblem(t('networkError'));
@@ -174,9 +224,31 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
           </label>
         ))}
 
+        {uploads.map((f) => (
+          <label key={f} className="block space-y-1">
+            <span className="font-medium text-gray-700">
+              {t('uploadFile')} <code className="font-mono">{f}</code>
+            </span>
+            <input
+              type="file"
+              accept="audio/*,video/mp4,video/webm"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                setFiles((cur) => {
+                  const next = { ...cur };
+                  if (file) next[f] = file;
+                  else delete next[f];
+                  return next;
+                });
+              }}
+              className="block w-full text-[12px] text-gray-700 file:mr-2 file:rounded-md file:border file:border-gray-200 file:bg-gray-50 file:px-2.5 file:py-1 file:text-gray-700"
+            />
+          </label>
+        ))}
+
         {initialBody !== undefined && (
           <label className="block space-y-1">
-            <span className="font-medium text-gray-700">{t('body')}</span>
+            <span className="font-medium text-gray-700">{multipart ? t('formFields') : t('body')}</span>
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
@@ -235,6 +307,24 @@ export const TryIt: React.FC<{ entry: OperationEntry }> = ({ entry }) => {
             </>
           )}
         </div>
+        {result?.mediaUrl && result.mediaType?.startsWith('audio/') && (
+          <div className="px-4 py-3 border-b border-gray-200 space-y-1">
+            <span className="text-[11px] font-medium text-gray-600">{t('audioResponse')}</span>
+            <audio controls src={result.mediaUrl} className="w-full" />
+          </div>
+        )}
+        {(result?.imageUrls?.length || (result?.mediaUrl && result.mediaType?.startsWith('image/'))) && (
+          <div className="px-4 py-3 border-b border-gray-200 space-y-1">
+            <span className="text-[11px] font-medium text-gray-600">{t('imagePreview')}</span>
+            <div className="flex flex-wrap gap-2">
+              {(result.imageUrls?.length ? result.imageUrls : [result.mediaUrl!]).map((u) => (
+                <a key={u} href={u} target="_blank" rel="noreferrer">
+                  <img src={u} alt="" className="h-32 w-32 object-cover rounded-md border border-gray-200" />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
         <pre className="m-0 max-h-[420px] overflow-auto bg-[#0d1117] text-gray-200 px-4 py-3 text-[12px] leading-relaxed font-mono whitespace-pre-wrap break-all">
           {result ? result.body || '(empty)' : <span className="text-gray-500">{t('noResponse')}</span>}
         </pre>

@@ -26,6 +26,8 @@ type AttemptTraceEntry struct {
 	KeyID     int64  `json:"key_id"`
 	Status    string `json:"status"` // success / rate_limited / key_exhausted / key_invalid / upstream_unavailable / bad_request / content_filtered / connection_error
 	LatencyMs int64  `json:"latency_ms"`
+	// Codec 是方言指定的 codec 名（空 = 协议默认透传）。
+	Codec string `json:"codec,omitempty"`
 }
 
 // Record 是一行 request_logs。字段命名与数据库列一一对应，方便对照 migrations/00007。
@@ -156,7 +158,8 @@ INSERT INTO request_logs (
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens, usage_source,
     sell_price_book_id, promotion_ids, list_amount, charged_amount, cost_amount, client_ip, user_agent,
     experiment_key, variant_label, virtual_model_id,
-    gen_ms, tool_calls, image_inputs, app_name, app_url
+    gen_ms, tool_calls, image_inputs, app_name, app_url,
+    image_count, input_chars, audio_ms, upstream_cost
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14,
@@ -164,7 +167,8 @@ INSERT INTO request_logs (
     $17, $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27, $28, $29,
     $30, $31, $32,
-    $33, $34, $35, $36, $37
+    $33, $34, $35, $36, $37,
+    $38, $39, $40, $41
 )`
 
 func (w *Writer) insertBatch(records []Record) {
@@ -191,6 +195,8 @@ func (w *Writer) insertBatch(records []Record) {
 			r.SellBookID, r.PromotionIDs, r.ListAmount, r.ChargedAmount, r.CostAmount, nullIfEmpty(r.ClientIP), nullIfEmpty(r.UserAgent),
 			nullIfEmpty(r.ExperimentKey), nullIfEmpty(r.VariantLabel), nullIfZero64(r.VirtualModelID),
 			r.GenMillis, r.ToolCalls, r.ImageInputs, nullIfEmpty(r.AppName), nullIfEmpty(r.AppURL),
+			nullIfZero64(r.Usage.Images), nullIfZero64(r.Usage.InputChars), nullIfZero64(r.Usage.AudioMillis),
+			nullIfZeroFloat(r.Usage.UpstreamCost),
 		)
 	}
 
@@ -218,6 +224,13 @@ func nullIfEmpty(s string) any {
 }
 
 func nullIfZero64(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func nullIfZeroFloat(v float64) any {
 	if v == 0 {
 		return nil
 	}

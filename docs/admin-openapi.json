@@ -203,6 +203,55 @@
         ],
         "type": "object"
       },
+      "AccountDialect": {
+        "properties": {
+          "dialect": {},
+          "effective": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dialect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endpoints": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/DialectVersion"
+            },
+            "type": "array"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "provider_account_id": {
+            "type": "integer"
+          },
+          "provider_code": {
+            "type": "string"
+          },
+          "suggested_preset": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dialect",
+          "effective",
+          "endpoints",
+          "history",
+          "protocol",
+          "provider_account_id",
+          "provider_code"
+        ],
+        "type": "object"
+      },
       "AccountMember": {
         "properties": {
           "created_at": {
@@ -628,6 +677,21 @@
           "target_id",
           "target_type"
         ],
+        "type": "object"
+      },
+      "Auth": {
+        "properties": {
+          "alternate_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/Validation"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "BatchApproveRequest": {
@@ -1549,6 +1613,18 @@
           "updated_at",
           "version"
         ],
+        "type": "object"
+      },
+      "Catalog": {
+        "properties": {
+          "list_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "CatalogCounts": {
@@ -2593,6 +2669,28 @@
         ],
         "type": "object"
       },
+      "Chat": {
+        "properties": {
+          "force_single_tool_call": {
+            "type": "boolean"
+          },
+          "min_max_tokens": {
+            "type": "integer"
+          },
+          "single_system_message": {
+            "type": "boolean"
+          },
+          "strict_messages": {
+            "type": "boolean"
+          },
+          "thinking_default": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
       "ComponentChange": {
         "properties": {
           "change_ratio": {
@@ -2678,6 +2776,12 @@
                 "type": "null"
               }
             ]
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/MeterPrice"
+            },
+            "type": "array"
           },
           "output": {
             "anyOf": [
@@ -2966,6 +3070,10 @@
           "experiment_key": {
             "type": "string"
           },
+          "param_overrides": {
+            "additionalProperties": {},
+            "type": "object"
+          },
           "priority": {
             "type": "integer"
           },
@@ -2989,6 +3097,7 @@
           "allowed_account_ids",
           "allowed_tiers",
           "experiment_key",
+          "param_overrides",
           "priority",
           "provider_account_id",
           "upstream_model",
@@ -3092,6 +3201,7 @@
               }
             ]
           },
+          "dialect": {},
           "name": {
             "type": "string"
           },
@@ -3102,6 +3212,7 @@
         "required": [
           "base_url",
           "cost_multiplier",
+          "dialect",
           "name",
           "provider_id"
         ],
@@ -3515,6 +3626,91 @@
         ],
         "type": "object"
       },
+      "Dialect": {
+        "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/Auth"
+          },
+          "catalog": {
+            "$ref": "#/components/schemas/Catalog"
+          },
+          "chat": {
+            "$ref": "#/components/schemas/Chat"
+          },
+          "endpoints": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Endpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "errors": {
+            "$ref": "#/components/schemas/Errors"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/Transport"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "DialectPreset": {
+        "properties": {
+          "dialect": {},
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dialect",
+          "name",
+          "notes"
+        ],
+        "type": "object"
+      },
+      "DialectVersion": {
+        "properties": {
+          "dialect": {},
+          "saved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "saved_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "dialect",
+          "saved_at",
+          "saved_by"
+        ],
+        "type": "object"
+      },
       "DismissListingRequest": {
         "properties": {
           "reason": {
@@ -3524,6 +3720,87 @@
         "required": [
           "reason"
         ],
+        "type": "object"
+      },
+      "Endpoint": {
+        "properties": {
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/ModelRule"
+            },
+            "type": "array"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "defaults": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "drop": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "force": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rename": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "size_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "supported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transforms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "url": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "voice_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "ErrorEnvelope": {
@@ -3554,6 +3831,24 @@
         "required": [
           "error"
         ],
+        "type": "object"
+      },
+      "Errors": {
+        "properties": {
+          "body_error_field": {
+            "type": "string"
+          },
+          "challenge_is_transient": {
+            "type": "boolean"
+          },
+          "in_band_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "EvidenceInfo": {
@@ -3809,6 +4104,12 @@
           "context_window": {
             "type": "integer"
           },
+          "cost_components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewPrice"
+            },
+            "type": "array"
+          },
           "cost_input": {
             "anyOf": [
               {
@@ -3854,6 +4155,16 @@
           "name": {
             "type": "string"
           },
+          "param_overrides": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "sell_components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewPrice"
+            },
+            "type": "array"
+          },
           "sell_input": {
             "anyOf": [
               {
@@ -3892,6 +4203,7 @@
         "required": [
           "capabilities",
           "context_window",
+          "cost_components",
           "cost_input",
           "cost_output",
           "family",
@@ -3899,6 +4211,8 @@
           "markup_percent",
           "max_output",
           "name",
+          "param_overrides",
+          "sell_components",
           "sell_input",
           "sell_output",
           "type",
@@ -3956,6 +4270,12 @@
                 "type": "null"
               }
             ]
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewComponent"
+            },
+            "type": "array"
           },
           "cost_input_cny": {
             "anyOf": [
@@ -4248,6 +4568,30 @@
           "ref_type",
           "type"
         ],
+        "type": "object"
+      },
+      "Limits": {
+        "properties": {
+          "audio_formats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "b64_only": {
+            "type": "boolean"
+          },
+          "max_file_bytes": {
+            "type": "integer"
+          },
+          "response_formats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "ListData_AdminUser": {
@@ -4658,6 +5002,41 @@
         ],
         "type": "object"
       },
+      "MetaCodecsResponse": {
+        "properties": {
+          "codecs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "transforms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "codecs",
+          "transforms"
+        ],
+        "type": "object"
+      },
+      "MetaDialectPresetsResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/DialectPreset"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "MetaEnumsResponse": {
         "properties": {
           "account_statuses": {
@@ -4910,6 +5289,26 @@
         ],
         "type": "object"
       },
+      "MeterPrice": {
+        "properties": {
+          "meter": {
+            "type": "string"
+          },
+          "price": {
+            "format": "decimal",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter",
+          "price",
+          "unit"
+        ],
+        "type": "object"
+      },
       "Metrics": {
         "properties": {
           "active_accounts": {
@@ -5131,6 +5530,30 @@
           "variant",
           "virtual_model",
           "virtual_model_id"
+        ],
+        "type": "object"
+      },
+      "ModelRule": {
+        "properties": {
+          "codec": {
+            "type": "string"
+          },
+          "match": {
+            "type": "string"
+          },
+          "supported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "match"
         ],
         "type": "object"
       },
@@ -5777,6 +6200,70 @@
         ],
         "type": "object"
       },
+      "PreviewComponent": {
+        "properties": {
+          "cost_cny": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "margin_ratio": {
+            "anyOf": [
+              {
+                "format": "decimal",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meter": {
+            "type": "string"
+          },
+          "sell": {
+            "format": "decimal",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cost_cny",
+          "margin_ratio",
+          "meter",
+          "sell",
+          "unit"
+        ],
+        "type": "object"
+      },
+      "PreviewPrice": {
+        "properties": {
+          "meter": {
+            "type": "string"
+          },
+          "price": {
+            "format": "decimal",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter",
+          "price",
+          "unit"
+        ],
+        "type": "object"
+      },
       "PriceBookIDResponse": {
         "properties": {
           "price_book_id": {
@@ -5892,6 +6379,12 @@
                 "type": "null"
               }
             ]
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/MeterPrice"
+            },
+            "type": "array"
           },
           "output": {
             "anyOf": [
@@ -6416,6 +6909,12 @@
       },
       "PricingPreviewItem": {
         "properties": {
+          "cost_components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewPrice"
+            },
+            "type": "array"
+          },
           "cost_input": {
             "anyOf": [
               {
@@ -6452,6 +6951,12 @@
               }
             ]
           },
+          "sell_components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewPrice"
+            },
+            "type": "array"
+          },
           "sell_input": {
             "anyOf": [
               {
@@ -6476,10 +6981,12 @@
           }
         },
         "required": [
+          "cost_components",
           "cost_input",
           "cost_output",
           "key",
           "markup_percent",
+          "sell_components",
           "sell_input",
           "sell_output"
         ],
@@ -6533,6 +7040,12 @@
       },
       "PricingPreviewResultItem": {
         "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewComponent"
+            },
+            "type": "array"
+          },
           "cost_input_cny": {
             "anyOf": [
               {
@@ -7396,6 +7909,16 @@
           "attempts": {
             "type": "integer"
           },
+          "audio_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cache_read_tokens": {
             "anyOf": [
               {
@@ -7515,6 +8038,26 @@
             ]
           },
           "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "image_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_chars": {
             "anyOf": [
               {
                 "type": "integer"
@@ -7674,6 +8217,7 @@
           "api_key_name",
           "attempt_trace",
           "attempts",
+          "audio_ms",
           "cache_read_tokens",
           "cache_write_tokens",
           "channel_id",
@@ -7688,6 +8232,8 @@
           "experiment_key",
           "fx_rate",
           "http_status",
+          "image_count",
+          "input_chars",
           "input_tokens",
           "is_stream",
           "latency_ms",
@@ -7719,6 +8265,16 @@
           },
           "attempts": {
             "type": "integer"
+          },
+          "audio_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "channel_id": {
             "anyOf": [
@@ -7768,6 +8324,26 @@
             ]
           },
           "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "image_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_chars": {
             "anyOf": [
               {
                 "type": "integer"
@@ -7857,6 +8433,7 @@
           "account_id",
           "api_key_id",
           "attempts",
+          "audio_ms",
           "channel_id",
           "charged_amount_micro",
           "cost_micro",
@@ -7864,6 +8441,8 @@
           "endpoint",
           "error_code",
           "http_status",
+          "image_count",
+          "input_chars",
           "input_tokens",
           "is_stream",
           "latency_ms",
@@ -7915,6 +8494,15 @@
         "required": [
           "components",
           "currency"
+        ],
+        "type": "object"
+      },
+      "SetDialectRequest": {
+        "properties": {
+          "dialect": {}
+        },
+        "required": [
+          "dialect"
         ],
         "type": "object"
       },
@@ -8230,6 +8818,24 @@
         "required": [
           "code"
         ],
+        "type": "object"
+      },
+      "Transport": {
+        "properties": {
+          "extra_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "keyless": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "UnmappedIngestResultDTO": {
@@ -9121,6 +9727,16 @@
               }
             ]
           },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "visible_tiers": {
             "anyOf": [
               {
@@ -9141,6 +9757,7 @@
           "context_window",
           "max_output",
           "status",
+          "type",
           "visible_tiers"
         ],
         "type": "object"
@@ -9342,6 +9959,21 @@
           "source",
           "totals"
         ],
+        "type": "object"
+      },
+      "Validation": {
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "ValidationIssue": {
@@ -11591,6 +12223,62 @@
         "x-permission": ""
       }
     },
+    "/meta/codecs": {
+      "get": {
+        "operationId": "getMetaCodecs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaCodecsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": ""
+      }
+    },
+    "/meta/dialect-presets": {
+      "get": {
+        "operationId": "getMetaDialectPresets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaDialectPresetsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": ""
+      }
+    },
     "/meta/enums": {
       "get": {
         "operationId": "getMetaEnums",
@@ -12547,6 +13235,90 @@
           }
         },
         "x-permission": "catalog:write"
+      }
+    },
+    "/provider-accounts/{providerAccountID}/dialect": {
+      "get": {
+        "operationId": "getProviderAccountsProviderAccountIDDialect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerAccountID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDialect"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
+      },
+      "put": {
+        "operationId": "putProviderAccountsProviderAccountIDDialect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerAccountID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDialectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDialect"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "provider_key:write"
       }
     },
     "/provider-accounts/{providerAccountID}/import-models": {

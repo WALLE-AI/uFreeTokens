@@ -12,6 +12,7 @@ const UNIT_LABEL: Record<string, string> = {
   per_request: '每次请求',
   per_image: '每张图',
   per_second: '每秒',
+  per_1m_chars: '每百万字符',
 };
 
 // 价格组件只读表（当前生效版本 / 历史版本展开）

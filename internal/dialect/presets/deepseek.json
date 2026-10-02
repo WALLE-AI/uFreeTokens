@@ -1,0 +1,7 @@
+{
+  "notes": "待认证（来自官方文档）：只提供对话（含推理模型 reasoning_content）。",
+  "endpoints": {
+    "embeddings": {"supported": false}, "rerank": {"supported": false}, "images": {"supported": false},
+    "speech": {"supported": false}, "transcriptions": {"supported": false}
+  }
+}

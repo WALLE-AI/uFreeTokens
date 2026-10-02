@@ -1,0 +1,6 @@
+{
+  "notes": "待认证：OpenAI 原生接口即本网关的对外形状；无 rerank；gpt-image 系列只返回 b64_json；国内部署需要境外出口。",
+  "endpoints": {
+    "rerank": {"supported": false}
+  }
+}

@@ -1,0 +1,135 @@
+---
+title: Image generation
+description: Generate images from a text description with POST /v1/images/generations; returns temporary links and is billed per generated image.
+section: guides
+order: 44
+translatedFrom: c7dfb2aed1be
+---
+
+`POST /v1/images/generations` is compatible with the OpenAI Images API and generates images from a text description. You can use `images.generate` from the OpenAI SDK directly.
+
+## Choose an image model
+
+Only models whose catalog `type` is `image` work with this endpoint; other types return `404 model_not_found`:
+
+```bash title="List image models"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "image") | .name'
+```
+
+## Request parameters
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | string | Yes | Image model ID |
+| `prompt` | string | Yes | Image description |
+| `n` | integer | No | Number of images, 1–4, default 1; `batch_size` is also accepted |
+| `size` | string | No | Size, e.g. `1024x1024`; allowed values depend on the model |
+| Other fields | — | No | Passed to the upstream as-is, e.g. `negative_prompt`, `seed`, `num_inference_steps` |
+
+`n` greater than 4 or a missing `prompt` returns `400 invalid_request`.
+
+## Response
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<the model ID you requested>",
+  "created": 1759305600,
+  "data": [
+    {"url": "https://example-cdn.siliconflow.cn/temporary/abc123.png"}
+  ]
+}
+```
+
+- Responses are normalized to the OpenAI-style `data[].url`. A few models can only return `data[].b64_json` (base64-encoded image); these carry `limits.b64_only: true` in `GET /v1/catalog`, see [Interface constraints](/docs/en/models#interface-constraints). Extra fields returned by the upstream (such as `seed` and `timings`) are kept.
+- `id` is rewritten to this request's Request ID and `model` to the model ID you requested.
+
+<Callout type="warning" title="Image links are temporary">
+
+`data[].url` is a temporary link provided by the upstream and **expires after a while** (1 hour for SiliconFlow). Download the images and save them to your own storage as soon as you receive the response.
+
+</Callout>
+
+## Billing
+
+Billed **per generated image** (the `image` meter of the model's price, priced "per image"):
+
+- Pre-authorized amount = requested number of images (`n` or `batch_size`, default 1) × price per image;
+- Settlement charges for the number of images actually returned in the response;
+- If no image is generated at all, the request fails with `502 upstream_error` and is not charged.
+
+Image generation does not count toward the TPM limit; it is only subject to RPM and concurrency limits.
+
+## Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/images/generations \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Kwai-Kolors/Kolors",
+    "prompt": "An orange cat wearing a red scarf, watercolor style",
+    "n": 1,
+    "size": "1024x1024"
+  }'
+```
+
+```python title="Python"
+import os
+import requests
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+    timeout=120,
+)
+
+resp = client.images.generate(
+    model="Kwai-Kolors/Kolors",
+    prompt="An orange cat wearing a red scarf, watercolor style",
+    n=1,
+    size="1024x1024",
+)
+
+# The link expires, so download it right away
+with open("cat.png", "wb") as f:
+    f.write(requests.get(resp.data[0].url, timeout=60).content)
+```
+
+```ts title="Node.js"
+import { writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+  timeout: 120_000,
+});
+
+const resp = await client.images.generate({
+  model: "Kwai-Kolors/Kolors",
+  prompt: "An orange cat wearing a red scarf, watercolor style",
+  n: 1,
+  size: "1024x1024",
+});
+
+const img = await fetch(resp.data[0].url!);
+await writeFile("cat.png", Buffer.from(await img.arrayBuffer()));
+```
+
+</CodeTabs>
+
+<Callout type="tip" title="Timeouts">
+
+Image generation usually takes 5–60 seconds; set your client timeout to 120 seconds or more.
+
+</Callout>
+
+## Related
+
+- [Images API reference](/docs/en/api/createImage)
+- [Billing](/docs/en/billing)
+- [Rate limits](/docs/en/rate-limits)

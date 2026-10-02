@@ -430,8 +430,15 @@ func runReconcile(ctx context.Context, logger *slog.Logger, reconciler *reconcil
 	if err != nil {
 		return nil, fmt.Errorf("reconcile run: %w", err)
 	}
+	// 成本价与上游报告成本的偏差只告警，不影响 Clean（多供应商实施方案 §8）。
+	for _, d := range report.UpstreamCostDrifts {
+		logger.Warn("reconcile: channel cost price drifts from upstream-reported cost",
+			"channel_id", d.ChannelID, "virtual_model", d.VirtualModel, "requests", d.Requests,
+			"cost_cny", d.CostCNY, "upstream_cny", d.UpstreamCNY, "upstream_native", d.UpstreamNative, "currency", d.Currency,
+			"ratio", d.Ratio())
+	}
 	if report.Clean() {
-		return map[string]any{"clean": true}, nil
+		return map[string]any{"clean": true, "upstream_cost_drifts": len(report.UpstreamCostDrifts)}, nil
 	}
 
 	const maxLogged = 20

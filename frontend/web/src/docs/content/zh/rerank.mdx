@@ -1,0 +1,111 @@
+---
+title: 重排序 (Rerank)
+description: 通过 POST /v1/rerank 按与查询的相关性给候选文档打分排序，常用于 RAG 的第二阶段检索，按输入 token 计费。
+section: guides
+order: 42
+---
+
+`POST /v1/rerank` 接收一个查询和一组候选文档，返回按相关性从高到低排好序的结果。典型用法是 RAG 的"两阶段检索"：先用[向量嵌入](/docs/zh/embeddings)召回几十条候选，再用重排序模型精排，取前几条交给对话模型。
+
+接口形状与 Cohere / Jina / SiliconFlow 的 rerank 接口一致。OpenAI SDK 没有 rerank 方法，请直接发 HTTP 请求。
+
+## 选择重排序模型
+
+只有目录中 `type` 为 `rerank` 的模型可以用于此接口，其他类型返回 `404 model_not_found`：
+
+```bash title="列出重排序模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "rerank") | .name'
+```
+
+## 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `model` | string | 是 | 重排序模型 ID |
+| `query` | string | 是 | 查询语句 |
+| `documents` | array | 是 | 候选文档，1–1000 条；一般是字符串数组 |
+| `top_n` | integer | 否 | 只返回相关性最高的前 N 条 |
+| `return_documents` | boolean | 否 | 结果中是否附带文档原文 |
+| 其它字段 | — | 否 | 原样透传给上游，是否支持取决于模型 |
+
+## 响应
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<你请求的模型 ID>",
+  "results": [
+    {"index": 1, "relevance_score": 0.9871},
+    {"index": 2, "relevance_score": 0.0213}
+  ],
+  "meta": {"billed_units": {"input_tokens": 46}}
+}
+```
+
+- `results` 按 `relevance_score` 降序排列；`index` 是该文档在请求 `documents` 数组中的下标。
+- `id` 改写为本次请求的 Request ID，`model` 改写为你请求的模型 ID，其余字段来自上游。
+
+## 计费
+
+按**输入 token** 计费（模型售价中的 `input` 计量项），用量依次取上游返回的 `meta.billed_units.input_tokens`、`meta.tokens.input_tokens` 或 `usage.total_tokens`；都没有时按请求体大小估算。请求前按请求体大小预扣，失败不扣费。
+
+## 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/rerank \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "BAAI/bge-reranker-v2-m3",
+    "query": "苹果公司发布了什么新手机？",
+    "documents": ["今天北京天气晴朗。", "Apple 在秋季发布会上推出了新款 iPhone。", "苹果富含维生素。"],
+    "top_n": 2
+  }'
+```
+
+```python title="Python"
+import os
+import requests
+
+resp = requests.post(
+    "{{BASE_URL}}/v1/rerank",
+    headers={"Authorization": f"Bearer {os.environ['UFREETOKENS_API_KEY']}"},
+    json={
+        "model": "BAAI/bge-reranker-v2-m3",
+        "query": "苹果公司发布了什么新手机？",
+        "documents": ["今天北京天气晴朗。", "Apple 在秋季发布会上推出了新款 iPhone。", "苹果富含维生素。"],
+        "top_n": 2,
+    },
+)
+resp.raise_for_status()
+for r in resp.json()["results"]:
+    print(r["index"], r["relevance_score"])
+```
+
+```ts title="Node.js"
+const resp = await fetch("{{BASE_URL}}/v1/rerank", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.UFREETOKENS_API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "BAAI/bge-reranker-v2-m3",
+    query: "苹果公司发布了什么新手机？",
+    documents: ["今天北京天气晴朗。", "Apple 在秋季发布会上推出了新款 iPhone。", "苹果富含维生素。"],
+    top_n: 2,
+  }),
+});
+if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+console.log((await resp.json()).results);
+```
+
+</CodeTabs>
+
+## 相关
+
+- [Rerank API 参考](/docs/zh/api/createRerank)
+- [向量嵌入](/docs/zh/embeddings)
+- [计费与余额](/docs/zh/billing)

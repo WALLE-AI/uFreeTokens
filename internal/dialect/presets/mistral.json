@@ -1,0 +1,4 @@
+{
+  "notes": "待认证（来自 freellmapi 实测注释）：对未知的消息字段（reasoning_content 等）返回 422。",
+  "chat": {"strict_messages": true}
+}

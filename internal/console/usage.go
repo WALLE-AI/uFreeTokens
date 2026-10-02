@@ -22,6 +22,9 @@ type UsageIntervalRow struct {
 	Requests           int64  `json:"requests"`
 	InputTokens        int64  `json:"input_tokens"`
 	OutputTokens       int64  `json:"output_tokens"`
+	Images             int64  `json:"images"`
+	InputChars         int64  `json:"input_chars"`
+	AudioMillis        int64  `json:"audio_ms"`
 	ChargedAmountMicro int64  `json:"charged_amount_micro"`
 }
 
@@ -58,7 +61,8 @@ func (s *Service) UsageInterval(ctx context.Context, accountID int64, from, to t
 	}
 
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(
-		`SELECT %s AS grp, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(charged_amount),0)
+		`SELECT %s AS grp, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+		        COALESCE(SUM(image_count),0), COALESCE(SUM(input_chars),0), COALESCE(SUM(audio_ms),0), COALESCE(SUM(charged_amount),0)
 		 FROM request_logs
 		 WHERE account_id = $1 AND status = 'success' AND created_at >= $2 AND created_at < $3
 		 GROUP BY grp ORDER BY grp`, groupExpr),
@@ -72,7 +76,8 @@ func (s *Service) UsageInterval(ctx context.Context, accountID int64, from, to t
 	out := make([]UsageIntervalRow, 0)
 	for rows.Next() {
 		var row UsageIntervalRow
-		if err := rows.Scan(&row.Group, &row.Requests, &row.InputTokens, &row.OutputTokens, &row.ChargedAmountMicro); err != nil {
+		if err := rows.Scan(&row.Group, &row.Requests, &row.InputTokens, &row.OutputTokens,
+			&row.Images, &row.InputChars, &row.AudioMillis, &row.ChargedAmountMicro); err != nil {
 			return nil, fmt.Errorf("console: scan usage interval row: %w", err)
 		}
 		out = append(out, row)
@@ -95,10 +100,14 @@ type LogEntry struct {
 	CreatedAt          time.Time `json:"created_at"`
 	APIKeyID           int64     `json:"api_key_id"`
 	VirtualModel       string    `json:"virtual_model"`
+	Endpoint           string    `json:"endpoint"`
 	Status             string    `json:"status"`
 	HTTPStatus         int       `json:"http_status"`
 	InputTokens        int64     `json:"input_tokens"`
 	OutputTokens       int64     `json:"output_tokens"`
+	Images             int64     `json:"images"`
+	InputChars         int64     `json:"input_chars"`
+	AudioMillis        int64     `json:"audio_ms"`
 	ChargedAmountMicro int64     `json:"charged_amount_micro"`
 	LatencyMillis      int64     `json:"latency_ms"`
 	UsageSource        string    `json:"usage_source"`
@@ -132,8 +141,9 @@ func (s *Service) ListLogs(ctx context.Context, accountID int64, before string, 
 	args = append(args, limit)
 
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(
-		`SELECT request_id, created_at, api_key_id, virtual_model, status, COALESCE(http_status,0),
-		        COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(charged_amount,0),
+		`SELECT request_id, created_at, api_key_id, virtual_model, endpoint, status, COALESCE(http_status,0),
+		        COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+		        COALESCE(image_count,0), COALESCE(input_chars,0), COALESCE(audio_ms,0), COALESCE(charged_amount,0),
 		        COALESCE(latency_ms,0), usage_source
 		 FROM request_logs
 		 WHERE %s
@@ -149,8 +159,8 @@ func (s *Service) ListLogs(ctx context.Context, accountID int64, before string, 
 	out := make([]LogEntry, 0, limit)
 	for rows.Next() {
 		var e LogEntry
-		if err := rows.Scan(&e.RequestID, &e.CreatedAt, &e.APIKeyID, &e.VirtualModel, &e.Status, &e.HTTPStatus,
-			&e.InputTokens, &e.OutputTokens, &e.ChargedAmountMicro, &e.LatencyMillis, &e.UsageSource); err != nil {
+		if err := rows.Scan(&e.RequestID, &e.CreatedAt, &e.APIKeyID, &e.VirtualModel, &e.Endpoint, &e.Status, &e.HTTPStatus,
+			&e.InputTokens, &e.OutputTokens, &e.Images, &e.InputChars, &e.AudioMillis, &e.ChargedAmountMicro, &e.LatencyMillis, &e.UsageSource); err != nil {
 			return nil, "", fmt.Errorf("console: scan log entry: %w", err)
 		}
 		out = append(out, e)

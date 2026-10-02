@@ -25,8 +25,8 @@ Authorization: Bearer sk-uft-...
 
 ## 请求与响应约定
 
-- 请求体为 JSON，建议带上 `Content-Type: application/json`。
-- 成功响应为 JSON；流式请求（`stream: true`）返回 `text/event-stream`。
+- 请求体为 JSON，建议带上 `Content-Type: application/json`；语音识别使用 `multipart/form-data`。
+- 成功响应为 JSON；流式对话（`stream: true`）返回 `text/event-stream`；语音合成返回音频文件。
 - 请求与响应字段沿用 OpenAI（`/v1/messages` 沿用 Anthropic）的命名与语义；网关会把你的参数转发给上游模型，所以各模型对可选参数的支持程度可能不同。
 
 ## 请求 ID
@@ -59,7 +59,7 @@ Authorization: Bearer sk-uft-...
 
 | HTTP 状态码 | `type` |
 |---|---|
-| 400、404 等 | `invalid_request_error` |
+| 400、404、413、415 等 | `invalid_request_error` |
 | 401 | `authentication_error` |
 | 402 | `insufficient_quota` |
 | 403 | `permission_error` |
@@ -85,6 +85,12 @@ Authorization: Bearer sk-uft-...
 | POST | [`/v1/chat/completions`](/docs/zh/api/createChatCompletion) | 对话补全，支持流式与工具调用 | API Key |
 | POST | [`/v1/embeddings`](/docs/zh/api/createEmbedding) | 文本向量 | API Key |
 | POST | [`/v1/messages`](/docs/zh/api/createMessage) | Anthropic Messages 兼容入口 | API Key |
+| POST | [`/v1/rerank`](/docs/zh/api/createRerank) | 文档重排序 | API Key |
+| POST | [`/v1/images/generations`](/docs/zh/api/createImage) | 图像生成 | API Key |
+| POST | [`/v1/audio/speech`](/docs/zh/api/createSpeech) | 语音合成（返回音频文件） | API Key |
+| POST | [`/v1/audio/transcriptions`](/docs/zh/api/createTranscription) | 语音识别（`multipart/form-data` 上传） | API Key |
+
+请求体一般为 JSON；`/v1/audio/transcriptions` 使用 `multipart/form-data` 上传文件，`/v1/audio/speech` 的成功响应是二进制音频。请求体最大 20 MB，超过时返回 `413 request_too_large`。
 
 ### 尚未实现
 
@@ -93,6 +99,3 @@ Authorization: Bearer sk-uft-...
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | [`/v1/completions`](/docs/zh/api/createCompletion) | 旧式文本补全 |
-| POST | [`/v1/images/generations`](/docs/zh/api/createImage) | 图像生成 |
-| POST | [`/v1/audio/transcriptions`](/docs/zh/api/createTranscription) | 语音转写 |
-| POST | [`/v1/audio/speech`](/docs/zh/api/createSpeech) | 语音合成 |

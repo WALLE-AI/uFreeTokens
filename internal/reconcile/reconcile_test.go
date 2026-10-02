@@ -365,3 +365,61 @@ func TestRun_CombinesBothChecks(t *testing.T) {
 		t.Error("Clean() should be false when a discrepancy was seeded")
 	}
 }
+
+// TestCheckUpstreamCost_FlagsDriftingChannel：同一个渠道上「按成本价计算的成本」与「上游
+// 报告的成本 × 汇率」偏差超过 20% 时被标出，偏差小的渠道不报。用本测试专属的假币种和
+// 未来时间窗口，避免与并发运行的其他测试数据互相干扰（见 futureAnchor 的注释）。
+func TestCheckUpstreamCost_FlagsDriftingChannel(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	cur := "U" + suffix[len(suffix)-6:]
+	if _, err := pool.Exec(ctx, `INSERT INTO fx_rates (base, quote, rate, source, effective_date) VALUES ($1, 'CNY', 7, 'test', CURRENT_DATE)`, cur); err != nil {
+		t.Fatal(err)
+	}
+	channel := func(name string) int64 {
+		var providerID, accountID, vmID, channelID int64
+		must := func(err error) {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		must(pool.QueryRow(ctx, `INSERT INTO providers (code, name, protocol, status, currency) VALUES ($1, 'p', 'openai', 'active', $2) RETURNING id`, name+suffix, cur).Scan(&providerID))
+		must(pool.QueryRow(ctx, `INSERT INTO provider_accounts (provider_id, name, base_url, status) VALUES ($1, 'a', 'https://x.example', 'active') RETURNING id`, providerID).Scan(&accountID))
+		must(pool.QueryRow(ctx, `INSERT INTO virtual_models (name, family, type, context_window, max_output, status) VALUES ($1, 'f', 'chat', 1, 1, 'active') RETURNING id`, name+suffix).Scan(&vmID))
+		must(pool.QueryRow(ctx, `INSERT INTO channels (virtual_model_id, provider_account_id, upstream_model, status) VALUES ($1, $2, 'u', 'active') RETURNING id`, vmID, accountID).Scan(&channelID))
+		return channelID
+	}
+	drifting, fine := channel("drift-"), channel("fine-")
+	at := futureAnchor(t, 9)
+	seed := func(channelID int64, costMicro int64, upstream float64) {
+		id := fmt.Sprintf("upcost-%d", time.Now().UnixNano())
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO request_logs (request_id, created_at, account_id, api_key_id, virtual_model, endpoint, is_stream, status, attempts,
+			                           usage_source, channel_id, cost_amount, upstream_cost)
+			 VALUES ($1, $2, 1, 1, 'm', 'chat.completions', false, 'success', 1, 'upstream', $3, $4, $5)`,
+			id, at, channelID, costMicro, upstream); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM request_logs WHERE request_id = $1`, id) })
+	}
+	seed(drifting, 1_000_000, 0.1) // 成本 ¥1，上游 0.1×7 = ¥0.7 → 偏差 43%
+	seed(fine, 700_000, 0.1)       // 成本 ¥0.7，上游 ¥0.7 → 无偏差
+
+	drifts, err := New(pool).CheckUpstreamCost(ctx, at.Add(-time.Minute), at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found, foundFine bool
+	for _, d := range drifts {
+		if d.ChannelID == drifting {
+			found = d.Ratio() > 0.4 && d.Ratio() < 0.45 && d.Currency == cur
+		}
+		if d.ChannelID == fine {
+			foundFine = true
+		}
+	}
+	if !found || foundFine {
+		t.Errorf("drifts = %+v", drifts)
+	}
+}

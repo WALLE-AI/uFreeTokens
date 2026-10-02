@@ -77,7 +77,7 @@ func (a *OpenAIAdapter) BuildRequest(ctx context.Context, target Target, endpoin
 	// 自己看不看得到这个 usage-only chunk 由 relay.isUsageOnlyChunk 在转发时
 	// 决定，不影响这里的上游请求。渠道如果不支持这个参数，用
 	// channel.param_overrides: {"stream_options": null} 剔除（下面的循环会处理）。
-	if stream, _ := payload["stream"].(bool); stream {
+	if stream, _ := payload["stream"].(bool); stream && endpoint == EndpointChat {
 		merged := map[string]any{"include_usage": true}
 		if existing, ok := payload["stream_options"].(map[string]any); ok {
 			for k, v := range existing {
@@ -88,27 +88,62 @@ func (a *OpenAIAdapter) BuildRequest(ctx context.Context, target Target, endpoin
 		payload["stream_options"] = merged
 	}
 
+	// 供应商方言（路径之外的请求差异），之后再叠加渠道级 param_overrides。
+	applyRequestDialect(payload, target, endpoint)
+
 	for k, v := range target.Channel.ParamOverrides {
+		if strings.HasPrefix(k, "$") {
+			continue // 网关自用的指令键（见 applyDirectives），不发给上游
+		}
 		if v == nil {
 			delete(payload, k)
 		} else {
 			payload[k] = v
 		}
 	}
+	applyDirectives(payload, target)
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("adapter/openai: marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(target.Account.BaseURL, "/") + endpoint
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL(target, endpoint), bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("adapter/openai: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+target.Key.Secret)
+	setAuthAndTransportHeaders(req, target)
 	return req, nil
+}
+
+// SupportsEndpoint：OpenAI 兼容上游覆盖全部逻辑端点。
+func (a *OpenAIAdapter) SupportsEndpoint(string) bool { return true }
+
+// BuildRawRequest 发送 relay 组装好的非 JSON 请求体（语音识别的 multipart）。
+// model 字段已由 relay 改写为上游模型名；param_overrides 不适用于 multipart。
+func (a *OpenAIAdapter) BuildRawRequest(ctx context.Context, target Target, endpoint, contentType string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL(target, endpoint), body)
+	if err != nil {
+		return nil, fmt.Errorf("adapter/openai: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	setAuthAndTransportHeaders(req, target)
+	return req, nil
+}
+
+// DirectiveVoicePrefix 是渠道 param_overrides 里的指令键：值为 true 时，语音合成
+// 请求的 voice 不含 ":" 就补成 "<上游模型名>:<voice>"。SiliconFlow 的音色必须带
+// 上游模型名前缀（如 FunAudioLLM/CosyVoice2-0.5B:alex），而用户只知道虚拟模型名，
+// 有了这个指令，文档里就只需要公开短音色名。"$" 开头的键不会被转发给上游。
+const DirectiveVoicePrefix = "$voice_prefix_upstream_model"
+
+func applyDirectives(payload map[string]any, target Target) {
+	if on, _ := target.Channel.ParamOverrides[DirectiveVoicePrefix].(bool); on {
+		if v, ok := payload["voice"].(string); ok && v != "" && !strings.Contains(v, ":") {
+			payload["voice"] = target.Channel.UpstreamModel + ":" + v
+		}
+	}
 }
 
 func (a *OpenAIAdapter) DecodeResponse(body []byte, vmName, requestID string) (map[string]any, schema.Usage, error) {
@@ -136,6 +171,10 @@ func (a *OpenAIAdapter) NewStreamDecoder(body io.ReadCloser, vmName, requestID s
 func (a *OpenAIAdapter) ClassifyError(statusCode int, body []byte) ErrorClass {
 	if bytes.Contains(body, []byte("content_filter")) || bytes.Contains(body, []byte("content_policy")) {
 		return ErrClassContentFiltered
+	}
+	// 「模型对所在地区不可用」是渠道级问题：换渠道重试，而不是把 Key 当成失效冻结。
+	if isRegionRestricted(string(body)) {
+		return ErrClassUpstreamUnavailable
 	}
 	switch {
 	case statusCode == http.StatusTooManyRequests:
@@ -189,6 +228,7 @@ func extractUsage(m map[string]any) schema.Usage {
 		CacheWriteTokens: int64(cacheWrite),
 		OutputTokens:     int64(completion),
 		ReasoningTokens:  int64(reasoning),
+		UpstreamCost:     getFloat(raw, "cost"),
 		Source:           schema.UsageSourceUpstream,
 	}
 }
@@ -210,7 +250,17 @@ type sseStreamDecoder struct {
 	vmName string
 	reqID  string
 	usage  schema.Usage
+	err    error // 流中出现的上游错误（见 StreamError）
 }
+
+// StreamError 表示上游在流已经开始（HTTP 200）之后，用一个带顶层 error 的 chunk 报错
+// （OpenRouter 等）。流已经开始，不能重试；relay 写出 OpenAI 风格的 error chunk 后结束。
+type StreamError struct {
+	Message string
+	Code    any
+}
+
+func (e *StreamError) Error() string { return "adapter: upstream stream error: " + e.Message }
 
 func (d *sseStreamDecoder) Next() ([]byte, error) {
 	for {
@@ -226,6 +276,9 @@ func (d *sseStreamDecoder) Next() ([]byte, error) {
 				}
 				if out, ok := d.decodeAndRewrite(payload); ok {
 					return out, nil
+				}
+				if d.err != nil {
+					return nil, d.err
 				}
 				// 非法 JSON（个别厂商会在流里夹杂非标准行）：忽略，继续读下一行。
 			}
@@ -256,6 +309,15 @@ func cutSSEDataPrefix(line string) (string, bool) {
 func (d *sseStreamDecoder) decodeAndRewrite(payload string) ([]byte, bool) {
 	var chunk map[string]any
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return nil, false
+	}
+	if e, ok := chunk["error"]; ok && e != nil {
+		se := &StreamError{Message: fmt.Sprint(e)}
+		if em, ok := e.(map[string]any); ok {
+			se.Message, _ = em["message"].(string)
+			se.Code = em["code"]
+		}
+		d.err = se
 		return nil, false
 	}
 

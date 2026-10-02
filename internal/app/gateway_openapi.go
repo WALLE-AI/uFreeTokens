@@ -73,7 +73,7 @@ var gatewayErrorCodes = []gatewayErrorCode{
 	{"concurrency_limit_exceeded", http.StatusTooManyRequests, true, "Too many concurrent requests.", l10n{
 		"Too many in-flight requests on this API key (the key's concurrency limit). Retry after an earlier request finishes; `Retry-After` is set when a wait time is known.",
 		"该 API Key 同时进行中的请求数超过并发上限。等已有请求结束后重试；能算出等待时长时会带 `Retry-After` 头。"}},
-	{"content_filtered", http.StatusBadRequest, false, "Upstream request failed.", l10n{
+	{"content_filtered", http.StatusBadRequest, false, "The upstream provider rejected the request by content moderation.", l10n{
 		"The upstream provider rejected the request through its content moderation. Not charged.",
 		"上游厂商的内容审核拦截了这次请求。不计费。"}},
 	{"insufficient_balance", http.StatusPaymentRequired, false, "Insufficient balance.", l10n{
@@ -86,17 +86,17 @@ var gatewayErrorCodes = []gatewayErrorCode{
 		"Missing or malformed `Authorization: Bearer <key>` header, or the key does not exist, has been disabled/revoked, or has expired.",
 		"缺少或格式错误的 `Authorization: Bearer <key>` 头，或 Key 不存在、已禁用/吊销、已过期。"}},
 	{"invalid_request", http.StatusBadRequest, false, "Request body is not valid JSON.", l10n{
-		"The request is invalid: the body cannot be read (e.g. larger than 20 MB) or is not valid JSON, `model` is missing, the `since` query parameter is not RFC 3339, the `/v1/messages` body uses an unsupported feature, or the upstream provider rejected the request as a bad request. Not charged.",
-		"请求无效：请求体读取失败（如超过 20 MB）或不是合法 JSON、缺少 `model`、查询参数 `since` 不是 RFC 3339、`/v1/messages` 用了不支持的特性，或上游厂商判定请求参数有误。不计费。"}},
+		"The request is invalid: the body is not valid JSON (or a malformed multipart body), `model` or another required field is missing, a field is out of range (e.g. too many `documents` or images, `input` too long), the `since` query parameter is not RFC 3339, the `/v1/messages` body uses an unsupported feature, or the upstream provider rejected the request as a bad request — in that case `message` carries the upstream's reason (`Upstream rejected the request: ...`). Not charged.",
+		"请求无效：请求体不是合法 JSON（或 multipart 格式错误）、缺少 `model` 等必填字段、字段超出范围（如 `documents` 或图片张数过多、`input` 过长）、查询参数 `since` 不是 RFC 3339、`/v1/messages` 用了不支持的特性，或上游厂商判定请求参数有误——此时 `message` 会带上上游给出的原因（`Upstream rejected the request: ...`）。不计费。"}},
 	{"model_not_allowed", http.StatusForbidden, false, "This API key is not allowed to use this model.", l10n{
 		"The API key has a model allow-list that does not include the requested model.",
 		"该 API Key 配置了可用模型白名单，且不包含所请求的模型。"}},
-	{"model_not_found", http.StatusNotFound, false, "The requested model does not exist.", l10n{
-		"The model does not exist, is not active, is not visible to your account tier, or (on `/v1/embeddings`) is not an embedding model.",
-		"模型不存在、未上线、对你的账户等级不可见，或（在 `/v1/embeddings` 上）不是 embedding 类型的模型。"}},
-	{"no_available_channel", http.StatusServiceUnavailable, true, "Upstream request failed.", l10n{
-		"No upstream channel can serve the request right now: all channels are unhealthy or cooling down, or none supports the requested capability (streaming, tools, JSON schema) or context length. Not charged.",
-		"当前没有可用的上游渠道：所有渠道都不健康或在冷却中，或没有渠道支持所需能力（流式、工具调用、JSON Schema）或上下文长度。不计费。"}},
+	{"model_not_found", http.StatusNotFound, false, "The requested model does not exist or does not support this endpoint.", l10n{
+		"The model does not exist, is not active, is not visible to your account tier, or does not serve this endpoint (e.g. an embedding model on `/v1/chat/completions`, or a speech-recognition model on `/v1/audio/speech`; see the endpoint table in Models).",
+		"模型不存在、未上线、对你的账户等级不可见，或不支持当前接口（例如在 `/v1/chat/completions` 上用了 embedding 模型、在 `/v1/audio/speech` 上用了语音识别模型；见「模型」文档中的接口对照表）。"}},
+	{"no_available_channel", http.StatusServiceUnavailable, true, "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).", l10n{
+		"No upstream channel can serve the request right now: all channels are unhealthy or cooling down, or none supports the requested capability (streaming, tools, JSON schema, image input) or context length. Not charged.",
+		"当前没有可用的上游渠道：所有渠道都不健康或在冷却中，或没有渠道支持所需能力（流式、工具调用、JSON Schema、图片输入）或上下文长度。不计费。"}},
 	{"not_found", http.StatusNotFound, false, "Benchmark not found.", l10n{
 		"The requested resource does not exist or is not published (public benchmark endpoints).",
 		"请求的资源不存在或未发布（公开基准测试接口）。"}},
@@ -106,12 +106,18 @@ var gatewayErrorCodes = []gatewayErrorCode{
 	{"rate_limit_exceeded", http.StatusTooManyRequests, true, "Too many requests.", l10n{
 		"Rate limit exceeded: requests-per-minute or tokens-per-minute limit of the API key (relay endpoints), or the per-IP limit of the public endpoints (`/v1/catalog`, `/v1/rankings/*`, `/v1/benchmarks`). Wait for `Retry-After` seconds when present.",
 		"触发限流：API Key 的每分钟请求数或每分钟 token 数上限（转发类接口），或公开接口（`/v1/catalog`、`/v1/rankings/*`、`/v1/benchmarks`）的按 IP 限流。有 `Retry-After` 头时按其秒数等待后重试。"}},
+	{"request_too_large", http.StatusRequestEntityTooLarge, false, "Request body exceeds the 20 MB limit.", l10n{
+		"The request body is larger than 20 MB (base64 images and uploaded audio files count toward it). Compress or downscale images, pass images by URL, or split long audio. Not charged.",
+		"请求体超过 20 MB（base64 图片与上传的音频文件都计入）。请压缩或缩小图片、改用图片 URL，或把长音频切分后再传。不计费。"}},
 	{"service_unavailable", http.StatusServiceUnavailable, true, "Public rankings are temporarily unavailable.", l10n{
 		"The public rankings are temporarily switched off by the operator (e.g. while a statistics issue is fixed). Retry later.",
 		"公开榜单被运营临时下线（如修正统计口径期间）。请稍后重试。"}},
-	{"upstream_error", http.StatusBadGateway, true, "Upstream request failed.", l10n{
-		"The upstream provider failed after automatic retries (connection error, 5xx, provider-side rate limit or key problem), or returned a response the gateway could not read. Not charged.",
-		"自动重试后上游仍然失败（连接错误、5xx、上游限流或上游 Key 问题），或上游响应无法读取/解析。不计费。"}},
+	{"unsupported_media_type", http.StatusUnsupportedMediaType, false, "Content-Type must be multipart/form-data.", l10n{
+		"`/v1/audio/transcriptions` only accepts `multipart/form-data`, and the uploaded file must be flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav or webm (judged by the file name extension).",
+		"`/v1/audio/transcriptions` 只接受 `multipart/form-data`，且上传文件须为 flac、m4a、mp3、mp4、mpeg、mpga、oga、ogg、wav 或 webm（按文件扩展名判断）。"}},
+	{"upstream_error", http.StatusBadGateway, true, "Upstream provider failed after retries.", l10n{
+		"The upstream provider failed after automatic retries (connection error, 5xx, provider-side rate limit or key problem), or returned a response the gateway could not read (e.g. an image request that produced no image). Not charged.",
+		"自动重试后上游仍然失败（连接错误、5xx、上游限流或上游 Key 问题），或上游响应无法读取/解析（如图像请求一张图都没生成）。不计费。"}},
 }
 
 func lookupErrorCode(code string) (gatewayErrorCode, bool) {
@@ -133,10 +139,10 @@ var gatewayFieldDocs = map[string]l10n{
 
 	"CatalogModel.name":             {"Model ID used in the `model` field of API calls.", "调用接口时 `model` 字段使用的模型 ID。"},
 	"CatalogModel.family":           {"Model family, e.g. `deepseek`.", "模型系列，如 `deepseek`。"},
-	"CatalogModel.type":             {"Model type: `chat`, `embedding`, `image`, `audio` or `rerank`.", "模型类型：`chat`、`embedding`、`image`、`audio` 或 `rerank`。"},
+	"CatalogModel.type":             {"Model type: `chat`, `embedding`, `image`, `audio` or `rerank`. It decides which endpoint the model serves; `audio` models are told apart by the `tts` / `asr` capability.", "模型类型：`chat`、`embedding`、`image`、`audio` 或 `rerank`，决定模型可用于哪个接口；`audio` 模型再按能力 `tts` / `asr` 区分。"},
 	"CatalogModel.context_window":   {"Context window in tokens.", "上下文窗口（token 数）。"},
 	"CatalogModel.max_output":       {"Maximum output tokens per request.", "单次请求最大输出 token 数。"},
-	"CatalogModel.capabilities":     {"Declared capabilities, e.g. `stream`, `tools`, `json_schema`, `vision`.", "声明的能力，如 `stream`、`tools`、`json_schema`、`vision`。"},
+	"CatalogModel.capabilities":     {"Declared capabilities, e.g. `stream`, `tools`, `json_schema`, `vision` (accepts image input), `tts` (speech synthesis), `asr` (speech recognition).", "声明的能力，如 `stream`、`tools`、`json_schema`、`vision`（可输入图片）、`tts`（语音合成）、`asr`（语音识别）。"},
 	"CatalogModel.sell_price":       {"Public price. Omitted when no price is configured.", "公开售价；未配置售价时省略。"},
 	"CatalogModel.display_name":     {"Human-readable name. Omitted if not set.", "展示名称；未录入时省略。"},
 	"CatalogModel.description":      {"Model introduction. Omitted if not set.", "模型介绍；未录入时省略。"},
@@ -145,11 +151,19 @@ var gatewayFieldDocs = map[string]l10n{
 	"CatalogModel.scores":           {"Free-form benchmark scores (e.g. `intelligenceIndex`, `codingIndex`, `agenticIndex`). Omitted if not set.", "自由格式的评测分数（如 `intelligenceIndex`、`codingIndex`、`agenticIndex`）；未录入时省略。"},
 	"CatalogModel.status":           {"`active`, or `deprecated` (listed for reference only; cannot be called).", "`active`，或 `deprecated`（仅供展示，不能调用）。"},
 
+	"CatalogModel.limits": {"Interface constraints of this model on the platform, derived from the upstream providers serving it (the strictest across them). Omitted when there are none.",
+		"该模型在本平台上的接口约束，由提供它的上游决定（取所有上游中最严格的一项）；没有约束时省略。"},
+
+	"Limits.b64_only":         {"Image generation returns `data[].b64_json` only, never `url`.", "图像生成只返回 `data[].b64_json`，不返回 `url`。"},
+	"Limits.max_file_bytes":   {"Maximum size of an uploaded file (speech recognition), in bytes.", "上传文件（语音识别）的大小上限，字节。"},
+	"Limits.response_formats": {"Supported `response_format` values.", "支持的 `response_format` 取值。"},
+	"Limits.audio_formats":    {"Audio formats speech synthesis actually returns, regardless of `response_format`.", "语音合成实际返回的音频格式（与 `response_format` 无关）。"},
+
 	"CatalogPrice.currency":   {"Price currency, e.g. `CNY`.", "计价币种，如 `CNY`。"},
 	"CatalogPrice.components": {"Price components, one per meter.", "价格分项，每个计量项一条。"},
 
-	"CatalogPriceComponent.meter":      {"What is metered: `input`, `input_cache_read`, `input_cache_write`, `output`, `output_reasoning` or `request`.", "计量项：`input`、`input_cache_read`、`input_cache_write`、`output`、`output_reasoning` 或 `request`。"},
-	"CatalogPriceComponent.unit":       {"Pricing unit: `per_1m_tokens`, `per_request`, `per_image` or `per_second`.", "计价单位：`per_1m_tokens`、`per_request`、`per_image` 或 `per_second`。"},
+	"CatalogPriceComponent.meter":      {"What is metered: `input`, `input_cache_read`, `input_cache_write`, `output`, `output_reasoning`, `request`, `image` (generated images), `input_char` (speech-synthesis input characters) or `audio_second` (transcribed audio duration).", "计量项：`input`、`input_cache_read`、`input_cache_write`、`output`、`output_reasoning`、`request`、`image`（生成的图片）、`input_char`（语音合成输入字符）或 `audio_second`（语音识别音频时长）。"},
+	"CatalogPriceComponent.unit":       {"Pricing unit: `per_1m_tokens`, `per_request`, `per_image`, `per_second` or `per_1m_chars`.", "计价单位：`per_1m_tokens`、`per_request`、`per_image`、`per_second` 或 `per_1m_chars`。"},
 	"CatalogPriceComponent.unit_price": {"Price per unit in `currency` (whole currency units, not micro), as a decimal string, e.g. `\"1.5\"` = ¥1.5 per 1M tokens.", "每单位价格，以 `currency` 的元为单位（不是微元），十进制字符串，如 `\"1.5\"` 表示每百万 token ¥1.5。"},
 
 	"ModelListResponse.object": {"Always `list`.", "固定为 `list`。"},
@@ -170,6 +184,9 @@ var gatewayFieldDocs = map[string]l10n{
 	"UsageTotals.total_requests":             {"Number of successful requests.", "成功请求数。"},
 	"UsageTotals.total_input_tokens":         {"Total input tokens.", "累计输入 token 数。"},
 	"UsageTotals.total_output_tokens":        {"Total output tokens.", "累计输出 token 数。"},
+	"UsageTotals.total_images":               {"Total generated images (`/v1/images/generations`).", "累计生成图片张数（`/v1/images/generations`）。"},
+	"UsageTotals.total_input_chars":          {"Total speech-synthesis input characters (`/v1/audio/speech`).", "累计语音合成输入字符数（`/v1/audio/speech`）。"},
+	"UsageTotals.total_audio_ms":             {"Total transcribed audio duration in milliseconds (`/v1/audio/transcriptions`).", "累计语音识别音频时长，毫秒（`/v1/audio/transcriptions`）。"},
 	"UsageTotals.total_charged_amount_micro": {"Total amount charged, in micro-CNY.", "累计实扣金额，微元。"},
 }
 
@@ -179,6 +196,7 @@ var gatewaySchemaDocs = map[string]l10n{
 	"CatalogModel":          {"A model in the public catalog. Internal routing details (channels, upstream accounts, cost prices) are never exposed.", "公开目录中的一个模型。不暴露渠道、上游账号、成本价等内部路由细节。"},
 	"CatalogPrice":          {"Public sell price of a model.", "模型的公开售价。"},
 	"CatalogPriceComponent": {"One price component.", "一条价格分项。"},
+	"Limits":                {"Interface constraints of a model.", "模型的接口约束。"},
 	"ModelListResponse":     {"OpenAI-compatible model list.", "OpenAI 兼容的模型列表。"},
 	"OpenAIModel":           {"OpenAI-compatible model object.", "OpenAI 兼容的模型对象。"},
 	"UsageResponse":         {"Wallet balance and cumulative usage of the key's account. All amounts are integer micro-CNY.", "Key 所属账户的钱包余额与累计用量。金额均为整数微元。"},
@@ -244,6 +262,26 @@ func anthropicTextContent(d l10n) map[string]any {
 	}}, d)
 }
 
+func imageBlockSchema() map[string]any {
+	return objSchema(l10n{"An image content block.", "图片内容块。"}, []string{"type", "source"}, true, map[string]any{
+		"type": described(map[string]any{"type": "string", "const": "image"}, l10n{"Always `image`.", "固定为 `image`。"}),
+		"source": objSchema(l10n{"`{\"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"...\"}` or `{\"type\": \"url\", \"url\": \"https://...\"}`.",
+			"`{\"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"...\"}` 或 `{\"type\": \"url\", \"url\": \"https://...\"}`。"}, []string{"type"}, true, map[string]any{
+			"type":       strProp(l10n{"`base64` or `url`.", "`base64` 或 `url`。"}),
+			"media_type": strProp(l10n{"MIME type for `base64`, e.g. `image/png`.", "`base64` 时的 MIME 类型，如 `image/png`。"}),
+			"data":       strProp(l10n{"Base64 image data (no `data:` prefix).", "base64 图片数据（不带 `data:` 前缀）。"}),
+			"url":        strProp(l10n{"Image URL for `url`.", "`url` 时的图片地址。"}),
+		}),
+	})
+}
+
+func anthropicMessageContent(d l10n) map[string]any {
+	return described(map[string]any{"anyOf": []any{
+		map[string]any{"type": "string"},
+		map[string]any{"type": "array", "items": map[string]any{"anyOf": []any{textBlockSchema(), imageBlockSchema()}}},
+	}}, d)
+}
+
 func handwrittenSchemas() map[string]any {
 	return map[string]any{
 		"ChatCompletionRequest": objSchema(l10n{
@@ -253,10 +291,11 @@ func handwrittenSchemas() map[string]any {
 				"model": strProp(l10n{"Model ID, e.g. `deepseek-ai/DeepSeek-V4-Flash` (see `GET /v1/models`). Rewritten to the channel's upstream model name before forwarding.",
 					"模型 ID，如 `deepseek-ai/DeepSeek-V4-Flash`（见 `GET /v1/models`）。转发前会被改写为渠道的上游模型名。"}),
 				"messages": arrProp(objSchema(l10n{"A chat message (passed through unchanged).", "一条对话消息（原样透传）。"}, []string{"role"}, true, map[string]any{
-					"role":    strProp(l10n{"`system`, `user`, `assistant` or `tool`.", "`system`、`user`、`assistant` 或 `tool`。"}),
-					"content": described(map[string]any{}, l10n{"Message content: a string or an array of content parts.", "消息内容：字符串或内容分段数组。"}),
-				}), l10n{"Conversation messages, passed through unchanged. Their size counts toward the input-token estimate used for pre-authorization.",
-					"对话消息，原样透传；其大小计入预扣时的输入 token 估算。"}),
+					"role": strProp(l10n{"`system`, `user`, `assistant` or `tool`.", "`system`、`user`、`assistant` 或 `tool`。"}),
+					"content": described(map[string]any{}, l10n{"Message content: a string or an array of content parts, e.g. `{\"type\": \"text\", \"text\": \"...\"}` and `{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://... or data:image/png;base64,...\"}}` (images need a model with the `vision` capability).",
+						"消息内容：字符串或内容分段数组，如 `{\"type\": \"text\", \"text\": \"...\"}` 与 `{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://... 或 data:image/png;base64,...\"}}`（图片需要具备 `vision` 能力的模型）。"}),
+				}), l10n{"Conversation messages, passed through unchanged. Their text size counts toward the input-token estimate used for pre-authorization; each image counts as a fixed 1,500 tokens.",
+					"对话消息，原样透传；文本大小计入预扣时的输入 token 估算，每张图片按固定 1,500 token 估算。"}),
 				"stream": boolProp(l10n{"If `true`, the response is a `text/event-stream` of `chat.completion.chunk` events. The model's channel must support streaming.",
 					"为 `true` 时以 `text/event-stream` 返回 `chat.completion.chunk` 事件流；渠道需支持流式。"}),
 				"stream_options": objSchema(l10n{"Streaming options.", "流式选项。"}, nil, true, map[string]any{
@@ -325,8 +364,8 @@ func handwrittenSchemas() map[string]any {
 				}),
 			}),
 		"MessageRequest": objSchema(l10n{
-			"Anthropic Messages API request (text only). The request is translated to an OpenAI chat completion internally: only the fields below (plus `temperature`, `top_p` and `stop_sequences`) are carried over; other fields are ignored.",
-			"Anthropic Messages API 请求（仅文本）。网关在内部把它转译为 OpenAI 对话补全：只保留下列字段（以及 `temperature`、`top_p`、`stop_sequences`），其他字段会被忽略。"},
+			"Anthropic Messages API request (text and images). The request is translated to an OpenAI chat completion internally: only the fields below (plus `temperature`, `top_p` and `stop_sequences`) are carried over; other fields are ignored.",
+			"Anthropic Messages API 请求（文本与图片）。网关在内部把它转译为 OpenAI 对话补全：只保留下列字段（以及 `temperature`、`top_p`、`stop_sequences`），其他字段会被忽略。"},
 			[]string{"model", "messages"}, true, map[string]any{
 				"model": strProp(l10n{"Model ID, e.g. `deepseek-ai/DeepSeek-V4-Flash`. Any chat model works, not only Claude models.",
 					"模型 ID，如 `deepseek-ai/DeepSeek-V4-Flash`。任何对话模型都可以，不限于 Claude。"}),
@@ -335,8 +374,84 @@ func handwrittenSchemas() map[string]any {
 				"system": anthropicTextContent(l10n{"System prompt: a string or an array of `text` blocks.", "系统提示词：字符串或 `text` 块数组。"}),
 				"messages": arrProp(objSchema(l10n{"A conversation turn.", "一轮对话。"}, []string{"role", "content"}, true, map[string]any{
 					"role":    strProp(l10n{"`user` or `assistant`.", "`user` 或 `assistant`。"}),
-					"content": anthropicTextContent(l10n{"A string or an array of `text` blocks; non-text blocks are ignored.", "字符串或 `text` 块数组；非文本块会被忽略。"}),
+					"content": anthropicMessageContent(l10n{"A string or an array of `text` and `image` blocks (images need a model with the `vision` capability); other block types are ignored.", "字符串，或 `text` 与 `image` 块组成的数组（图片需要具备 `vision` 能力的模型）；其他类型的块会被忽略。"}),
 				}), l10n{"Conversation turns.", "对话轮次。"}),
+			}),
+		"RerankRequest": objSchema(l10n{
+			"Rerank request (Cohere / Jina / SiliconFlow style). Only `model` is rewritten; all other fields are passed through.",
+			"重排序请求（Cohere / Jina / SiliconFlow 风格）。只改写 `model`，其余字段原样透传。"},
+			[]string{"model", "query", "documents"}, true, map[string]any{
+				"model": strProp(l10n{"ID of a `rerank`-type model.", "`rerank` 类型的模型 ID。"}),
+				"query": strProp(l10n{"The search query.", "查询语句。"}),
+				"documents": described(map[string]any{"type": "array", "minItems": 1, "maxItems": 1000, "items": map[string]any{}},
+					l10n{"Candidate documents (strings, or objects as supported by the model), 1 to 1000 items.", "候选文档（字符串，或模型支持的对象形式），1–1000 条。"}),
+				"top_n":            intProp(l10n{"Return only the top N results.", "只返回前 N 条结果。"}),
+				"return_documents": boolProp(l10n{"Whether each result includes the document text.", "结果中是否附带文档原文。"}),
+			}),
+		"RerankResponse": objSchema(l10n{
+			"Rerank results, sorted by `relevance_score` descending. The upstream response is passed through; `id` and `model` are rewritten.",
+			"重排序结果，按 `relevance_score` 降序。上游响应原样透传，改写 `id` 与 `model`。"},
+			[]string{"id", "model", "results"}, true, map[string]any{
+				"id":    strProp(l10n{"The request ID.", "请求 ID。"}),
+				"model": strProp(l10n{"The model ID you requested.", "你请求的模型 ID。"}),
+				"results": arrProp(objSchema(l10n{"One ranked document.", "一条排序结果。"}, nil, true, map[string]any{
+					"index":           intProp(l10n{"Index into `documents`.", "在 `documents` 中的序号。"}),
+					"relevance_score": described(map[string]any{"type": "number"}, l10n{"Relevance score; higher is more relevant.", "相关性分数，越高越相关。"}),
+					"document":        described(map[string]any{}, l10n{"The document, when `return_documents` is true.", "`return_documents` 为 true 时附带的文档。"}),
+				}), l10n{"Ranked results.", "排序结果。"}),
+				"meta": objSchema(l10n{"Upstream metadata; `meta.billed_units.input_tokens` (or `meta.tokens.input_tokens`) is what gets billed.", "上游元数据；按 `meta.billed_units.input_tokens`（或 `meta.tokens.input_tokens`）计费。"}, nil, true, map[string]any{}),
+			}),
+		"ImageGenerationRequest": objSchema(l10n{
+			"Image generation request. Only `model` is rewritten; all other fields are passed through, so both the OpenAI fields (`n`, `size`) and upstream-native fields (e.g. SiliconFlow's `image_size`, `batch_size`, `num_inference_steps`, `negative_prompt`, `seed`) can be used.",
+			"图像生成请求。只改写 `model`，其余字段原样透传，因此 OpenAI 字段（`n`、`size`）和上游原生字段（如 SiliconFlow 的 `image_size`、`batch_size`、`num_inference_steps`、`negative_prompt`、`seed`）都可以使用。"},
+			[]string{"model", "prompt"}, true, map[string]any{
+				"model":  strProp(l10n{"ID of an `image`-type model.", "`image` 类型的模型 ID。"}),
+				"prompt": strProp(l10n{"Text description of the image.", "图片描述。"}),
+				"n":      described(map[string]any{"type": "integer", "minimum": 1, "maximum": 4}, l10n{"Number of images, 1-4 (default 1). `batch_size` is accepted as an alias.", "生成张数，1–4（默认 1）。也接受 `batch_size`。"}),
+				"size":   strProp(l10n{"Image size such as `1024x1024`; supported values depend on the model.", "图片尺寸，如 `1024x1024`；可选值取决于模型。"}),
+			}),
+		"ImageGenerationResponse": objSchema(l10n{
+			"Generated images (OpenAI shape). Image URLs are temporary — download them promptly (SiliconFlow URLs expire after 1 hour).",
+			"生成的图片（OpenAI 形状）。图片 URL 是临时链接，请及时下载（SiliconFlow 的链接 1 小时后失效）。"},
+			[]string{"id", "model", "created", "data"}, true, map[string]any{
+				"id":      strProp(l10n{"The request ID.", "请求 ID。"}),
+				"model":   strProp(l10n{"The model ID you requested.", "你请求的模型 ID。"}),
+				"created": intProp(l10n{"Unix timestamp (seconds).", "Unix 时间戳（秒）。"}),
+				"data": arrProp(objSchema(l10n{"One image.", "一张图片。"}, nil, true, map[string]any{
+					"url":      strProp(l10n{"Temporary image URL.", "临时图片链接。"}),
+					"b64_json": strProp(l10n{"Base64 image, when the model returns it instead of a URL.", "模型返回 base64 而非链接时的图片数据。"}),
+				}), l10n{"Generated images; billing counts these.", "生成的图片；按条数计费。"}),
+			}),
+		"SpeechRequest": objSchema(l10n{
+			"Speech synthesis request. Only `model` is rewritten (and `voice` may be prefixed, see below); all other fields are passed through.",
+			"语音合成请求。只改写 `model`（`voice` 可能补前缀，见下）；其余字段原样透传。"},
+			[]string{"model", "input", "voice"}, true, map[string]any{
+				"model": strProp(l10n{"ID of an `audio` model with the `tts` capability.", "具备 `tts` 能力的 `audio` 模型 ID。"}),
+				"input": strProp(l10n{"Text to speak, at most 4096 characters. Billed per character.", "要合成的文本，最多 4096 个字符；按字符数计费。"}),
+				"voice": strProp(l10n{"Voice name. For CosyVoice models use a short name such as `alex`, `anna`, `bella`, `benjamin`, `charles`, `claire`, `david` or `diana`; the gateway adds the upstream model prefix.",
+					"音色。CosyVoice 模型使用短音色名，如 `alex`、`anna`、`bella`、`benjamin`、`charles`、`claire`、`david`、`diana`，网关会自动补上上游模型前缀。"}),
+				"response_format": strProp(l10n{"Audio format, e.g. `mp3` (default), `wav`, `opus`, `pcm`.", "音频格式，如 `mp3`（默认）、`wav`、`opus`、`pcm`。"}),
+				"speed":           described(map[string]any{"type": "number"}, l10n{"Speaking speed, e.g. `1.0`.", "语速，如 `1.0`。"}),
+				"stream":          boolProp(l10n{"If `true`, audio bytes are streamed in chunks as they are generated (plain chunked binary, not SSE).", "为 `true` 时边生成边分块返回音频字节（普通分块二进制，不是 SSE）。"}),
+			}),
+		"TranscriptionRequest": objSchema(l10n{
+			"Speech recognition request (`multipart/form-data`). `model` is rewritten; other form fields are passed through.",
+			"语音识别请求（`multipart/form-data`）。改写 `model`，其余表单字段原样透传。"},
+			[]string{"file", "model"}, true, map[string]any{
+				"file":            described(map[string]any{"type": "string", "format": "binary", "contentMediaType": "application/octet-stream"}, l10n{"Audio file: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav or webm; the whole request must stay under 20 MB.", "音频文件：flac、m4a、mp3、mp4、mpeg、mpga、oga、ogg、wav 或 webm；整个请求不能超过 20 MB。"}),
+				"model":           strProp(l10n{"ID of an `audio` model with the `asr` capability.", "具备 `asr` 能力的 `audio` 模型 ID。"}),
+				"language":        strProp(l10n{"Optional language hint, e.g. `zh`, `en`.", "可选的语言提示，如 `zh`、`en`。"}),
+				"response_format": strProp(l10n{"`json` (default), `text`, `srt`, `verbose_json` or `vtt`, if the model supports it.", "`json`（默认）、`text`、`srt`、`verbose_json` 或 `vtt`（取决于模型是否支持）。"}),
+			}),
+		"TranscriptionResponse": objSchema(l10n{
+			"Transcription result, passed through from the upstream unchanged.",
+			"识别结果，原样透传上游响应。"},
+			[]string{"text"}, true, map[string]any{
+				"text": strProp(l10n{"Recognized text.", "识别出的文本。"}),
+				"usage": objSchema(l10n{"Audio duration reported by the upstream; billing uses `seconds`.", "上游报告的音频时长，按 `seconds` 计费。"}, nil, true, map[string]any{
+					"type":    strProp(l10n{"`duration`.", "`duration`。"}),
+					"seconds": described(map[string]any{"type": "number"}, l10n{"Audio duration in seconds.", "音频时长（秒）。"}),
+				}),
 			}),
 		"MessageResponse": objSchema(l10n{
 			"Anthropic Messages API response with a single text block.",
@@ -376,28 +491,42 @@ type gatewayOperation struct {
 	errors                  []string          // 可能返回的错误码
 	errMessages             map[string]string // 错误示例里的 message（按错误码覆盖登记表里的默认值）
 	extraStreamDesc         *l10n             // text/event-stream 内容的说明
+	reqContentType          string            // 请求体类型，默认 application/json；multipart/form-data 时 reqExample 是表单字段示例
+	binaryResp              *binaryResponse   // 非空时 200 响应是二进制（如音频），不输出 JSON
+}
+
+// binaryResponse 描述二进制成功响应（语音合成返回的音频）。
+type binaryResponse struct {
+	contentType string
+	desc        l10n
 }
 
 var (
 	relayErrors = []string{"invalid_request", "content_filtered", "invalid_api_key", "insufficient_balance",
-		"account_suspended", "model_not_allowed", "model_not_found", "rate_limit_exceeded",
+		"account_suspended", "model_not_allowed", "model_not_found", "request_too_large", "rate_limit_exceeded",
 		"concurrency_limit_exceeded", "internal_error", "upstream_error", "no_available_channel"}
+	// mediaRateLimit 是图像 / 语音端点的限流说明：不计 TPM。
+	mediaRateLimit = l10n{
+		"Per API key, when configured on the key: requests per minute (RPM) and concurrent requests. Not counted toward TPM.",
+		"按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）与并发请求数。不计入 TPM。"}
 	relayRateLimit = l10n{
 		"Per API key, when configured on the key: requests per minute (RPM), tokens per minute (TPM; counts the estimated input tokens plus the reserved output tokens) and concurrent requests. Unset limits are unlimited.",
 		"按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）、每分钟 token 数（TPM，按预估输入 token 加预留输出 token 计）、并发请求数。未配置即不限制。"}
 )
 
 const chatDescEN = "OpenAI-compatible chat completion. The gateway checks `model`, the key's model allow-list, rate limits and balance, then forwards the body to an upstream channel. Only `model` is rewritten (to the channel's upstream model name); all other fields are passed through. In the response, `model` is the model ID you requested and `id` is the request ID (same as `X-Request-Id`).\n\n" +
-	"**Billing.** Before forwarding, an estimated cost is frozen in your wallet: input tokens are estimated from the body size (about 4 bytes per token), output tokens = min(`max_tokens`/`max_completion_tokens`, model max output, 8192). After the call the real cost is settled from the upstream `usage` and the rest is released. If the upstream returns no usage, a non-streaming call is billed at the estimate. Failed calls are not charged.\n\n" +
+	"**Billing.** Before forwarding, an estimated cost is frozen in your wallet: input tokens are estimated from the text size of the body (about 4 bytes per token; each image counts as a fixed 1,500 tokens), output tokens = min(`max_tokens`/`max_completion_tokens`, model max output, 8192). After the call the real cost is settled from the upstream `usage` and the rest is released. If the upstream returns no usage, a non-streaming call is billed at the estimate. Failed calls are not charged.\n\n" +
 	"**Failover.** If an upstream call fails before anything is sent to you, the gateway retries on another key or channel (up to 3 attempts within 90 s). Once a stream has started there is no retry.\n\n" +
 	"**Streaming.** With `stream: true` the response is `text/event-stream` carrying `chat.completion.chunk` events (`data: {...}`). The gateway always asks the upstream for usage (for billing), but forwards the usage-only chunk (empty `choices`) only if you set `stream_options.include_usage: true` yourself. The upstream `data: [DONE]` line is not forwarded: the stream ends when the connection closes. If you disconnect mid-stream before usage arrives, output is billed by estimating tokens from the bytes already forwarded to you (never more than the frozen estimate).\n\n" +
-	"**Routing.** Requests with `stream: true`, non-empty `tools`, or `response_format.type` of `json_schema`/`json_object` only go to channels with that capability, and the estimated input plus reserved output must fit the channel's context window; otherwise `503 no_available_channel`."
+	"**Images.** Put `image_url` parts (an `https://` URL or a `data:image/...;base64,` URL) in `messages[].content` and use a model whose `capabilities` include `vision`. The whole body must stay under 20 MB (`413 request_too_large`).\n\n" +
+	"**Routing.** Requests with `stream: true`, non-empty `tools`, or `response_format.type` of `json_schema`/`json_object` only go to channels with that capability, and the estimated input plus reserved output must fit the channel's context window; otherwise `503 no_available_channel`. The model must be a `chat` model (`404 model_not_found` otherwise)."
 
 const chatDescZH = "OpenAI 兼容的对话补全。网关校验 `model`、Key 的模型白名单、限流与余额后，把请求体转发给上游渠道。只改写 `model`（改为渠道的上游模型名），其余字段原样透传。响应中 `model` 是你请求的模型 ID，`id` 是请求 ID（与 `X-Request-Id` 相同）。\n\n" +
-	"**计费。** 转发前先在钱包里冻结一笔预估费用：输入 token 按请求体大小估算（约 4 字节 1 个 token），输出 token = min(`max_tokens`/`max_completion_tokens`、模型最大输出、8192)。调用结束后按上游返回的 `usage` 结算实际费用并释放剩余冻结。上游没有返回 usage 时，非流式请求按预估值计费。失败的请求不计费。\n\n" +
+	"**计费。** 转发前先在钱包里冻结一笔预估费用：输入 token 按请求体中文本的大小估算（约 4 字节 1 个 token，每张图片按固定 1,500 token 计），输出 token = min(`max_tokens`/`max_completion_tokens`、模型最大输出、8192)。调用结束后按上游返回的 `usage` 结算实际费用并释放剩余冻结。上游没有返回 usage 时，非流式请求按预估值计费。失败的请求不计费。\n\n" +
 	"**故障转移。** 在向你写出任何内容之前上游失败时，网关会换 Key 或换渠道重试（90 秒内最多 3 次）。流式输出一旦开始就不再重试。\n\n" +
 	"**流式。** `stream: true` 时以 `text/event-stream` 返回 `chat.completion.chunk` 事件（`data: {...}`）。网关为计费总会向上游索取 usage，但只有你自己设置了 `stream_options.include_usage: true`，才会把那个只含 usage 的 chunk（`choices` 为空）转发给你。上游的 `data: [DONE]` 不会转发：连接关闭即表示流结束。若你在收到 usage 之前中途断开，输出按已转发给你的字节数估算计费（不超过冻结的预估值）。\n\n" +
-	"**路由。** `stream: true`、非空 `tools`、或 `response_format.type` 为 `json_schema`/`json_object` 的请求只会路由到具备相应能力的渠道，且预估输入加预留输出不能超过渠道的上下文窗口；否则返回 `503 no_available_channel`。"
+	"**图片。** 在 `messages[].content` 中放入 `image_url` 分段（`https://` 链接或 `data:image/...;base64,` 数据），并使用 `capabilities` 含 `vision` 的模型。整个请求体不能超过 20 MB（否则 `413 request_too_large`）。\n\n" +
+	"**路由。** `stream: true`、非空 `tools`、或 `response_format.type` 为 `json_schema`/`json_object` 的请求只会路由到具备相应能力的渠道，且预估输入加预留输出不能超过渠道的上下文窗口；否则返回 `503 no_available_channel`。模型必须是 `chat` 类型（否则 `404 model_not_found`）。"
 
 func gatewayOperations() ([]gatewayOperation, error) {
 	catalogExample := catalogListResponse{Object: "list", Data: []catalogModel{
@@ -429,7 +558,7 @@ func gatewayOperations() ([]gatewayOperation, error) {
 	}}
 	usageExample := usageResponse{
 		Wallet: usageWallet{CashBalanceMicro: 5_000_000, BonusBalanceMicro: 1_000_000, FrozenMicro: 0},
-		Usage:  usageTotals{TotalRequests: 12, TotalInputTokens: 3400, TotalOutputTokens: 1800, TotalChargedAmountMicro: 10_500},
+		Usage:  usageTotals{TotalRequests: 12, TotalInputTokens: 3400, TotalOutputTokens: 1800, TotalImages: 2, TotalInputChars: 120, TotalAudioMillis: 3000, TotalChargedAmountMicro: 10_500},
 	}
 	chatResp, err := rawJSON(`{"id":"` + exampleRequestID + `","object":"chat.completion","created":1759305600,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"message":{"role":"assistant","content":"你好！有什么可以帮你的？"},"finish_reason":"stop"}],"usage":{"prompt_tokens":18,"completion_tokens":9,"total_tokens":27}}`)
 	if err != nil {
@@ -440,6 +569,18 @@ func gatewayOperations() ([]gatewayOperation, error) {
 		return nil, err
 	}
 	msgResp, err := rawJSON(`{"id":"` + exampleRequestID + `","type":"message","role":"assistant","content":[{"type":"text","text":"你好！有什么可以帮你的？"}],"model":"deepseek-ai/DeepSeek-V4-Flash","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":18,"output_tokens":9}}`)
+	if err != nil {
+		return nil, err
+	}
+	rerankResp, err := rawJSON(`{"id":"` + exampleRequestID + `","model":"BAAI/bge-reranker-v2-m3","results":[{"index":1,"relevance_score":0.9871},{"index":2,"relevance_score":0.0213}],"meta":{"billed_units":{"input_tokens":46}}}`)
+	if err != nil {
+		return nil, err
+	}
+	imageResp, err := rawJSON(`{"id":"` + exampleRequestID + `","model":"Kwai-Kolors/Kolors","created":1759305600,"data":[{"url":"https://example-cdn.siliconflow.cn/temporary/abc123.png"}]}`)
+	if err != nil {
+		return nil, err
+	}
+	transcriptionResp, err := rawJSON(`{"text":"今天天气很好，我们一起去公园散步吧。","usage":{"type":"duration","seconds":3}}`)
 	if err != nil {
 		return nil, err
 	}
@@ -526,12 +667,12 @@ func gatewayOperations() ([]gatewayOperation, error) {
 			desc: l10n{
 				"Anthropic Messages API–compatible entry point. The request is translated to an OpenAI chat completion internally and goes through exactly the same authentication, rate limiting, routing, failover and billing as `/v1/chat/completions`; any chat model can be used.\n\n" +
 					"- Authenticate with `Authorization: Bearer <key>`; the `x-api-key` header is not accepted.\n" +
-					"- Text only: `system` and each message's `content` may be a string or an array of `text` blocks; other block types are ignored.\n" +
+					"- `system` may be a string or an array of `text` blocks; each message's `content` may be a string or an array of `text` and `image` blocks (`source.type` `base64` or `url`; needs a `vision` model). Other block types are ignored.\n" +
 					"- The response is a `message` with a single `text` block; `id` is the request ID.\n" +
 					"- Errors use the gateway's OpenAI-style format (see `Error`), not Anthropic's `{\"type\": \"error\"}` format.",
 				"兼容 Anthropic Messages API 的入口。请求在内部转译为 OpenAI 对话补全，鉴权、限流、路由、故障转移和计费与 `/v1/chat/completions` 完全一致；可使用任何对话模型。\n\n" +
 					"- 用 `Authorization: Bearer <key>` 鉴权，不支持 `x-api-key` 头。\n" +
-					"- 仅支持文本：`system` 与每条消息的 `content` 可以是字符串或 `text` 块数组，其他类型的块会被忽略。\n" +
+					"- `system` 可以是字符串或 `text` 块数组；每条消息的 `content` 可以是字符串，或 `text` 与 `image` 块组成的数组（`source.type` 为 `base64` 或 `url`，需要具备 `vision` 能力的模型）。其他类型的块会被忽略。\n" +
 					"- 响应是只含一个 `text` 块的 `message`，`id` 为请求 ID。\n" +
 					"- 错误沿用网关的 OpenAI 风格格式（见 `Error`），不是 Anthropic 的 `{\"type\": \"error\"}` 格式。"},
 			rateLimit:  &relayRateLimit,
@@ -540,10 +681,66 @@ func gatewayOperations() ([]gatewayOperation, error) {
 			respSchema: schemaRef("MessageResponse"), respExample: msgResp,
 			errors: relayErrors,
 		},
+		{
+			method: http.MethodPost, path: "/v1/rerank", opID: "createRerank", tag: "Rerank", auth: "api_key", billable: true,
+			summary: l10n{"Rerank documents", "文档重排序"},
+			desc: l10n{
+				"Scores `documents` by relevance to `query` and returns them sorted, as used in the second stage of RAG retrieval. `model` must be a `rerank`-type model. Same authentication, rate limiting, pre-authorization, failover and settlement as `/v1/embeddings`. Billed by input tokens (`input` meter): the upstream's `meta.billed_units.input_tokens`, falling back to `meta.tokens.input_tokens` or `usage.total_tokens`, and to an estimate from the body size if none is returned.",
+				"按与 `query` 的相关性给 `documents` 打分并排序返回，常用于 RAG 检索的第二阶段。`model` 必须是 `rerank` 类型的模型。鉴权、限流、预扣、故障转移和结算与 `/v1/embeddings` 相同。按输入 token 计费（`input` 计量项）：取上游的 `meta.billed_units.input_tokens`，其次 `meta.tokens.input_tokens` 或 `usage.total_tokens`，都没有时按请求体大小估算。"},
+			rateLimit:  &relayRateLimit,
+			reqSchema:  schemaRef("RerankRequest"),
+			reqExample: `{"model":"BAAI/bge-reranker-v2-m3","query":"苹果公司发布了什么新手机？","documents":["今天北京天气晴朗。","Apple 在秋季发布会上推出了新款 iPhone。","苹果富含维生素。"],"top_n":2}`,
+			respSchema: schemaRef("RerankResponse"), respExample: rerankResp,
+			errors: relayErrors,
+		},
+		{
+			method: http.MethodPost, path: "/v1/images/generations", opID: "createImage", tag: "Images", auth: "api_key", billable: true,
+			summary: l10n{"Generate images", "生成图像"},
+			desc: l10n{
+				"Generates images from a text prompt. `model` must be an `image`-type model. The body is passed through (only `model` is rewritten), so OpenAI fields and upstream-native fields both work. The response is normalized to the OpenAI shape (`data[].url`); upstreams that only return `images[]` get a `data` copy, and other upstream fields are kept.\n\n" +
+					"**Billing.** Per generated image (`image` meter). The pre-authorized amount is `n` (or `batch_size`, default 1, max 4) × the image price; the final charge counts the images actually returned. If no image is returned the call fails with `502 upstream_error` and is not charged.\n\n" +
+					"**URLs are temporary.** Download images promptly; upstream URLs expire (SiliconFlow: 1 hour). Generation usually takes 5-60 s; set a client timeout of at least 120 s.",
+				"根据文本描述生成图像。`model` 必须是 `image` 类型的模型。请求体原样透传（只改写 `model`），OpenAI 字段与上游原生字段都可以使用。响应统一为 OpenAI 形状（`data[].url`）：只返回 `images[]` 的上游会补一份 `data`，其他上游字段保留。\n\n" +
+					"**计费。** 按生成的张数计费（`image` 计量项）。预扣金额 = `n`（或 `batch_size`，默认 1，最多 4）× 单张价格；最终按实际返回的张数结算。一张都没有生成时返回 `502 upstream_error`，不计费。\n\n" +
+					"**链接是临时的。** 请及时下载图片，上游链接会过期（SiliconFlow 为 1 小时）。生成通常需要 5–60 秒，客户端超时建议不少于 120 秒。"},
+			rateLimit:  &mediaRateLimit,
+			reqSchema:  schemaRef("ImageGenerationRequest"),
+			reqExample: `{"model":"Kwai-Kolors/Kolors","prompt":"一只戴着红色围巾的橘猫，水彩风格","n":1,"size":"1024x1024"}`,
+			respSchema: schemaRef("ImageGenerationResponse"), respExample: imageResp,
+			errors: relayErrors,
+		},
+		{
+			method: http.MethodPost, path: "/v1/audio/speech", opID: "createSpeech", tag: "Audio", auth: "api_key", billable: true,
+			summary: l10n{"Generate speech", "语音合成"},
+			desc: l10n{
+				"Converts text to speech and returns the audio file. `model` must be an `audio` model with the `tts` capability. The body is passed through (only `model` is rewritten; short `voice` names are prefixed with the upstream model name where the upstream requires it).\n\n" +
+					"**Response.** Binary audio with the upstream's `Content-Type` (e.g. `audio/mpeg`). With `stream: true` the audio is sent in chunks as it is generated — plain chunked binary, not SSE.\n\n" +
+					"**Billing.** Per input character (`input_char` meter, counted as Unicode characters of `input`). The amount is known up front, so it is also charged in full if you disconnect mid-stream.",
+				"把文本合成为语音并返回音频文件。`model` 必须是具备 `tts` 能力的 `audio` 模型。请求体原样透传（只改写 `model`；上游要求时，短音色名会自动补上上游模型前缀）。\n\n" +
+					"**响应。** 二进制音频，`Content-Type` 与上游一致（如 `audio/mpeg`）。`stream: true` 时边生成边分块返回——是普通的分块二进制，不是 SSE。\n\n" +
+					"**计费。** 按输入字符数计费（`input_char` 计量项，按 `input` 的 Unicode 字符计）。费用在请求时就确定，流式中途断开也按全额计费。"},
+			rateLimit:  &mediaRateLimit,
+			reqSchema:  schemaRef("SpeechRequest"),
+			reqExample: `{"model":"FunAudioLLM/CosyVoice2-0.5B","input":"今天天气很好，我们一起去公园散步吧。","voice":"alex","response_format":"mp3"}`,
+			binaryResp: &binaryResponse{contentType: "audio/mpeg", desc: l10n{"The audio file (format per `response_format`).", "音频文件（格式由 `response_format` 决定）。"}},
+			errors:     relayErrors,
+		},
+		{
+			method: http.MethodPost, path: "/v1/audio/transcriptions", opID: "createTranscription", tag: "Audio", auth: "api_key", billable: true,
+			summary: l10n{"Transcribe audio", "语音识别"},
+			desc: l10n{
+				"Transcribes an uploaded audio file to text. Send `multipart/form-data` with `file` and `model` (an `audio` model with the `asr` capability); other form fields are passed through. The whole request must stay under 20 MB. The upstream response is returned unchanged (`text/plain` for `response_format` `text`/`srt`/`vtt`).\n\n" +
+					"**Billing.** By audio duration (`audio_second` meter), taken from the upstream's `usage.seconds` or `duration`; if the upstream reports none, WAV files are measured from the header and other formats are estimated from the file size. Models may also charge a per-request fee (`request` meter).",
+				"把上传的音频文件识别为文本。以 `multipart/form-data` 发送 `file` 与 `model`（具备 `asr` 能力的 `audio` 模型），其余表单字段原样透传。整个请求不能超过 20 MB。上游响应原样返回（`response_format` 为 `text`/`srt`/`vtt` 时是 `text/plain`）。\n\n" +
+					"**计费。** 按音频时长计费（`audio_second` 计量项），取上游返回的 `usage.seconds` 或 `duration`；上游没有返回时，WAV 文件按文件头计算，其他格式按文件大小估算。模型也可能按次收取费用（`request` 计量项）。"},
+			rateLimit:      &mediaRateLimit,
+			reqSchema:      schemaRef("TranscriptionRequest"),
+			reqContentType: "multipart/form-data",
+			reqExample:     `{"model":"FunAudioLLM/SenseVoiceSmall","language":"zh"}`,
+			respSchema:     schemaRef("TranscriptionResponse"), respExample: transcriptionResp,
+			errors: append(append([]string{}, relayErrors...), "unsupported_media_type"),
+		},
 		notImpl(http.MethodPost, "/v1/completions", "createCompletion", "completions", l10n{"Create a legacy completion (not implemented)", "旧式文本补全（未实现）"}),
-		notImpl(http.MethodPost, "/v1/images/generations", "createImage", "images.generations", l10n{"Generate images (not implemented)", "图像生成（未实现）"}),
-		notImpl(http.MethodPost, "/v1/audio/transcriptions", "createTranscription", "audio.transcriptions", l10n{"Transcribe audio (not implemented)", "语音转写（未实现）"}),
-		notImpl(http.MethodPost, "/v1/audio/speech", "createSpeech", "audio.speech", l10n{"Generate speech (not implemented)", "语音合成（未实现）"}),
 	}
 	pub, err := publicOperations()
 	if err != nil {
@@ -579,16 +776,18 @@ func errorExample(c gatewayErrorCode) (json.RawMessage, error) {
 }
 
 var statusTextZH = map[int]string{
-	http.StatusOK:                  "成功",
-	http.StatusBadRequest:          "请求无效",
-	http.StatusUnauthorized:        "未认证",
-	http.StatusPaymentRequired:     "余额不足",
-	http.StatusForbidden:           "无权限",
-	http.StatusNotFound:            "未找到",
-	http.StatusTooManyRequests:     "请求过多",
-	http.StatusInternalServerError: "服务器内部错误",
-	http.StatusBadGateway:          "上游错误",
-	http.StatusServiceUnavailable:  "服务不可用",
+	http.StatusOK:                    "成功",
+	http.StatusBadRequest:            "请求无效",
+	http.StatusUnauthorized:          "未认证",
+	http.StatusPaymentRequired:       "余额不足",
+	http.StatusForbidden:             "无权限",
+	http.StatusNotFound:              "未找到",
+	http.StatusRequestEntityTooLarge: "请求体过大",
+	http.StatusUnsupportedMediaType:  "不支持的媒体类型",
+	http.StatusTooManyRequests:       "请求过多",
+	http.StatusInternalServerError:   "服务器内部错误",
+	http.StatusBadGateway:            "上游错误",
+	http.StatusServiceUnavailable:    "服务不可用",
 }
 
 func responseDesc(status int) (string, map[string]any, error) {
@@ -657,14 +856,24 @@ func buildGatewayOpenAPI() (map[string]any, error) {
 				if err != nil {
 					return nil, fmt.Errorf("%s request example: %w", o.opID, err)
 				}
+				ct := o.reqContentType
+				if ct == "" {
+					ct = "application/json"
+				}
 				op["requestBody"] = map[string]any{"required": true, "content": map[string]any{
-					"application/json": map[string]any{"schema": o.reqSchema, "example": ex}}}
+					ct: map[string]any{"schema": o.reqSchema, "example": ex}}}
 			}
-			respSchema := o.respSchema
-			if _, isMap := respSchema.(map[string]any); !isMap {
-				respSchema = g.schema(reflect.TypeOf(respSchema))
+			var content map[string]any
+			if o.binaryResp != nil {
+				content = map[string]any{o.binaryResp.contentType: map[string]any{
+					"schema": described(map[string]any{"type": "string", "format": "binary"}, o.binaryResp.desc)}}
+			} else {
+				respSchema := o.respSchema
+				if _, isMap := respSchema.(map[string]any); !isMap {
+					respSchema = g.schema(reflect.TypeOf(respSchema))
+				}
+				content = map[string]any{"application/json": map[string]any{"schema": respSchema, "example": o.respExample}}
 			}
-			content := map[string]any{"application/json": map[string]any{"schema": respSchema, "example": o.respExample}}
 			if o.streamExample != "" {
 				content["text/event-stream"] = map[string]any{
 					"schema":  described(map[string]any{"type": "string"}, *o.extraStreamDesc),
@@ -778,6 +987,9 @@ func buildGatewayOpenAPI() (map[string]any, error) {
 		{"Chat", l10n{"OpenAI-compatible chat completions.", "OpenAI 兼容的对话补全。"}},
 		{"Embeddings", l10n{"OpenAI-compatible embeddings.", "OpenAI 兼容的向量嵌入。"}},
 		{"Anthropic", l10n{"Anthropic Messages API compatibility.", "Anthropic Messages API 兼容接口。"}},
+		{"Rerank", l10n{"Document reranking.", "文档重排序。"}},
+		{"Images", l10n{"Image generation.", "图像生成。"}},
+		{"Audio", l10n{"Speech synthesis and speech recognition.", "语音合成与语音识别。"}},
 		publicTagDocs[0], publicTagDocs[1],
 		{"Not implemented", l10n{"Reserved endpoints that return `503 not_implemented`.", "预留接口，返回 `503 not_implemented`。"}},
 	}

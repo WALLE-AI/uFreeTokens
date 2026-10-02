@@ -1,7 +1,7 @@
 import { describeError } from '../../../api/errors';
 import { useState } from 'react';
 import { CheckCircle2, ExternalLink, Eye, EyeOff, Info, Lock, Plug, XCircle } from 'lucide-react';
-import { addProviderKey, createProvider, createProviderAccount, getProvider, listProviders, listUpstreamModels } from '../../../api/catalog';
+import { listDialectPresets, addProviderKey, createProvider, createProviderAccount, getProvider, listProviders, listUpstreamModels } from '../../../api/catalog';
 import { Button, ConfirmDialog, DataState, Field, IconButton, Input, ProviderIcon, ProviderPresetPicker, RemoteSelect, SegmentedToggle, Select } from '../../../components/ui';
 import { PROVIDER_PRESETS, findPreset, hasPlaceholder, type ProviderPreset } from '../../../data/providerPresets';
 import { useAsync } from '../../../hooks/useAsync';
@@ -240,11 +240,15 @@ export function StepAccount({ state, update, goto, secret, setSecret }: StepProp
     let accountId = mode === 'new' ? a.createdId : a.existingId ? Number(a.existingId) : null;
     if (mode === 'new' && accountId === null) {
       if (!secret.trim()) throw new Error('新建上游账号需要至少一把密钥');
+      // 供应商预设有同名的内置方言预设时一并绑定（路径、默认参数、错误识别等差异由网关消化）
+      const dialectName = state.provider.presetId || state.provider.code;
+      const presets = await listDialectPresets().catch(() => ({ data: [] as { name: string }[] }));
       const created = await createProviderAccount({
         provider_id: providerId!,
         name: a.name.trim(),
         base_url: a.baseURL.trim(),
         cost_multiplier: a.multiplier.trim(),
+        dialect: presets.data.some((p) => p.name === dialectName) ? { preset: dialectName } : undefined,
       });
       accountId = created.id;
       update((s) => ({ ...s, account: { ...s.account, mode: 'new', createdId: created.id } }));

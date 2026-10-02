@@ -3,7 +3,7 @@ title: OpenAI SDK
 description: Use the official OpenAI Python / Node.js SDKs with uFreeTokens — setup, streaming, embeddings and error handling.
 section: integrations
 order: 10
-translatedFrom: aa7a8250f3c6
+translatedFrom: 8395d8ab6b1c
 ---
 
 ## Configure the client
@@ -168,6 +168,65 @@ console.log(resp.usage);
 </CodeTabs>
 
 Passing a model that is not of type `embedding` returns `404 model_not_found`. See [Embeddings](/docs/en/embeddings) for details.
+
+## Vision, image generation and audio
+
+The SDK's other methods work as-is, as long as the model is of the matching type (see [Model types and endpoints](/docs/en/models#model-types-and-endpoints)):
+
+<CodeTabs>
+
+```python title="Python"
+# Vision: image_url parts, see "Vision"
+client.chat.completions.create(
+    model=os.environ["VISION_MODEL"],
+    messages=[{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+        {"type": "text", "text": "What is in the picture?"},
+    ]}],
+)
+
+# Image generation
+img = client.images.generate(model="Kwai-Kolors/Kolors", prompt="An orange cat, watercolor style", size="1024x1024")
+print(img.data[0].url)  # Temporary link, download it promptly
+
+# Speech synthesis
+with client.audio.speech.with_streaming_response.create(
+    model="FunAudioLLM/CosyVoice2-0.5B", input="Hello, welcome to uFreeTokens.", voice="alex",
+) as resp:
+    resp.stream_to_file("hello.mp3")
+
+# Speech recognition
+with open("hello.mp3", "rb") as f:
+    print(client.audio.transcriptions.create(model="FunAudioLLM/SenseVoiceSmall", file=f).text)
+```
+
+```ts title="Node.js"
+import { createReadStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
+
+// Image generation
+const img = await client.images.generate({ model: "Kwai-Kolors/Kolors", prompt: "An orange cat, watercolor style", size: "1024x1024" });
+console.log(img.data[0].url); // Temporary link, download it promptly
+
+// Speech synthesis
+const speech = await client.audio.speech.create({
+  model: "FunAudioLLM/CosyVoice2-0.5B",
+  input: "Hello, welcome to uFreeTokens.",
+  voice: "alex",
+});
+await writeFile("hello.mp3", Buffer.from(await speech.arrayBuffer()));
+
+// Speech recognition
+const text = await client.audio.transcriptions.create({
+  model: "FunAudioLLM/SenseVoiceSmall",
+  file: createReadStream("hello.mp3"),
+});
+console.log(text.text);
+```
+
+</CodeTabs>
+
+The OpenAI SDK has no rerank method; send plain HTTP requests to `/v1/rerank`. See [Rerank](/docs/en/rerank).
 
 ## List available models
 

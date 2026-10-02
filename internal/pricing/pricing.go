@@ -21,6 +21,10 @@ const (
 	MeterOutput          Meter = "output"
 	MeterOutputReasoning Meter = "output_reasoning"
 	MeterRequest         Meter = "request" // 按次计费（如联网搜索）
+	// 多模态计量项（迁移 00031）：图像生成按张、语音合成按输入字符、语音识别按音频时长。
+	MeterImage       Meter = "image"
+	MeterInputChar   Meter = "input_char"
+	MeterAudioSecond Meter = "audio_second"
 )
 
 // Unit 与 price_components.unit 的取值一致。
@@ -31,6 +35,7 @@ const (
 	UnitPerRequest  Unit = "per_request"
 	UnitPerImage    Unit = "per_image"
 	UnitPerSecond   Unit = "per_second"
+	UnitPer1MChars  Unit = "per_1m_chars" // 每百万字符（Unicode 码点），语音合成用
 )
 
 // Component 对应一条 price_components 记录。
@@ -66,6 +71,9 @@ type Usage struct {
 	OutputTokens     int64
 	ReasoningTokens  int64
 	RequestCount     int64 // 通常为 0 或 1，用于按次计费的 meter（如 request_web_search）
+	Images           int64 // 生成的图片张数（image）
+	InputChars       int64 // 语音合成的输入字符数（input_char）
+	AudioMillis      int64 // 语音识别的音频时长，毫秒（audio_second 按秒计价，允许小数秒）
 }
 
 // meterQuantity 把 Usage 拆成 (meter, 数量) 序列。ReasoningTokens 只有在价格表里
@@ -74,18 +82,22 @@ type Usage struct {
 // 的口径与是否存在 output_reasoning 分量匹配，适配器层负责，见 §7.4）。
 func meterQuantities(u Usage) []struct {
 	Meter Meter
-	Qty   int64
+	Qty   decimal.Decimal
 } {
 	return []struct {
 		Meter Meter
-		Qty   int64
+		Qty   decimal.Decimal
 	}{
-		{MeterInput, u.InputTokens},
-		{MeterInputCacheRead, u.CacheReadTokens},
-		{MeterInputCacheWrite, u.CacheWriteTokens},
-		{MeterOutput, u.OutputTokens},
-		{MeterOutputReasoning, u.ReasoningTokens},
-		{MeterRequest, u.RequestCount},
+		{MeterInput, decimal.NewFromInt(u.InputTokens)},
+		{MeterInputCacheRead, decimal.NewFromInt(u.CacheReadTokens)},
+		{MeterInputCacheWrite, decimal.NewFromInt(u.CacheWriteTokens)},
+		{MeterOutput, decimal.NewFromInt(u.OutputTokens)},
+		{MeterOutputReasoning, decimal.NewFromInt(u.ReasoningTokens)},
+		{MeterRequest, decimal.NewFromInt(u.RequestCount)},
+		{MeterImage, decimal.NewFromInt(u.Images)},
+		{MeterInputChar, decimal.NewFromInt(u.InputChars)},
+		// 按毫秒折算成小数秒，避免按整秒向上取整导致系统性多收。
+		{MeterAudioSecond, decimal.New(u.AudioMillis, -3)},
 	}
 }
 
@@ -114,7 +126,7 @@ func Charge(book Book, u Usage, serviceTier string, at time.Time, mode RoundingM
 	anyMatched := false
 
 	for _, mq := range meterQuantities(u) {
-		if mq.Qty == 0 {
+		if mq.Qty.IsZero() {
 			continue
 		}
 		c, ok := selectComponent(book.Components, mq.Meter, serviceTier, inputTokensForTier, minuteOfDay)
@@ -124,10 +136,10 @@ func Charge(book Book, u Usage, serviceTier string, at time.Time, mode RoundingM
 			continue
 		}
 		anyMatched = true
-		qty := decimal.NewFromInt(mq.Qty)
+		qty := mq.Qty
 
 		switch c.Unit {
-		case UnitPer1MTokens:
+		case UnitPer1MTokens, UnitPer1MChars:
 			total = total.Add(c.UnitPrice.Mul(qty).Div(million))
 		case UnitPerRequest, UnitPerImage, UnitPerSecond:
 			total = total.Add(c.UnitPrice.Mul(qty))

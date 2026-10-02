@@ -13,6 +13,9 @@ export const METER_LABELS: Record<Meter, string> = {
   input_cache_write: '缓存写入',
   output_reasoning: '推理输出',
   request: '按次',
+  image: '图片',
+  input_char: '合成字符',
+  audio_second: '音频时长',
 };
 
 export const UNIT_LABELS: Record<PriceUnit, string> = {
@@ -20,6 +23,7 @@ export const UNIT_LABELS: Record<PriceUnit, string> = {
   per_request: '/ 次',
   per_image: '/ 张',
   per_second: '/ 秒',
+  per_1m_chars: '/ 百万字符',
 };
 
 export function meterLabel(m: string): string {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
+	"github.com/WALLE-AI/uFreeTokens/internal/dialect"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricing"
 	"github.com/WALLE-AI/uFreeTokens/internal/ratelimit"
@@ -54,6 +55,9 @@ type catalogModel struct {
 	// models 筛选项）。deprecated 模型只在这里展示，router/relay 不会路由
 	// 到它们——见 internal/catalog.Snapshot.DeprecatedModels 的注释。
 	Status string `json:"status"`
+	// Limits 是该模型在本平台上的接口约束（取所有活跃渠道方言限制的最严值，见
+	// dialect.MergeLimits），例如图像只返回 b64_json、语音合成只输出 wav。没有约束时省略。
+	Limits *dialect.Limits `json:"limits,omitempty"`
 }
 
 type catalogPrice struct {
@@ -102,6 +106,7 @@ func catalogHandler(store *catalog.Store, rl *ratelimit.Limiter) http.HandlerFun
 				if book, ok := snap.SellPriceBooks[vm.ID]; ok {
 					cm.SellPrice = toCatalogPrice(book)
 				}
+				cm.Limits = modelLimits(snap, vm)
 				if vm.Metadata != nil {
 					cm.DisplayName = vm.Metadata.DisplayName
 					cm.Description = vm.Metadata.Description
@@ -122,6 +127,23 @@ func catalogHandler(store *catalog.Store, rl *ratelimit.Limiter) http.HandlerFun
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
 	}
+}
+
+// modelLimits 汇总虚拟模型所有活跃渠道在其端点上的方言限制。
+func modelLimits(snap *catalog.Snapshot, vm *catalog.VirtualModel) *dialect.Limits {
+	ep := dialect.EndpointForModel(vm.Type, vm.Capabilities)
+	var list []dialect.Limits
+	for _, c := range snap.ChannelsByVM[vm.ID] {
+		if c.Status != "active" {
+			continue
+		}
+		if acct, ok := snap.ProviderAccounts[c.ProviderAccountID]; ok {
+			if e := acct.Dialect.Endpoint(ep); e != nil {
+				list = append(list, e.Limits)
+			}
+		}
+	}
+	return dialect.MergeLimits(list)
 }
 
 func tierVisible(tiers []string, tier string) bool {

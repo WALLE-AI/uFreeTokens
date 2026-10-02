@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -29,6 +30,8 @@ type createProviderAccountRequest struct {
 	Name           string           `json:"name"`
 	BaseURL        string           `json:"base_url"`
 	CostMultiplier *decimal.Decimal `json:"cost_multiplier"`
+	// Dialect 是可选的供应商方言（如 {"preset":"openrouter"}），见 GET /meta/dialect-presets。
+	Dialect json.RawMessage `json:"dialect"`
 }
 
 // addProviderKeyRequest 是 addProviderKey 的请求体。

@@ -351,6 +351,9 @@ func (s *Service) RevokeProviderKey(ctx context.Context, id int64) (*Change, err
 // ---------- virtual models ----------
 
 type UpdateVirtualModelInput struct {
+	// Type 允许纠正录错的模型类型（如把图像模型误录成 chat）；改类型后通常还要按新
+	// 类型发布售价（如图像按张），否则计费计量项对不上。
+	Type          *string   `json:"type"`
 	Status        *string   `json:"status"`
 	VisibleTiers  *[]string `json:"visible_tiers"`
 	Capabilities  *[]string `json:"capabilities"`
@@ -378,8 +381,30 @@ func (s *Service) UpdateVirtualModel(ctx context.Context, id int64, in UpdateVir
 		}
 		sets = append(sets, setClause{"visible_tiers", *in.VisibleTiers})
 	}
-	if in.Capabilities != nil {
-		sets = append(sets, setClause{"capabilities", nonNilStrings(*in.Capabilities)})
+	if in.Type != nil || in.Capabilities != nil {
+		// 类型与能力要一起校验（audio 必须且只能有 tts/asr 之一），缺的一方取库里现值。
+		var typ string
+		var caps []string
+		if err := s.db(ctx).QueryRow(ctx, `SELECT type, capabilities FROM virtual_models WHERE id = $1`, id).Scan(&typ, &caps); err != nil {
+			if isNoRows(err) {
+				return nil, ErrVirtualModelNotFound
+			}
+			return nil, fmt.Errorf("admin: load virtual model type: %w", err)
+		}
+		if in.Type != nil {
+			if !validModelTypes[*in.Type] {
+				return nil, invalid("invalid model type %q", *in.Type)
+			}
+			typ = *in.Type
+			sets = append(sets, setClause{"type", typ})
+		}
+		if in.Capabilities != nil {
+			caps = *in.Capabilities
+			sets = append(sets, setClause{"capabilities", nonNilStrings(caps)})
+		}
+		if err := validateTypeCapabilities(typ, caps); err != nil {
+			return nil, err
+		}
 	}
 	if in.ContextWindow != nil {
 		if *in.ContextWindow <= 0 {

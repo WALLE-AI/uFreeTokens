@@ -525,6 +525,7 @@ func (h *adminHandlers) createProviderAccount(w http.ResponseWriter, r *http.Req
 	acc, err := audited(h, r, func(ctx context.Context) (*admin.ProviderAccount, auditEntry, error) {
 		acc, err := h.svc.CreateProviderAccount(ctx, admin.CreateProviderAccountInput{
 			ProviderID: body.ProviderID, Name: body.Name, BaseURL: body.BaseURL, CostMultiplier: body.CostMultiplier,
+			Dialect: body.Dialect,
 		})
 		if err != nil {
 			return nil, auditEntry{}, err

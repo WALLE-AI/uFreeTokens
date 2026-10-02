@@ -1,0 +1,7 @@
+{
+  "notes": "待认证：对话为 OpenAI 兼容；语音合成、图像、向量为原生接口，需要专用 codec 后才开放。",
+  "endpoints": {
+    "embeddings": {"supported": false}, "rerank": {"supported": false}, "images": {"supported": false},
+    "speech": {"supported": false}, "transcriptions": {"supported": false}
+  }
+}

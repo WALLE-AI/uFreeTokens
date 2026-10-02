@@ -7,6 +7,10 @@
 package adapter
 
 import (
+	"context"
+	"io"
+	"net/http"
+
 	"github.com/WALLE-AI/uFreeTokens/internal/catalog"
 )
 
@@ -40,4 +44,37 @@ func (c ErrorClass) Retryable() bool {
 	default:
 		return false
 	}
+}
+
+// 逻辑端点（拼在 provider_accounts.base_url 后面的上游路径），与 relay 层的
+// endpointSpec 一一对应。
+const (
+	EndpointChat           = "/chat/completions"
+	EndpointEmbeddings     = "/embeddings"
+	EndpointRerank         = "/rerank"
+	EndpointImages         = "/images/generations"
+	EndpointSpeech         = "/audio/speech"
+	EndpointTranscriptions = "/audio/transcriptions"
+)
+
+// EndpointSupporter 是可选接口：声明适配器能处理哪些逻辑端点。没实现它的适配器
+// （anthropic、gemini）只支持 EndpointChat——它们的 BuildRequest 会忽略 endpoint
+// 参数、始终打到自己的对话端点，路由时必须把这类渠道排除在非对话端点之外，
+// 否则请求会被发到错误的上游路径。
+type EndpointSupporter interface {
+	SupportsEndpoint(endpoint string) bool
+}
+
+// SupportsEndpoint 判断适配器 a 能否处理 endpoint。
+func SupportsEndpoint(a Adapter, endpoint string) bool {
+	if es, ok := a.(EndpointSupporter); ok {
+		return es.SupportsEndpoint(endpoint)
+	}
+	return endpoint == EndpointChat
+}
+
+// RawRequestBuilder 是可选接口：请求体不是 JSON 时（语音识别的 multipart），
+// 由 relay 组装好 body 与 Content-Type，适配器只负责拼 URL 和鉴权头。
+type RawRequestBuilder interface {
+	BuildRawRequest(ctx context.Context, target Target, endpoint, contentType string, body io.Reader) (*http.Request, error)
 }

@@ -216,15 +216,23 @@ export default function LogsPage() {
     },
     {
       key: 'tokens',
-      header: 'Tokens 入/出',
+      header: '用量',
       numeric: true,
-      render: (l) => (
-        <span className="whitespace-nowrap">
-          {l.input_tokens === null ? '—' : formatCompact(l.input_tokens)}
-          <span className="text-gray-300"> / </span>
-          {l.output_tokens === null ? '—' : formatCompact(l.output_tokens)}
-        </span>
-      ),
+      // 图像按张、语音合成按字符、语音识别按秒，其余按 token 入/出。
+      render: (l) =>
+        l.image_count ? (
+          <span className="whitespace-nowrap">{l.image_count} 张</span>
+        ) : l.input_chars ? (
+          <span className="whitespace-nowrap">{formatCompact(l.input_chars)} 字</span>
+        ) : l.audio_ms ? (
+          <span className="whitespace-nowrap">{(l.audio_ms / 1000).toFixed(1)} 秒</span>
+        ) : (
+          <span className="whitespace-nowrap">
+            {l.input_tokens === null ? '—' : formatCompact(l.input_tokens)}
+            <span className="text-gray-300"> / </span>
+            {l.output_tokens === null ? '—' : formatCompact(l.output_tokens)}
+          </span>
+        ),
     },
     { key: 'charged', header: '收入', numeric: true, render: (l) => <Money micro={l.charged_amount_micro} /> },
     { key: 'cost', header: '成本', numeric: true, render: (l) => <Money micro={l.cost_micro} className="text-gray-500" /> },

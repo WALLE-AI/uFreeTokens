@@ -165,3 +165,22 @@ func TestOpenAIFinishReasonToAnthropic(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicRequestToOpenAI_StreamRequestsUsage：流式请求必须带上 include_usage，
+// 否则只在 usage-only chunk 里返回用量的上游（百炼、方舟）会让 message_delta 的
+// output_tokens 变成 0。
+func TestAnthropicRequestToOpenAI_StreamRequestsUsage(t *testing.T) {
+	out, err := anthropicRequestToOpenAI(map[string]any{"model": "m", "stream": true,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	so, _ := out["stream_options"].(map[string]any)
+	if so["include_usage"] != true {
+		t.Errorf("stream_options = %#v, want include_usage=true", out["stream_options"])
+	}
+	out, _ = anthropicRequestToOpenAI(map[string]any{"model": "m", "messages": []any{}})
+	if _, ok := out["stream_options"]; ok {
+		t.Error("non-stream request must not carry stream_options")
+	}
+}

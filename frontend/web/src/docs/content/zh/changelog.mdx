@@ -5,6 +5,20 @@ section: changelog
 order: 0
 ---
 
+## 2026-10-02
+
+- **多供应商统一**：同一组接口可以由不同的上游供应商提供，网关负责把各家的路径、参数、响应和错误统一成本文档描述的 OpenAI 形状；流式输出中途上游报错时，会收到一个带 `error` 字段的数据块，而不再是无提示地截断。
+- **`GET /v1/catalog` 新增 `limits` 字段**：列出模型的接口约束（如只返回 `b64_json`、固定的音频格式、上传文件大小上限），见[接口约束](/docs/zh/models#接口约束)。
+- **新增 `POST /v1/rerank`**：文档重排序，按输入 token 计费，见[重排序](/docs/zh/rerank)。
+- **新增 `POST /v1/images/generations`**：图像生成，响应为 OpenAI 格式的 `data[].url`（临时链接），按生成的张数计费，见[图像生成](/docs/zh/images)。
+- **新增 `POST /v1/audio/speech` 与 `POST /v1/audio/transcriptions`**：语音合成（返回音频文件，支持流式，按字符计费）与语音识别（`multipart/form-data` 上传，按音频时长计费），见[语音合成与识别](/docs/zh/audio)。
+- **`/v1/messages` 支持图片**：`content` 中的 `image` 块（`base64` 或 `url`）会转发给视觉模型，此前会被忽略。
+- **图片的 token 估算**：对话请求中的每张图片按固定 1,500 token 预估，不再按 base64 字节数估算；此前较大的图片会被误判为超出上下文窗口而返回 `503 no_available_channel`。
+- **模型类型校验**：用不支持当前接口的模型调用（如在 `/v1/chat/completions` 上使用 embedding 模型），现在直接返回 `404 model_not_found`，不再转发上游后返回 `400`。
+- **新错误码**：请求体超过 20 MB 返回 `413 request_too_large`（此前返回 `400 invalid_request`）；语音识别的请求格式或文件格式不支持时返回 `415 unsupported_media_type`。
+- **更清楚的错误信息**：上游判定参数错误时，`message` 中会带上上游给出的原因；`503 no_available_channel` 会说明是能力、上下文长度还是渠道健康问题。
+- **`GET /v1/usage` 新增字段**：`total_images`、`total_input_chars`、`total_audio_ms`。
+
 ## 2026-10-01
 
 - **开发者文档重建**：文档改为中英双语，API 参考由接口定义自动生成，并且只收录当前真正可用的接口。

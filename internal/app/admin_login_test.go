@@ -196,7 +196,7 @@ func TestAdminRoutes_EveryRouteHasPermission(t *testing.T) {
 	for _, p := range adminauth.AllPermissions {
 		known[p] = true
 	}
-	authOnly := map[string]bool{"POST /auth/logout": true, "GET /me": true, "POST /auth/password": true, "GET /meta/enums": true, "GET /todo-counts": true,
+	authOnly := map[string]bool{"POST /auth/logout": true, "GET /me": true, "POST /auth/password": true, "GET /meta/enums": true, "GET /meta/dialect-presets": true, "GET /meta/codecs": true, "GET /todo-counts": true,
 		"POST /auth/totp/setup": true, "POST /auth/totp/enable": true, "POST /auth/totp/disable": true}
 	seen := map[string]bool{}
 	for _, rt := range app.AdminRouteTable() {

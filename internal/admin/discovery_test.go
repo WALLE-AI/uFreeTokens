@@ -159,3 +159,56 @@ func TestListUpstreamModels_MalformedResponse_WrapsUnavailable(t *testing.T) {
 		t.Errorf("err = %v, want ErrUpstreamUnavailable", err)
 	}
 }
+
+// TestListUpstreamModels_Dialect：方言的 list_paths 逐个拉取并按 ID 去重，附加请求头，
+// auth.validation=url 时先校验 Key（/models 不鉴权的供应商，无效 Key 不能"列出模型"）。
+func TestListUpstreamModels_Dialect(t *testing.T) {
+	pool := testPool(t)
+	s := newService(t, pool)
+
+	keyOK := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Title") != "t" {
+			t.Errorf("%s: X-Title = %q", r.URL.Path, r.Header.Get("X-Title"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/key":
+			if !keyOK {
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"a"},{"id":"b"}]}`))
+		case "/api/v1/embeddings/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"b"},{"id":"e"}]}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p, err := s.CreateProvider(context.Background(), CreateProviderInput{Code: uniqueCode(t), Name: "test-provider", Protocol: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa, err := s.CreateProviderAccount(context.Background(), CreateProviderAccountInput{
+		ProviderID: p.ID, Name: "test-account", BaseURL: srv.URL + "/api/v1",
+		Dialect: []byte(`{"transport":{"extra_headers":{"X-Title":"t"}},"auth":{"validation":{"method":"url","url":"{origin}/api/v1/key"}},"catalog":{"list_paths":["/models","/embeddings/models"]}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddProviderKey(context.Background(), AddProviderKeyInput{ProviderAccountID: pa.ID, Secret: "k", Weight: 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListUpstreamModels(context.Background(), pa.ID)
+	if err != nil || len(got) != 3 || got[0].ID != "a" || got[2].ID != "e" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	keyOK = false
+	if _, err := s.ListUpstreamModels(context.Background(), pa.ID); !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Errorf("invalid key: err = %v, want ErrUpstreamUnavailable", err)
+	}
+}

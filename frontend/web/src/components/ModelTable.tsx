@@ -2,6 +2,7 @@ import React from 'react';
 import { ArrowUpRight, Pin, Scale, Play, Copy, Check } from 'lucide-react';
 import { Model } from '../types';
 import { ProviderIcon } from './ProviderIcon';
+import { priceCell } from '../data/models';
 
 interface ModelTableProps {
   models: Model[];
@@ -101,16 +102,12 @@ export const ModelTable: React.FC<ModelTableProps> = ({
 
                 {/* Input Price */}
                 <td className="py-3 px-3 text-gray-800 font-semibold font-mono">
-                  {model.isHourly ? model.inputPriceDisplay : `$${model.inputPricePerM.toFixed(2)}`}
+                  {priceCell(model, 'input') ?? <span className="text-gray-400">-</span>}
                 </td>
 
                 {/* Output Price */}
                 <td className="py-3 px-3 text-gray-800 font-semibold font-mono">
-                  {model.outputPriceDisplay ? (
-                    model.isHourly ? '免费' : `$${model.outputPricePerM.toFixed(2)}`
-                  ) : (
-                    <span className="text-gray-400">-</span>
-                  )}
+                  {priceCell(model, 'output') ?? <span className="text-gray-400">-</span>}
                 </td>
 
                 {/* Benchmarks */}

@@ -1,0 +1,215 @@
+{
+  "provider": "openrouter",
+  "base_url": "https://openrouter.ai/api/v1",
+  "protocol": "openai",
+  "preset": "openrouter",
+  "key_env": "OPENROUTER_API_KEY",
+  "voice": "alloy",
+  "models": {
+    "asr": "mistralai/voxtral-small-24b-2507-stt",
+    "chat": "qwen/qwen3-vl-8b-instruct",
+    "embedding": "baai/bge-m3",
+    "image": "qwen/qwen-image-3",
+    "rerank": "qwen/qwen3-reranker-8b",
+    "tts": "x-ai/grok-voice-tts-1.0",
+    "vlm": "qwen/qwen3-vl-8b-instruct"
+  },
+  "checked_at": "2026-10-02T10:43:34.4351366Z",
+  "key_valid": {
+    "capability": "key",
+    "model": "",
+    "status": "pass",
+    "latency_ms": 420,
+    "detail": "HTTP 200 via url"
+  },
+  "model_list": {
+    "total": 645,
+    "paths": {
+      "/embeddings/models": 33,
+      "/models?output_modalities=all": 645
+    },
+    "missing": []
+  },
+  "checks": [
+    {
+      "capability": "chat",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "status": "pass",
+      "latency_ms": 763,
+      "detail": "我是一个由阿里云开发的超大规模语言模型，名叫通义千问，旨在为用户提供高质量的文本生成、对话交流和知识问答服务。",
+      "usage": {
+        "InputTokens": 13,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 34,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0.0000284625,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "chat_stream",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "status": "pass",
+      "latency_ms": 254,
+      "detail": "10 chunks, usage ok",
+      "usage": {
+        "InputTokens": 9,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 9,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0.00000509652,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "tools",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "status": "pass",
+      "latency_ms": 398,
+      "detail": "tool_calls=1",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 151,
+        "OutputTokens": 20,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0.00002649933
+      }
+    },
+    {
+      "capability": "vlm",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "status": "pass",
+      "latency_ms": 1810,
+      "detail": "图片里是一只狗。\n\n从外观上看，这是一只毛色为金棕色的犬类动物，具有以下特征：\n- **毛发**：毛发蓬松、柔软，呈金棕…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 1039,
+        "OutputTokens": 223,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0.00022079772
+      }
+    },
+    {
+      "capability": "embedding",
+      "model": "baai/bge-m3",
+      "status": "pass",
+      "latency_ms": 1043,
+      "detail": "dim=1024",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 8,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 8e-8
+      }
+    },
+    {
+      "capability": "rerank",
+      "model": "qwen/qwen3-reranker-8b",
+      "status": "pass",
+      "latency_ms": 445,
+      "detail": "codec=openai.passthrough {\"id\":\"gen-rerank-1790931020-2QQLCaNjzRfJgsYtNPZ9\",\"model\":\"accounts/fireworks/m…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 163,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0.0000326
+      }
+    },
+    {
+      "capability": "image",
+      "model": "qwen/qwen-image-3",
+      "status": "pass",
+      "latency_ms": 47894,
+      "detail": "codec=openai.passthrough {\"created\":1790931067,\"data\":[{\"b64_json\":\"iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAA…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 1,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0.03
+      }
+    },
+    {
+      "capability": "tts",
+      "model": "x-ai/grok-voice-tts-1.0",
+      "status": "pass",
+      "latency_ms": 1119,
+      "detail": "codec=openai.passthrough audio/mpeg 61056 bytes",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "asr",
+      "model": "mistralai/voxtral-small-24b-2507-stt",
+      "status": "pass",
+      "latency_ms": 1549,
+      "detail": "codec=openai.passthrough {\"text\":\"今天天气很好，我们一起去公园散步吧。\",\"usage\":{\"seconds\":3.816,\"cost\":0.0001908}}",
+      "usage": {
+        "AudioMillis": 3816,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 1,
+        "Source": "upstream",
+        "UpstreamCost": 0.0001908
+      }
+    }
+  ]
+}

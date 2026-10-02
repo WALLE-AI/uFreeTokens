@@ -1,0 +1,17 @@
+{
+  "notes": "实测认证 2026-10-02：chat/embeddings 透传（仅 float 编码）；rerank 在 {origin}/compatible-api/v1/reranks；图像只能用原生同步接口；TTS 为原生接口（返回 wav 下载地址）；ASR 走 chat + input_audio。",
+  "endpoints": {
+    "embeddings": {"transforms": ["embedding_base64_encode"]},
+    "rerank": {"url": "{origin}/compatible-api/v1/reranks"},
+    "images": {"codec": "dashscope.image"},
+    "speech": {
+      "codec": "dashscope.tts",
+      "voice_map": {"alloy": "Cherry", "nova": "Cherry", "shimmer": "Serena", "echo": "Ethan", "onyx": "Ethan", "fable": "Chelsie"},
+      "limits": {"audio_formats": ["wav"]}
+    },
+    "transcriptions": {
+      "codec": "dashscope.asr_chat",
+      "limits": {"max_file_bytes": 7340032, "response_formats": ["json"]}
+    }
+  }
+}

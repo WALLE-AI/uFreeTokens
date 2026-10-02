@@ -29,6 +29,13 @@ type ImportModelItem struct {
 	SellOutput    *decimal.Decimal `json:"sell_output"`
 	// KeepExistingSell 为 true 且虚拟模型已存在时不发布新售价（保留现有售价）。
 	KeepExistingSell bool `json:"keep_existing_sell"`
+	// CostComponents/SellComponents：按计量项定价（图像、语音等非 token 计价的模型），
+	// 与 CostInput/CostOutput 二选一，见 PricingPreviewItem。
+	CostComponents []PreviewPrice `json:"cost_components"`
+	SellComponents []PreviewPrice `json:"sell_components"`
+	// ParamOverrides 写入新建渠道的 param_overrides（如 SiliconFlow 语音合成渠道的
+	// {"$voice_prefix_upstream_model": true}）；渠道已存在时不修改。
+	ParamOverrides map[string]any `json:"param_overrides"`
 }
 
 type ImportModelsInput struct {
@@ -59,7 +66,9 @@ type ImportModelPlan struct {
 	SellOutput       *decimal.Decimal     `json:"sell_output"`
 	MarginRatio      *decimal.Decimal     `json:"margin_ratio"`
 	PublishSellPrice bool                 `json:"publish_sell_price"`
-	Errors           []string             `json:"errors"`
+	// Components 只在按计量项定价时出现（每个计量项的人民币成本、售价、毛利）。
+	Components []PreviewComponent `json:"components,omitempty"`
+	Errors     []string           `json:"errors"`
 }
 
 type ImportModelResult struct {
@@ -89,7 +98,8 @@ func (s *Service) PlanImport(ctx context.Context, in ImportModelsInput) ([]Impor
 	previewItems := make([]PricingPreviewItem, len(in.Items))
 	for i, it := range in.Items {
 		previewItems[i] = PricingPreviewItem{Key: it.UpstreamModel, CostInput: it.CostInput, CostOutput: it.CostOutput,
-			SellInput: it.SellInput, SellOutput: it.SellOutput, MarkupPercent: it.MarkupPercent}
+			SellInput: it.SellInput, SellOutput: it.SellOutput, MarkupPercent: it.MarkupPercent,
+			CostComponents: it.CostComponents, SellComponents: it.SellComponents}
 	}
 	preview, err := s.PricingPreview(ctx, PricingPreviewInput{Currency: in.Currency, CostMultiplier: &mult, MarkupPercent: in.MarkupPercent, Items: previewItems})
 	if err != nil {
@@ -104,6 +114,7 @@ func (s *Service) PlanImport(ctx context.Context, in ImportModelsInput) ([]Impor
 		}
 		pr := preview.Items[i]
 		p.CostInputCNY, p.CostOutputCNY, p.SellInput, p.SellOutput, p.MarginRatio = pr.CostInputCNY, pr.CostOutputCNY, pr.SellInput, pr.SellOutput, pr.MarginRatio
+		p.Components = pr.Components
 		switch {
 		case p.UpstreamModel == "":
 			p.Errors = append(p.Errors, "缺少上游模型 ID")
@@ -111,7 +122,8 @@ func (s *Service) PlanImport(ctx context.Context, in ImportModelsInput) ([]Impor
 			p.Errors = append(p.Errors, "上游模型重复")
 		}
 		seen[p.UpstreamModel] = true
-		if it.CostInput == nil || it.CostOutput == nil {
+		componentMode := len(it.CostComponents) > 0
+		if !componentMode && (it.CostInput == nil || it.CostOutput == nil) {
 			p.Errors = append(p.Errors, "缺少成本价")
 		}
 		if preview.FXMissing {
@@ -124,6 +136,17 @@ func (s *Service) PlanImport(ctx context.Context, in ImportModelsInput) ([]Impor
 			p.Status = ImportStatusNew
 			if strings.TrimSpace(it.Family) == "" {
 				p.Errors = append(p.Errors, "缺少 family")
+			}
+			typ := it.Type
+			if typ == "" {
+				typ = "chat"
+			}
+			if !validModelTypes[typ] {
+				p.Errors = append(p.Errors, "模型类型无效")
+			} else if err := validateTypeCapabilities(typ, it.Capabilities); err != nil {
+				p.Errors = append(p.Errors, "语音模型必须且只能勾选 tts（语音合成）或 asr（语音识别）之一")
+			} else if missing := missingMeters(typ, it.Capabilities, it); missing != "" {
+				p.Errors = append(p.Errors, "缺少计量项 "+missing)
 			}
 			if it.ContextWindow <= 0 || it.MaxOutput <= 0 {
 				p.Errors = append(p.Errors, "上下文窗口/最大输出无效")
@@ -143,8 +166,32 @@ func (s *Service) PlanImport(ctx context.Context, in ImportModelsInput) ([]Impor
 				p.Status = ImportStatusListed
 			}
 		}
+		if p.Status != ImportStatusListed {
+			typ, caps := it.Type, it.Capabilities
+			if p.Status == ImportStatusVMExists && vm != nil {
+				typ, caps = vm.Type, vm.Capabilities
+			}
+			if typ == "" {
+				typ = "chat"
+			}
+			if reason, err := s.accountServes(ctx, in.ProviderAccountID, typ, caps, p.UpstreamModel); err != nil {
+				return nil, nil, err
+			} else if reason != "" {
+				p.Errors = append(p.Errors, reason)
+			}
+		}
 		p.PublishSellPrice = !(it.KeepExistingSell && p.Status != ImportStatusNew)
-		if p.PublishSellPrice {
+		if p.PublishSellPrice && componentMode {
+			for _, c := range p.Components {
+				if c.Sell.IsZero() {
+					p.Errors = append(p.Errors, "缺少售价（"+c.Meter+"）")
+					break
+				}
+			}
+			if p.MarginRatio != nil && p.MarginRatio.IsNegative() {
+				p.Errors = append(p.Errors, "负毛利")
+			}
+		} else if p.PublishSellPrice {
 			if p.SellInput == nil || p.SellOutput == nil || p.SellInput.IsZero() || p.SellOutput.IsZero() {
 				p.Errors = append(p.Errors, "缺少售价")
 			} else if p.MarginRatio != nil && p.MarginRatio.IsNegative() {
@@ -187,7 +234,8 @@ func (s *Service) ImportOne(ctx context.Context, providerAccountID int64, curren
 	ch, err := s.FindChannel(ctx, vm.ID, providerAccountID, p.UpstreamModel)
 	switch {
 	case errors.Is(err, ErrChannelNotFound):
-		if ch, err = s.CreateChannel(ctx, CreateChannelInput{VirtualModelID: vm.ID, ProviderAccountID: providerAccountID, UpstreamModel: p.UpstreamModel}); err != nil {
+		if ch, err = s.CreateChannel(ctx, CreateChannelInput{VirtualModelID: vm.ID, ProviderAccountID: providerAccountID,
+			UpstreamModel: p.UpstreamModel, ParamOverrides: it.ParamOverrides}); err != nil {
 			return nil, err
 		}
 		res.CreatedChannel = true
@@ -199,21 +247,60 @@ func (s *Service) ImportOne(ctx context.Context, providerAccountID int64, curren
 	if cur == "" {
 		cur = "USD"
 	}
-	if res.CostBookID, err = s.SetCostPrice(ctx, SetCostPriceInput{ChannelID: ch.ID, Currency: cur, Components: []PriceComponentInput{
-		{Meter: "input", Unit: "per_1m_tokens", UnitPrice: *it.CostInput},
-		{Meter: "output", Unit: "per_1m_tokens", UnitPrice: *it.CostOutput},
-	}}); err != nil {
+	var costComps, sellComps []PriceComponentInput
+	if len(it.CostComponents) > 0 {
+		for _, c := range it.CostComponents {
+			costComps = append(costComps, PriceComponentInput{Meter: c.Meter, Unit: c.Unit, UnitPrice: c.Price})
+		}
+		for _, c := range p.Components {
+			sellComps = append(sellComps, PriceComponentInput{Meter: c.Meter, Unit: c.Unit, UnitPrice: c.Sell})
+		}
+	} else {
+		costComps = []PriceComponentInput{
+			{Meter: "input", Unit: "per_1m_tokens", UnitPrice: *it.CostInput},
+			{Meter: "output", Unit: "per_1m_tokens", UnitPrice: *it.CostOutput},
+		}
+		if p.PublishSellPrice {
+			sellComps = []PriceComponentInput{
+				{Meter: "input", Unit: "per_1m_tokens", UnitPrice: *p.SellInput},
+				{Meter: "output", Unit: "per_1m_tokens", UnitPrice: *p.SellOutput},
+			}
+		}
+	}
+	if res.CostBookID, err = s.SetCostPrice(ctx, SetCostPriceInput{ChannelID: ch.ID, Currency: cur, Components: costComps}); err != nil {
 		return nil, err
 	}
 	if p.PublishSellPrice {
-		id, err := s.SetSellPrice(ctx, SetSellPriceInput{VirtualModelID: vm.ID, Components: []PriceComponentInput{
-			{Meter: "input", Unit: "per_1m_tokens", UnitPrice: *p.SellInput},
-			{Meter: "output", Unit: "per_1m_tokens", UnitPrice: *p.SellOutput},
-		}})
+		id, err := s.SetSellPrice(ctx, SetSellPriceInput{VirtualModelID: vm.ID, Components: sellComps})
 		if err != nil {
 			return nil, err
 		}
 		res.SellBookID = &id
 	}
 	return res, nil
+}
+
+// missingMeters 检查导入条目的定价是否覆盖了该类模型必需的计量项（requiredMeters），
+// 返回缺少的计量项描述；满足时返回空串。按 input/output 定价的条目视为提供了 input、output。
+func missingMeters(typ string, caps []string, it ImportModelItem) string {
+	have := map[string]bool{}
+	if len(it.CostComponents) > 0 {
+		for _, c := range it.CostComponents {
+			have[c.Meter] = true
+		}
+	} else {
+		have["input"], have["output"] = true, true
+	}
+	var alts []string
+	for _, g := range requiredMeters(typ, caps) {
+		ok := true
+		for _, m := range g {
+			ok = ok && have[m]
+		}
+		if ok {
+			return ""
+		}
+		alts = append(alts, strings.Join(g, "+"))
+	}
+	return strings.Join(alts, " 或 ")
 }

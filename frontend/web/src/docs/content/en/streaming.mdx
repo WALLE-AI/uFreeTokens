@@ -3,7 +3,7 @@ title: Streaming (SSE)
 description: Enable stream on /v1/chat/completions to receive output chunk by chunk as Server-Sent Events, and learn the usage and billing rules for streaming requests.
 section: guides
 order: 10
-translatedFrom: 769c5ada2bb8
+translatedFrom: 889282184fdc
 ---
 
 Set `"stream": true` in the body of `POST /v1/chat/completions` and the gateway returns the model output incrementally as `text/event-stream` (Server-Sent Events) instead of waiting for the full completion. Use it for chat UIs, long-form generation, and anything that should render while the model is still generating.
@@ -60,6 +60,12 @@ The OpenAI protocol marks the end of a stream with `data: [DONE]`. When the gate
 </Callout>
 
 Once the stream has started (a `200` status and the first byte have been sent), the gateway no longer fails over to another channel. If the upstream breaks mid-stream, the stream just ends — **no** error event is sent. You can tell whether the output is complete by whether you received a chunk with `finish_reason`.
+
+<Callout type="info" title="Streaming speech synthesis is not SSE">
+
+With `stream: true`, `/v1/audio/speech` returns chunked binary audio, not the `text/event-stream` event stream described on this page. See [Speech synthesis and recognition](/docs/en/audio).
+
+</Callout>
 
 ## Usage chunk
 

@@ -1,0 +1,214 @@
+{
+  "provider": "siliconflow",
+  "base_url": "https://api.siliconflow.cn/v1",
+  "protocol": "openai",
+  "preset": "siliconflow",
+  "key_env": "SILICONFLOW_API_KEY",
+  "voice": "alloy",
+  "models": {
+    "asr": "FunAudioLLM/SenseVoiceSmall",
+    "chat": "Qwen/Qwen2.5-7B-Instruct",
+    "embedding": "BAAI/bge-m3",
+    "image": "Kwai-Kolors/Kolors",
+    "rerank": "BAAI/bge-reranker-v2-m3",
+    "tts": "FunAudioLLM/CosyVoice2-0.5B",
+    "vlm": "Qwen/Qwen3-VL-8B-Instruct"
+  },
+  "checked_at": "2026-10-02T10:43:36.2388374Z",
+  "key_valid": {
+    "capability": "key",
+    "model": "",
+    "status": "pass",
+    "latency_ms": 214,
+    "detail": "HTTP 200 via models"
+  },
+  "model_list": {
+    "total": 97,
+    "paths": {
+      "/models": 97
+    },
+    "missing": []
+  },
+  "checks": [
+    {
+      "capability": "chat",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "status": "pass",
+      "latency_ms": 589,
+      "detail": "我叫Qwen，是阿里云开发的大型语言模型，可以回答问题、创作文字，我能帮你什么忙呢？",
+      "usage": {
+        "InputTokens": 34,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 27,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "chat_stream",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "status": "pass",
+      "latency_ms": 372,
+      "detail": "11 chunks, usage ok",
+      "usage": {
+        "InputTokens": 30,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 8,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "tools",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "status": "pass",
+      "latency_ms": 1160,
+      "detail": "tool_calls=1",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 173,
+        "OutputTokens": 21,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "vlm",
+      "model": "Qwen/Qwen3-VL-8B-Instruct",
+      "status": "pass",
+      "latency_ms": 42581,
+      "detail": "图片里的动物是一只狗。\n\n从外观上看，它有着金棕色的毛发、下垂的耳朵和深邃明亮的眼睛，这些特征让它看起来非常温顺和亲人。…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 1039,
+        "OutputTokens": 129,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "embedding",
+      "model": "BAAI/bge-m3",
+      "status": "pass",
+      "latency_ms": 164,
+      "detail": "dim=1024",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 8,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "rerank",
+      "model": "BAAI/bge-reranker-v2-m3",
+      "status": "pass",
+      "latency_ms": 106,
+      "detail": "codec=openai.passthrough {\"id\":\"01a0fbcdc67578568316e0b1a86bfd66\",\"meta\":{\"billed_units\":{\"classification…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 21,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "image",
+      "model": "Kwai-Kolors/Kolors",
+      "status": "pass",
+      "latency_ms": 5638,
+      "detail": "codec=openai.passthrough {\"created\":1790930967,\"data\":[{\"url\":\"https://s3.siliconflow.cn/temporary/None/f…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 1,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "tts",
+      "model": "FunAudioLLM/CosyVoice2-0.5B",
+      "status": "pass",
+      "latency_ms": 406,
+      "detail": "codec=openai.passthrough audio/mpeg 57727 bytes",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "asr",
+      "model": "FunAudioLLM/SenseVoiceSmall",
+      "status": "pass",
+      "latency_ms": 263,
+      "detail": "codec=openai.passthrough {\"text\":\"今天天气很好，我们一起去公园散步吧。😊\",\"language\":\"Chinese\",\"usage\":{\"type\":\"duration\",\"s…",
+      "usage": {
+        "AudioMillis": 4000,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 1,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    }
+  ]
+}

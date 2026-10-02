@@ -1,0 +1,135 @@
+---
+title: Vision
+description: Send images in a conversation — image_url with a URL or base64, multiple images, size limits, image token estimation and billing, and how to do it with /v1/messages.
+section: guides
+order: 35
+translatedFrom: 4554255959c3
+---
+
+Vision language models (VLMs) can "see" images in a conversation. Images are passed in the message content of `POST /v1/chat/completions`; authentication, rate limiting and billing work exactly as for regular chat.
+
+## Choose a model that accepts images
+
+Look in the catalog for models whose `type` is `chat` and whose `capabilities` include `vision`:
+
+```bash title="List vision models"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.capabilities | index("vision")) | .name'
+```
+
+The examples below read the model ID from the `VISION_MODEL` environment variable. Sending images to a model that does not support them usually makes the upstream return `400 invalid_request`.
+
+## Sending images
+
+Write the message `content` as an array: images go in `image_url` parts and text in `text` parts. `image_url.url` accepts two forms:
+
+| Form | Example | When to use |
+| --- | --- | --- |
+| Public URL | `https://example.com/cat.jpg` | The image is publicly accessible and the upstream can download it directly |
+| base64 data URL | `data:image/png;base64,iVBORw0KGgo...` | Local or intranet images |
+
+A single message can contain several images; they are interpreted in the order they appear.
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"$VISION_MODEL\",
+    \"max_tokens\": 256,
+    \"messages\": [{
+      \"role\": \"user\",
+      \"content\": [
+        {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://sf-maas-uat-prod.oss-cn-shanghai.aliyuncs.com/dog.png\"}},
+        {\"type\": \"text\", \"text\": \"What animal is in the picture?\"}
+      ]
+    }]
+  }"
+```
+
+```python title="Python"
+import base64
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with open("photo.png", "rb") as f:
+    data_url = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+
+resp = client.chat.completions.create(
+    model=os.environ["VISION_MODEL"],
+    max_tokens=256,
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": "Describe this image"},
+        ],
+    }],
+)
+print(resp.choices[0].message.content)
+```
+
+```ts title="Node.js"
+import { readFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const dataUrl = "data:image/png;base64," + (await readFile("photo.png")).toString("base64");
+const resp = await client.chat.completions.create({
+  model: process.env.VISION_MODEL!,
+  max_tokens: 256,
+  messages: [{
+    role: "user",
+    content: [
+      { type: "image_url", image_url: { url: dataUrl } },
+      { type: "text", text: "Describe this image" },
+    ],
+  }],
+});
+console.log(resp.choices[0].message.content);
+```
+
+</CodeTabs>
+
+Streaming (`stream: true`) works the same way; see [Streaming](/docs/en/streaming).
+
+## Size limits
+
+- The whole request body must not exceed **20 MB**, including base64 images (base64 makes data about 1/3 larger). Larger requests return `413 request_too_large` and are not charged.
+- For large images, downscale them so the longer side is at most 2048 pixels before uploading, or use a public URL instead.
+- Per-image dimensions, formats and the maximum number of images are set by each model. When exceeded, the upstream returns `400 invalid_request` with the upstream's reason in the error message.
+
+## Billing
+
+- Images are billed as the model's **input tokens**. The token count is computed by the upstream from the image dimensions; the upstream's `usage.prompt_tokens` is authoritative.
+- For pre-authorization, each image is estimated at a fixed **1,500 tokens** (not based on base64 byte size); settlement then charges the actual amount. TPM rate limiting also uses this estimate.
+
+## Images in /v1/messages
+
+Anthropic-format `image` blocks are supported too; `source.type` can be `base64` or `url`:
+
+```json
+{
+  "model": "<VISION_MODEL>",
+  "max_tokens": 256,
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo..."}},
+      {"type": "text", "text": "Describe this image"}
+    ]
+  }]
+}
+```
+
+Note that `data` does not include the `data:image/png;base64,` prefix. See [Anthropic Messages compatibility](/docs/en/anthropic-messages).
+
+## Related
+
+- [Chat Completions API reference](/docs/en/api/createChatCompletion)
+- [Billing](/docs/en/billing)
+- [Error handling](/docs/en/errors)

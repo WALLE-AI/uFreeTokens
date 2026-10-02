@@ -33,6 +33,9 @@ const METERS: Array<{ value: Meter; label: string }> = [
   { value: 'input_cache_write', label: 'input_cache_write 缓存写' },
   { value: 'output_reasoning', label: 'output_reasoning 推理' },
   { value: 'request', label: 'request 按次' },
+  { value: 'image', label: 'image 图片张数' },
+  { value: 'input_char', label: 'input_char 合成字符' },
+  { value: 'audio_second', label: 'audio_second 音频时长' },
 ];
 
 const UNITS: Array<{ value: PriceUnit; label: string }> = [
@@ -40,6 +43,7 @@ const UNITS: Array<{ value: PriceUnit; label: string }> = [
   { value: 'per_request', label: '每次请求' },
   { value: 'per_image', label: '每张图' },
   { value: 'per_second', label: '每秒' },
+  { value: 'per_1m_chars', label: '每百万字符' },
 ];
 
 const DECIMAL_RE = /^\d+(\.\d{1,10})?$/;

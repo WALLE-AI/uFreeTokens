@@ -3,7 +3,7 @@ title: Billing
 description: CNY pricing, micro-yuan units, pre-authorization and settlement, cash vs. bonus balance, and estimated billing for interrupted streams.
 section: getting-started
 order: 40
-translatedFrom: 05246ad089fe
+translatedFrom: 20680b5a86f0
 ---
 
 ## Currency and units
@@ -29,11 +29,17 @@ A model's price is made up of **meters**, listed in `sell_price.components` of `
 | `input_cache_write` | Input tokens written to cache (priced separately on some models only) |
 | `output_reasoning` | Reasoning tokens (priced separately only when listed; otherwise counted as `output`) |
 | `request` | Per-request charges |
+| `image` | Number of generated images ([Image generation](/docs/en/images)) |
+| `input_char` | Input characters for speech synthesis ([Speech synthesis](/docs/en/audio)) |
+| `audio_second` | Audio duration for speech recognition ([Speech recognition](/docs/en/audio)) |
 
 | `unit` | Meaning |
 |---|---|
 | `per_1m_tokens` | Price per 1 million tokens |
 | `per_request` | Price per request |
+| `per_image` | Price per image |
+| `per_1m_chars` | Price per 1 million characters (Unicode characters; Chinese and English characters each count as 1) |
+| `per_second` | Price per second (prorated by the millisecond, not rounded up to whole seconds) |
 
 Meters that are not listed in a model's price are not charged.
 
@@ -59,8 +65,17 @@ Every billable request is charged in two phases:
 
 When a request arrives, the gateway estimates the most it could cost and freezes that amount:
 
-- Input tokens: roughly estimated from the request body size (about 1 token per 4 bytes).
+- Input tokens: roughly estimated from the size of the text in the request body (about 1 token per 4 bytes); each image is estimated at a fixed 1,500 tokens, not by its base64 byte size.
 - Output tokens: the smallest of the request's `max_tokens` / `max_completion_tokens`, the model's maximum output, and a platform cap (currently 8192).
+
+Pre-authorization for non-chat endpoints:
+
+| Endpoint | Pre-authorization basis |
+|---|---|
+| `/v1/embeddings`, `/v1/rerank` | Input tokens estimated from the request body size |
+| `/v1/images/generations` | Requested number of images (`n`, default 1) × price per image |
+| `/v1/audio/speech` | Number of characters in `input` (this is also the final charge) |
+| `/v1/audio/transcriptions` | Audio duration estimated from the file (exact for WAV, a conservative estimate from file size for other formats), plus the per-request fee if any |
 
 If your **available balance** cannot cover this amount, the request fails immediately with `402 insufficient_balance`. It is not forwarded upstream and nothing is charged.
 
@@ -68,7 +83,7 @@ If your **available balance** cannot cover this amount, the request fails immedi
 
 <Step title="Settlement">
 
-Once the upstream responds, the gateway charges for the **actual token usage** reported by the upstream and releases the frozen amount. The final charge is independent of the pre-authorized amount and can be lower or higher.
+Once the upstream responds, the gateway charges for the **actual usage** reported by the upstream (tokens, number of generated images, audio duration, etc.) and releases the frozen amount. The final charge is independent of the pre-authorized amount and can be lower or higher.
 
 If the upstream fails before any content is returned, the frozen amount is released in full and nothing is charged.
 
@@ -108,6 +123,8 @@ Normally, billing uses the usage reported by the upstream. When the upstream rep
 |---|---|
 | A streaming request is interrupted (client disconnects or upstream drops) | Output tokens are estimated from the bytes already forwarded to you (about 1 token per 4 bytes), capped at the pre-authorized output limit; input tokens reuse the pre-authorization estimate |
 | A non-streaming response contains no `usage` | Billed at the pre-authorization estimate (estimated input + output limit) |
+| Rerank, and the upstream returns no token count | Billed for input tokens estimated from the request body size |
+| Speech recognition, and the upstream returns no duration (e.g. `response_format` is `text`) | Duration is computed from the file header for WAV; estimated from file size for other formats |
 
 For streaming requests you **do not** need to send `stream_options.include_usage` yourself: the gateway always asks the upstream for usage so it can bill. The final usage-only chunk is forwarded to you only if your own request sets `stream_options.include_usage: true`. See [Streaming](/docs/en/streaming).
 
@@ -116,5 +133,6 @@ For streaming requests you **do not** need to send `stream_options.include_usage
 | Status | Error code | Meaning |
 |---|---|---|
 | 402 | `insufficient_balance` | Available balance does not cover the pre-authorization; the request was not run and nothing was charged |
+| 413 | `request_too_large` | The request body exceeds 20 MB; the request was not run and nothing was charged |
 | 502 | `upstream_error` | The upstream failed; the pre-authorization was released and nothing was charged |
 | 503 | `no_available_channel` | No upstream channel is available right now; the pre-authorization was released and nothing was charged |

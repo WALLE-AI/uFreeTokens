@@ -22,6 +22,27 @@ type PricingPreviewItem struct {
 	SellInput     *decimal.Decimal `json:"sell_input"`
 	SellOutput    *decimal.Decimal `json:"sell_output"`
 	MarkupPercent *decimal.Decimal `json:"markup_percent"` // 覆盖全局 markup
+	// CostComponents/SellComponents 是按计量项定价（多模态技术方案 §5）：图像按张、
+	// 语音合成按百万字符、语音识别按秒等不是"输入/输出 token"的模型用它。与
+	// CostInput/CostOutput 二选一；SellComponents 里没有的计量项按 markup 自动算。
+	CostComponents []PreviewPrice `json:"cost_components"`
+	SellComponents []PreviewPrice `json:"sell_components"`
+}
+
+// PreviewPrice 是一个计量项的单价（预览与导入用，固定 default 服务等级、无分档无时段）。
+type PreviewPrice struct {
+	Meter string          `json:"meter"`
+	Unit  string          `json:"unit"`
+	Price decimal.Decimal `json:"price"`
+}
+
+// PreviewComponent 是按计量项定价时，单个计量项的人民币成本、售价与毛利。
+type PreviewComponent struct {
+	Meter       string           `json:"meter"`
+	Unit        string           `json:"unit"`
+	CostCNY     *decimal.Decimal `json:"cost_cny"`
+	Sell        decimal.Decimal  `json:"sell"`
+	MarginRatio *decimal.Decimal `json:"margin_ratio"`
 }
 
 type PricingPreviewInput struct {
@@ -39,6 +60,8 @@ type PricingPreviewResultItem struct {
 	SellOutput     *decimal.Decimal `json:"sell_output"`
 	MarginRatio    *decimal.Decimal `json:"margin_ratio"`
 	NegativeMargin bool             `json:"negative_margin"`
+	// Components 只在按计量项定价时出现。
+	Components []PreviewComponent `json:"components,omitempty"`
 }
 
 type PricingPreviewResult struct {
@@ -123,6 +146,22 @@ func (s *Service) PricingPreview(ctx context.Context, in PricingPreviewInput) (*
 			v := c.Mul(*rate).Mul(mult).Round(6)
 			return &v
 		}
+		if len(it.CostComponents) > 0 {
+			comps, err := previewComponents(it, markup, conv)
+			if err != nil {
+				return nil, err
+			}
+			res.Components = comps
+			for _, c := range comps {
+				if c.MarginRatio != nil && (res.MarginRatio == nil || c.MarginRatio.LessThan(*res.MarginRatio)) {
+					m := *c.MarginRatio
+					res.MarginRatio = &m
+				}
+			}
+			res.NegativeMargin = res.MarginRatio != nil && res.MarginRatio.IsNegative()
+			out.Items = append(out.Items, res)
+			continue
+		}
 		res.CostInputCNY, res.CostOutputCNY = conv(it.CostInput), conv(it.CostOutput)
 		auto := func(c *decimal.Decimal) *decimal.Decimal {
 			if c == nil {
@@ -183,4 +222,39 @@ func (s *Service) CatalogCounts(ctx context.Context) (*CatalogCounts, error) {
 		return nil, fmt.Errorf("admin: count channels: %w", err)
 	}
 	return &out, nil
+}
+
+// previewComponents 按计量项计算人民币成本、售价（未手工指定时按 markup 自动算）与毛利。
+func previewComponents(it PricingPreviewItem, markup decimal.Decimal, conv func(*decimal.Decimal) *decimal.Decimal) ([]PreviewComponent, error) {
+	if it.CostInput != nil || it.CostOutput != nil || it.SellInput != nil || it.SellOutput != nil {
+		return nil, invalid("item %q: cost_components cannot be combined with cost_input/cost_output/sell_input/sell_output", it.Key)
+	}
+	sells := map[[2]string]decimal.Decimal{}
+	for _, sc := range it.SellComponents {
+		if sc.Price.IsNegative() {
+			return nil, invalid("prices must be >= 0 (item %q)", it.Key)
+		}
+		sells[[2]string{sc.Meter, sc.Unit}] = sc.Price
+	}
+	inputs := make([]PriceComponentInput, 0, len(it.CostComponents))
+	out := make([]PreviewComponent, 0, len(it.CostComponents))
+	for _, cc := range it.CostComponents {
+		inputs = append(inputs, PriceComponentInput{Meter: cc.Meter, Unit: cc.Unit, UnitPrice: cc.Price})
+		price := cc.Price
+		pc := PreviewComponent{Meter: cc.Meter, Unit: cc.Unit, CostCNY: conv(&price)}
+		if sell, ok := sells[[2]string{cc.Meter, cc.Unit}]; ok {
+			pc.Sell = sell
+		} else if pc.CostCNY != nil {
+			pc.Sell = SellFromCost(*pc.CostCNY, markup)
+		}
+		if pc.CostCNY != nil && !pc.Sell.IsZero() {
+			m := decimal.NewFromInt(1).Sub(pc.CostCNY.Div(pc.Sell)).Round(4)
+			pc.MarginRatio = &m
+		}
+		out = append(out, pc)
+	}
+	if err := validateComponents(inputs); err != nil {
+		return nil, invalid("item %q: %v", it.Key, err)
+	}
+	return out, nil
 }

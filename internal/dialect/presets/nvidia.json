@@ -1,0 +1,5 @@
+{
+  "notes": "待认证（来自 freellmapi 实测注释）：部分模型不支持并行工具调用；冷启动与长 prompt 预填充可达 180 秒。",
+  "chat": {"force_single_tool_call": true},
+  "transport": {"timeout_ms": 180000}
+}

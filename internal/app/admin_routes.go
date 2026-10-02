@@ -38,6 +38,8 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{patch, "/admin-users/{adminUserID}", adminauth.PermAdminUserManage, h.updateAdminUser},
 		{get, "/admin-roles", adminauth.PermAdminUserManage, h.listAdminRoles},
 		{get, "/meta/enums", permAuthenticated, h.metaEnums},
+		{get, "/meta/dialect-presets", permAuthenticated, h.metaDialectPresets},
+		{get, "/meta/codecs", permAuthenticated, h.metaCodecs},
 
 		// --- 账户 / 钱包 / API Key ---
 		{get, "/accounts", adminauth.PermAccountRead, h.listAccounts},
@@ -68,6 +70,9 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{get, "/provider-accounts/{providerAccountID}", adminauth.PermCatalogRead, h.getProviderAccount},
 		{patch, "/provider-accounts/{providerAccountID}", adminauth.PermCatalogWrite, h.updateProviderAccount},
 		{post, "/provider-accounts/{providerAccountID}/keys", adminauth.PermProviderKeyWrite, h.addProviderKey},
+		// 供应商方言：影响请求如何被转发到上游（路径、参数、鉴权头），按写上游账号的权限收口。
+		{get, "/provider-accounts/{providerAccountID}/dialect", adminauth.PermCatalogRead, h.getAccountDialect},
+		{put, "/provider-accounts/{providerAccountID}/dialect", adminauth.PermProviderKeyWrite, h.setAccountDialect},
 		// 会用解密后的上游密钥真实调用上游，按写密钥的权限收口。
 		{get, "/provider-accounts/{providerAccountID}/upstream-models", adminauth.PermProviderKeyWrite, h.listUpstreamModels},
 		// dry_run 只读；正式导入在 handler 内额外要求 catalog:write + pricing:write。

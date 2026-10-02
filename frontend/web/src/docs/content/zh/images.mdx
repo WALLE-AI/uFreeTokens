@@ -1,0 +1,134 @@
+---
+title: 图像生成
+description: 通过 POST /v1/images/generations 根据文字描述生成图片，返回临时链接，按生成的张数计费。
+section: guides
+order: 44
+---
+
+`POST /v1/images/generations` 与 OpenAI Images API 兼容，根据文字描述生成图片。可以直接使用 OpenAI SDK 的 `images.generate`。
+
+## 选择图像模型
+
+只有目录中 `type` 为 `image` 的模型可以用于此接口，其他类型返回 `404 model_not_found`：
+
+```bash title="列出图像模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "image") | .name'
+```
+
+## 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `model` | string | 是 | 图像模型 ID |
+| `prompt` | string | 是 | 图片描述 |
+| `n` | integer | 否 | 生成张数，1–4，默认 1；也接受 `batch_size` |
+| `size` | string | 否 | 尺寸，如 `1024x1024`；可选值取决于模型 |
+| 其它字段 | — | 否 | 原样透传给上游，如 `negative_prompt`、`seed`、`num_inference_steps` |
+
+`n` 超过 4 或缺少 `prompt` 时返回 `400 invalid_request`。
+
+## 响应
+
+```json
+{
+  "id": "01J9Z3K5V8Q2M4N6P8R0S2T4V6",
+  "model": "<你请求的模型 ID>",
+  "created": 1759305600,
+  "data": [
+    {"url": "https://example-cdn.siliconflow.cn/temporary/abc123.png"}
+  ]
+}
+```
+
+- 响应统一为 OpenAI 格式的 `data[].url`。少数模型只能返回 `data[].b64_json`（base64 编码的图片），这类模型在 `GET /v1/catalog` 中带有 `limits.b64_only: true`，见[接口约束](/docs/zh/models#接口约束)。上游额外返回的字段（如 `seed`、`timings`）会保留。
+- `id` 改写为本次请求的 Request ID，`model` 改写为你请求的模型 ID。
+
+<Callout type="warning" title="图片链接是临时的">
+
+`data[].url` 是上游提供的临时链接，**会在一段时间后失效**（SiliconFlow 为 1 小时）。请在拿到响应后尽快下载并保存到你自己的存储中。
+
+</Callout>
+
+## 计费
+
+按**生成的张数**计费（模型售价中的 `image` 计量项，单位为"每张"）：
+
+- 预扣金额 = 请求的张数（`n` 或 `batch_size`，默认 1）× 单张价格；
+- 结算时按响应中实际返回的图片张数计费；
+- 一张图片都没有生成时，请求以 `502 upstream_error` 失败，不扣费。
+
+图像生成不计入 TPM 限流，只受 RPM 和并发限制。
+
+## 示例
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/images/generations \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Kwai-Kolors/Kolors",
+    "prompt": "一只戴着红色围巾的橘猫，水彩风格",
+    "n": 1,
+    "size": "1024x1024"
+  }'
+```
+
+```python title="Python"
+import os
+import requests
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["UFREETOKENS_API_KEY"],
+    base_url="{{BASE_URL}}/v1",
+    timeout=120,
+)
+
+resp = client.images.generate(
+    model="Kwai-Kolors/Kolors",
+    prompt="一只戴着红色围巾的橘猫，水彩风格",
+    n=1,
+    size="1024x1024",
+)
+
+# 链接会过期，及时下载
+with open("cat.png", "wb") as f:
+    f.write(requests.get(resp.data[0].url, timeout=60).content)
+```
+
+```ts title="Node.js"
+import { writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.UFREETOKENS_API_KEY,
+  baseURL: "{{BASE_URL}}/v1",
+  timeout: 120_000,
+});
+
+const resp = await client.images.generate({
+  model: "Kwai-Kolors/Kolors",
+  prompt: "一只戴着红色围巾的橘猫，水彩风格",
+  n: 1,
+  size: "1024x1024",
+});
+
+const img = await fetch(resp.data[0].url!);
+await writeFile("cat.png", Buffer.from(await img.arrayBuffer()));
+```
+
+</CodeTabs>
+
+<Callout type="tip" title="超时设置">
+
+图像生成通常需要 5–60 秒，建议把客户端超时设为 120 秒以上。
+
+</Callout>
+
+## 相关
+
+- [Images API 参考](/docs/zh/api/createImage)
+- [计费与余额](/docs/zh/billing)
+- [速率限制](/docs/zh/rate-limits)

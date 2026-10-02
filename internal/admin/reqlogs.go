@@ -41,6 +41,9 @@ type RequestLogItem struct {
 	LatencyMs       *int      `json:"latency_ms"`
 	InputTokens     *int      `json:"input_tokens"`
 	OutputTokens    *int      `json:"output_tokens"`
+	ImageCount      *int      `json:"image_count"`
+	InputChars      *int      `json:"input_chars"`
+	AudioMs         *int      `json:"audio_ms"`
 	UsageSource     string    `json:"usage_source"`
 	ChargedMicro    *int64    `json:"charged_amount_micro"`
 	ListAmountMicro *int64    `json:"list_amount_micro"`
@@ -62,14 +65,14 @@ type ListRequestLogsInput struct {
 
 const requestLogListCols = `rl.request_id, rl.created_at, rl.account_id, rl.api_key_id, rl.virtual_model, rl.channel_id, rl.provider_key_id,
 	rl.endpoint, rl.is_stream, rl.status, rl.http_status, rl.error_code, rl.attempts, rl.ttft_ms, rl.latency_ms,
-	rl.input_tokens, rl.output_tokens, rl.usage_source, rl.charged_amount, rl.list_amount, rl.cost_amount`
+	rl.input_tokens, rl.output_tokens, rl.image_count, rl.input_chars, rl.audio_ms, rl.usage_source, rl.charged_amount, rl.list_amount, rl.cost_amount`
 
 func scanRequestLogItem(row pgx.Row, extra ...any) (RequestLogItem, error) {
 	var l RequestLogItem
 	var attempts int16
 	dest := []any{&l.RequestID, &l.CreatedAt, &l.AccountID, &l.APIKeyID, &l.VirtualModel, &l.ChannelID, &l.ProviderKeyID,
 		&l.Endpoint, &l.IsStream, &l.Status, &l.HTTPStatus, &l.ErrorCode, &attempts, &l.TTFTMs, &l.LatencyMs,
-		&l.InputTokens, &l.OutputTokens, &l.UsageSource, &l.ChargedMicro, &l.ListAmountMicro, &l.CostMicro}
+		&l.InputTokens, &l.OutputTokens, &l.ImageCount, &l.InputChars, &l.AudioMs, &l.UsageSource, &l.ChargedMicro, &l.ListAmountMicro, &l.CostMicro}
 	err := row.Scan(append(dest, extra...)...)
 	l.Attempts = int(attempts)
 	return l, err

@@ -1,0 +1,166 @@
+---
+title: Speech synthesis and recognition
+description: Turn text into speech with POST /v1/audio/speech (billed per character) and transcribe audio to text with POST /v1/audio/transcriptions (billed by duration).
+section: guides
+order: 46
+translatedFrom: a315397efd33
+---
+
+Both audio endpoints are compatible with the OpenAI Audio API, so you can use the OpenAI SDK directly:
+
+| Endpoint | Purpose | Model requirement | Billing |
+| --- | --- | --- | --- |
+| `POST /v1/audio/speech` | Speech synthesis (TTS): text → audio | `type` is `audio`, `capabilities` include `tts` | Per input character |
+| `POST /v1/audio/transcriptions` | Speech recognition (ASR): audio → text | `type` is `audio`, `capabilities` include `asr` | By audio duration |
+
+Calling the transcription endpoint with a speech synthesis model (or vice versa) returns `404 model_not_found`.
+
+```bash title="List audio models"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.type == "audio") | "\(.name)  \(.capabilities)"'
+```
+
+## Speech synthesis
+
+### Request parameters
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | string | Yes | ID of a model with the `tts` capability |
+| `input` | string | Yes | Text to synthesize, up to 4096 characters |
+| `voice` | string | Yes | Voice; see below |
+| `response_format` | string | No | `mp3` (default), `wav`, `opus`, `pcm`, etc., depending on the model |
+| `speed` | number | No | Speaking speed, e.g. `1.0` |
+| `stream` | boolean | No | When `true`, audio is returned as it is generated |
+
+CosyVoice models use short voice names: `alex`, `anna`, `bella`, `benjamin`, `charles`, `claire`, `david`, `diana`. The gateway adds the prefix the upstream requires automatically, so you only pass the short name.
+
+### Response
+
+The response body is the audio file itself, with a `Content-Type` matching the format (e.g. `audio/mpeg`). A few models can only output a fixed format (such as wav); these carry `limits.audio_formats` in `GET /v1/catalog`, so rely on the response `Content-Type`. See [Interface constraints](/docs/en/models#interface-constraints). With `stream: true` the audio is returned in chunks and can be played while it downloads — this is plain chunked binary transfer, **not** SSE, so there are no `data:` lines to parse.
+
+### Billing
+
+Billed by the number of **characters** in `input` (the `input_char` meter of the model's price, priced "per million characters"). Chinese and English characters, punctuation and spaces each count as 1 character. The character count is known at request time, so the pre-authorized amount is the final charge; a streaming request that disconnects midway is still charged in full.
+
+### Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/audio/speech \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "input": "The weather is lovely today, let us take a walk in the park.",
+    "voice": "alex",
+    "response_format": "mp3"
+  }' \
+  --output speech.mp3
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with client.audio.speech.with_streaming_response.create(
+    model="FunAudioLLM/CosyVoice2-0.5B",
+    input="The weather is lovely today, let us take a walk in the park.",
+    voice="alex",
+    response_format="mp3",
+) as resp:
+    resp.stream_to_file("speech.mp3")
+```
+
+```ts title="Node.js"
+import { writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const resp = await client.audio.speech.create({
+  model: "FunAudioLLM/CosyVoice2-0.5B",
+  input: "The weather is lovely today, let us take a walk in the park.",
+  voice: "alex",
+  response_format: "mp3",
+});
+await writeFile("speech.mp3", Buffer.from(await resp.arrayBuffer()));
+```
+
+</CodeTabs>
+
+## Speech recognition
+
+### Request format
+
+Upload as `multipart/form-data`:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `file` | Yes | Audio file: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav or webm (determined by file extension) |
+| `model` | Yes | ID of a model with the `asr` capability |
+| `language` | No | Language hint, e.g. `zh`, `en` |
+| `response_format` | No | `json` (default), `text`, `srt`, `verbose_json`, `vtt`, depending on the model; restricted models list theirs in the catalog's `limits.response_formats` |
+| Other fields | No | Passed to the upstream as-is |
+
+- The whole request must not exceed **20 MB**; larger requests return `413 request_too_large`. Split long audio and transcribe the parts separately.
+- Requests that are not multipart, or files whose format is not listed above, return `415 unsupported_media_type`.
+
+### Response
+
+The upstream response is returned as-is. Default format:
+
+```json
+{"text": "The weather is lovely today, let us take a walk in the park.", "usage": {"type": "duration", "seconds": 3}}
+```
+
+### Billing
+
+Billed by **audio duration** (the `audio_second` meter, priced "per second", prorated by the millisecond rather than rounded up to whole seconds). Duration is taken from the upstream's `usage.seconds` or `duration`, in that order; if the upstream returns neither, WAV files are measured exactly from the file header and other formats are estimated from file size. Some models may also charge a small per-request fee (the `request` meter); see the prices in the catalog.
+
+### Examples
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/audio/transcriptions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -F "file=@speech.mp3" \
+  -F "model=FunAudioLLM/SenseVoiceSmall"
+```
+
+```python title="Python"
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with open("speech.mp3", "rb") as f:
+    resp = client.audio.transcriptions.create(model="FunAudioLLM/SenseVoiceSmall", file=f)
+print(resp.text)
+```
+
+```ts title="Node.js"
+import { createReadStream } from "node:fs";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const resp = await client.audio.transcriptions.create({
+  model: "FunAudioLLM/SenseVoiceSmall",
+  file: createReadStream("speech.mp3"),
+});
+console.log(resp.text);
+```
+
+</CodeTabs>
+
+The audio endpoints do not count toward the TPM limit; they are only subject to RPM and concurrency limits.
+
+## Related
+
+- [Speech synthesis API reference](/docs/en/api/createSpeech)
+- [Speech recognition API reference](/docs/en/api/createTranscription)
+- [Billing](/docs/en/billing)

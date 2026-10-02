@@ -49,6 +49,38 @@ func estimateTokens(bodyBytes int) int {
 	return t
 }
 
+// estimateChatInputTokens 估算对话请求的输入 token：图片按每张 perImage 计，
+// 不把 data URL 的 base64 字节算进去（多模态技术方案 D2）——否则 1MB 的图片会被
+// 估成 25 万 token，超过上下文窗口被路由拒绝，预扣也被严重高估。
+func estimateChatInputTokens(body []byte, reqMap map[string]any, perImage int) int {
+	textBytes := len(body)
+	images := 0
+	msgs, _ := reqMap["messages"].([]any)
+	for _, m := range msgs {
+		msg, _ := m.(map[string]any)
+		parts, _ := msg["content"].([]any)
+		for _, p := range parts {
+			part, _ := p.(map[string]any)
+			if part == nil || part["type"] != "image_url" {
+				continue
+			}
+			images++
+			var url string
+			switch iu := part["image_url"].(type) {
+			case map[string]any:
+				url, _ = iu["url"].(string)
+			case string:
+				url = iu
+			}
+			textBytes -= len(url)
+		}
+	}
+	if textBytes < 0 {
+		textBytes = 0
+	}
+	return estimateTokens(textBytes) + images*perImage
+}
+
 // reserveOutputTokens 决定预扣费用时按多少输出 token 计算上限：取请求里声明的
 // max_tokens/max_completion_tokens、虚拟模型的 max_output、以及运营配置的
 // reserve_output_cap 三者中最小值（技术方案 §7.9.1：cap 避免低余额用户在
@@ -170,6 +202,28 @@ func isUsageOnlyChunk(chunk []byte) bool {
 		return false
 	}
 	return true
+}
+
+// stripChunkUsage 删掉带内容 chunk 上附带的 usage 字段（客户端没要 usage 时）。解析
+// 失败时原样返回，绝不能因此丢掉内容。
+func stripChunkUsage(chunk []byte) []byte {
+	payload := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(chunk), []byte("data:")))
+	if !bytes.Contains(payload, []byte(`"usage"`)) {
+		return chunk
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return chunk
+	}
+	if _, ok := m["usage"]; !ok {
+		return chunk
+	}
+	delete(m, "usage")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return chunk
+	}
+	return append(append([]byte("data: "), out...), '\n', '\n')
 }
 
 // computeCostAmount 用渠道的成本价（costBook，可能是零值——没配置成本价）算出

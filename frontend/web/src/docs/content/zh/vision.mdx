@@ -1,0 +1,134 @@
+---
+title: 图片理解 (Vision)
+description: 在对话中输入图片：image_url 传 URL 或 base64、多图、大小限制、图片的 token 预估与计费，以及 /v1/messages 的写法。
+section: guides
+order: 35
+---
+
+视觉语言模型（VLM）可以在对话里"看图"。图片通过 `POST /v1/chat/completions` 的消息内容传入，鉴权、限流、计费与普通对话完全一致。
+
+## 选择支持图片的模型
+
+在目录中找 `type` 为 `chat`、且 `capabilities` 含 `vision` 的模型：
+
+```bash title="列出视觉模型"
+curl -s {{BASE_URL}}/v1/catalog | jq -r '.data[] | select(.capabilities | index("vision")) | .name'
+```
+
+下文示例从环境变量 `VISION_MODEL` 读取模型 ID。给不支持图片的模型发图片，上游通常会返回 `400 invalid_request`。
+
+## 传入图片
+
+把消息的 `content` 写成数组，图片用 `image_url` 分段，文字用 `text` 分段。`image_url.url` 支持两种形式：
+
+| 形式 | 示例 | 适用场景 |
+| --- | --- | --- |
+| 公网链接 | `https://example.com/cat.jpg` | 图片已在公网，可被上游直接下载 |
+| base64 Data URL | `data:image/png;base64,iVBORw0KGgo...` | 本地图片、内网图片 |
+
+一条消息里可以放多张图片，按出现顺序理解。
+
+<CodeTabs>
+
+```bash title="cURL"
+curl {{BASE_URL}}/v1/chat/completions \
+  -H "Authorization: Bearer $UFREETOKENS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"$VISION_MODEL\",
+    \"max_tokens\": 256,
+    \"messages\": [{
+      \"role\": \"user\",
+      \"content\": [
+        {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://sf-maas-uat-prod.oss-cn-shanghai.aliyuncs.com/dog.png\"}},
+        {\"type\": \"text\", \"text\": \"图片里是什么动物？\"}
+      ]
+    }]
+  }"
+```
+
+```python title="Python"
+import base64
+import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["UFREETOKENS_API_KEY"], base_url="{{BASE_URL}}/v1")
+
+with open("photo.png", "rb") as f:
+    data_url = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+
+resp = client.chat.completions.create(
+    model=os.environ["VISION_MODEL"],
+    max_tokens=256,
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": "描述这张图片"},
+        ],
+    }],
+)
+print(resp.choices[0].message.content)
+```
+
+```ts title="Node.js"
+import { readFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({ apiKey: process.env.UFREETOKENS_API_KEY, baseURL: "{{BASE_URL}}/v1" });
+
+const dataUrl = "data:image/png;base64," + (await readFile("photo.png")).toString("base64");
+const resp = await client.chat.completions.create({
+  model: process.env.VISION_MODEL!,
+  max_tokens: 256,
+  messages: [{
+    role: "user",
+    content: [
+      { type: "image_url", image_url: { url: dataUrl } },
+      { type: "text", text: "描述这张图片" },
+    ],
+  }],
+});
+console.log(resp.choices[0].message.content);
+```
+
+</CodeTabs>
+
+流式输出（`stream: true`）同样适用，见[流式输出](/docs/zh/streaming)。
+
+## 大小限制
+
+- 整个请求体不能超过 **20 MB**，base64 图片计入其中（base64 会让体积增大约 1/3）。超过时返回 `413 request_too_large`，不计费。
+- 图片较大时，建议先缩小到长边 2048 像素以内再上传，或改用公网 URL。
+- 单张图片的尺寸、格式和张数上限由各模型决定，超出时上游会返回 `400 invalid_request`，错误信息里带有上游给出的原因。
+
+## 计费
+
+- 图片按模型的**输入 token** 计费，token 数由上游根据图片尺寸计算，最终以上游返回的 `usage.prompt_tokens` 为准。
+- 预扣时每张图片按固定 **1,500 token** 估算（不按 base64 字节数估算），结算时多退少补。TPM 限流也按这个估算值扣减。
+
+## 在 /v1/messages 中传图片
+
+Anthropic 格式的 `image` 块同样支持，`source.type` 可以是 `base64` 或 `url`：
+
+```json
+{
+  "model": "<VISION_MODEL>",
+  "max_tokens": 256,
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo..."}},
+      {"type": "text", "text": "描述这张图片"}
+    ]
+  }]
+}
+```
+
+注意 `data` 不带 `data:image/png;base64,` 前缀。详见 [Anthropic Messages 兼容接口](/docs/zh/anthropic-messages)。
+
+## 相关
+
+- [Chat Completions API 参考](/docs/zh/api/createChatCompletion)
+- [计费与余额](/docs/zh/billing)
+- [错误处理](/docs/zh/errors)

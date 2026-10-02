@@ -25,7 +25,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -45,10 +47,7 @@ import (
 )
 
 const (
-	chatEndpoint    = "/chat/completions" // 拼在 provider_accounts.base_url 后面的上游路径
-	logEndpointChat = "chat.completions"  // request_logs.endpoint 里记录的名字
-
-	embeddingsEndpoint    = "/embeddings"
+	logEndpointChat       = "chat.completions" // request_logs.endpoint 里记录的名字
 	logEndpointEmbeddings = "embeddings"
 )
 
@@ -56,8 +55,27 @@ const (
 type Config struct {
 	ReserveOutputCap int           // 预扣费用时对 max_tokens 的上限裁剪（技术方案 §7.9.1）
 	ReservationTTL   time.Duration // 预扣记录的兜底过期时间，供 worker 回收（尚未实现 worker 侧）
-	MaxUpstreamBody  int64         // 非流式响应体读取上限，防止恶意/异常上游返回超大响应
+	MaxUpstreamBody  int64         // 请求体与非流式响应体的读取上限，防止恶意/异常的超大请求或上游响应
 	Retry            RetryConfig
+
+	// ImageTokenEstimate 是对话请求里每张图片按多少输入 token 预估（路由的上下文窗口
+	// 过滤、TPM 与预扣都用它）。base64 图片的字节不再按 4 字节/token 计入，否则
+	// 1MB 的图片会被估成 25 万 token（多模态技术方案 D2）。最终计费仍以上游 usage 为准。
+	ImageTokenEstimate int
+	// EnforceVision 为 true 时，带图片的对话请求只路由到具备 vision 能力的渠道
+	// （多模态技术方案 D5）。默认关闭：存量 VLM 补齐 vision 能力后再开启，避免已上架
+	// 但没勾 vision 的模型突然 503。
+	EnforceVision bool
+	// 多模态端点的请求上限。
+	MaxRerankDocuments  int
+	MaxImagesPerRequest int
+	MaxSpeechChars      int
+	// DisabledCodecs 中的 codec 被临时停用：方言指定了它们的渠道不参与路由。
+	DisabledCodecs []string
+	// UpstreamHeaderTimeout 是等上游响应头（首字节）的上限，超时换渠道；图像生成通常要
+	// 几十秒才返回，单独用 ImagesHeaderTimeout。0 = 不限制（只受 HTTP 客户端自身的约束）。
+	UpstreamHeaderTimeout time.Duration
+	ImagesHeaderTimeout   time.Duration
 }
 
 // RetryConfig 控制换 Key/换渠道重试的上限（技术方案 §7.7）。
@@ -71,9 +89,16 @@ type RetryConfig struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ReserveOutputCap: 8192,
-		ReservationTTL:   30 * time.Minute,
-		MaxUpstreamBody:  20 * 1024 * 1024,
+		ReserveOutputCap:    8192,
+		ReservationTTL:      30 * time.Minute,
+		MaxUpstreamBody:     20 * 1024 * 1024,
+		ImageTokenEstimate:  1500,
+		MaxRerankDocuments:  1000,
+		MaxImagesPerRequest: 4,
+		MaxSpeechChars:      4096,
+		// 实测（2026-10-02）：百炼 / OpenRouter 的 qwen-image 同步生成 45–60 秒
+		UpstreamHeaderTimeout: 60 * time.Second,
+		ImagesHeaderTimeout:   180 * time.Second,
 		Retry: RetryConfig{
 			MaxAttempts:     3,
 			TotalDeadline:   90 * time.Second,
@@ -95,6 +120,10 @@ type Service struct {
 	ReqLog    *reqlog.Writer     // nil = 不写 request_logs（reqlog.Writer 的方法对 nil 接收者是安全的 no-op）
 	Logger    *slog.Logger
 	Cfg       Config
+
+	// altHosts 记住 Key → 可用的备用 base_url（方言 auth.alternate_hosts，如智谱国内站 /
+	// 国际站）：主域名对这把 Key 返回 401/403 后改用备用域名，之后的请求直接走它。
+	altHosts sync.Map // map[int64]string
 
 	// RetryBudget 是"每实例每秒重试数 ≤ 正常请求数 20%"的全局重试预算
 	// （技术方案 §7.7）。nil = 不限制（RetryBudget 的方法对 nil 接收者是安全的
@@ -126,6 +155,10 @@ type requestMeta struct {
 	imageInputs     int
 	genMs           *int64
 	toolCalls       int
+	// reqMap 是客户端的原始请求体（目前只有向量端点用它做响应侧变换）。
+	reqMap map[string]any
+	// streamErr 非空表示上游在流中报错：按已转发内容结算，但 request_logs 记为失败。
+	streamErr string
 }
 
 // ChatCompletions 是 POST /v1/chat/completions 的 http.HandlerFunc。
@@ -141,54 +174,17 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, s.Cfg.MaxUpstreamBody))
-	if err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "Failed to read request body.")
+	body, reqMap, ok := s.readJSON(w, r)
+	if !ok {
 		return
 	}
-	var reqMap map[string]any
-	if err := json.Unmarshal(body, &reqMap); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "Request body is not valid JSON.")
-		return
-	}
-
 	modelName, _ := reqMap["model"].(string)
-	if modelName == "" {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "\"model\" is required.")
+	adm, ok := s.admit(w, r, log, principal, specChat, modelName)
+	if !ok {
 		return
 	}
-	if !modelAllowed(principal.AllowedModels, modelName) {
-		httpx.WriteError(w, r, http.StatusForbidden, "model_not_allowed", "This API key is not allowed to use this model.")
-		return
-	}
-
-	rlSubject := fmt.Sprintf("apikey:%d", principal.APIKeyID)
-	if s.RateLimit != nil {
-		if res := s.RateLimit.AllowRPM(ctx, rlSubject, intOrZero(principal.RPMLimit)); !res.Allowed {
-			writeRateLimited(w, r, res, "rate_limit_exceeded", "Too many requests.")
-			return
-		}
-		release, res := s.RateLimit.AcquireConcurrency(ctx, rlSubject, intOrZero(principal.ConcurrencyLimit), requestID, s.Cfg.Retry.TotalDeadline+time.Minute)
-		if !res.Allowed {
-			writeRateLimited(w, r, res, "concurrency_limit_exceeded", "Too many concurrent requests.")
-			return
-		}
-		defer release()
-	}
-
-	snap, err := s.Catalog.Get(ctx)
-	if err != nil {
-		log.Error("catalog load failed", "error", err)
-		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to load model catalog.")
-		return
-	}
-
-	vm, ok := snap.Models[modelName]
-	if !ok || !tierCanSee(vm.VisibleTiers, principal.AccountTier) {
-		// 对不可见的模型也统一返回 404，不区分"不存在"和"对你不可见"，避免信息泄露。
-		httpx.WriteError(w, r, http.StatusNotFound, "model_not_found", "The requested model does not exist.")
-		return
-	}
+	defer adm.release()
+	snap, vm := adm.snap, adm.vm
 
 	stream, _ := reqMap["stream"].(bool)
 	// clientWantsUsage 记录客户端是不是自己主动要了 stream_options.include_usage
@@ -197,21 +193,19 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 会被要求带上 usage，见 adapter/openai.go 的 BuildRequest，这里只决定
 	// handleStream 要不要把那个 chunk 转发给客户端，见 isUsageOnlyChunk）。
 	clientWantsUsage := clientRequestedStreamUsage(reqMap)
-	estInput := estimateTokens(len(body))
+	imageInputs := countImageInputs(reqMap)
+	estInput := estimateChatInputTokens(body, reqMap, s.Cfg.ImageTokenEstimate)
 	reserveOutput := reserveOutputTokens(reqMap, vm.MaxOutput, s.Cfg.ReserveOutputCap)
 
-	if s.RateLimit != nil {
-		amount := int64(estInput + reserveOutput)
-		if res := s.RateLimit.ConsumeTPM(ctx, rlSubject, intOrZero(principal.TPMLimit), amount); !res.Allowed {
-			writeRateLimited(w, r, res, "rate_limit_exceeded", "Token-per-minute quota exceeded.")
-			return
-		}
+	if !s.consumeTPM(w, r, adm, int64(estInput+reserveOutput)) {
+		return
 	}
 
 	features := router.Features{
 		Stream:          stream,
 		NeedTools:       hasKey(reqMap, "tools"),
 		NeedJSONSchema:  hasResponseFormatJSONSchema(reqMap),
+		NeedVision:      s.Cfg.EnforceVision && imageInputs > 0,
 		EstInputTokens:  estInput,
 		MaxOutputTokens: reserveOutput,
 	}
@@ -219,17 +213,7 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 预扣的金额只取决于虚拟模型的售价，与最终选中哪个渠道无关（技术方案 §6.4：
 	// 售价挂在虚拟模型上），所以可以先 Reserve，再在重试循环里尝试各个渠道。
 	sellBook := snap.SellPriceBooks[vm.ID]
-	quoteAmount, _ := pricing.Charge(sellBook,
-		pricing.Usage{InputTokens: int64(estInput), OutputTokens: int64(reserveOutput)},
-		"default", time.Now(), pricing.RoundCeil)
-
-	if _, err := s.Wallet.Reserve(ctx, requestID, principal.AccountID, quoteAmount, s.Cfg.ReservationTTL); err != nil {
-		if errors.Is(err, wallet.ErrInsufficientBalance) {
-			httpx.WriteError(w, r, http.StatusPaymentRequired, "insufficient_balance", "Insufficient balance.")
-			return
-		}
-		log.Error("reserve failed", "error", err)
-		httpx.WriteError(w, r, http.StatusInternalServerError, "internal_error", "Failed to reserve balance.")
+	if !s.reserve(w, r, log, adm, schema.Usage{InputTokens: int64(estInput), OutputTokens: int64(reserveOutput)}) {
 		return
 	}
 
@@ -238,7 +222,7 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		accountTier: principal.AccountTier,
 		vmName:      vm.Name, vmID: vm.ID, isStream: stream, clientWantsUsage: clientWantsUsage,
 		clientIP: clientIP(r), userAgent: r.UserAgent(), start: start,
-		logEndpoint: logEndpointChat, imageInputs: countImageInputs(reqMap),
+		logEndpoint: logEndpointChat, imageInputs: imageInputs,
 	}
 	meta.appName, meta.appURL = appAttribution(r)
 
@@ -246,11 +230,11 @@ func (s *Service) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// （技术方案 §7.7 的重试预算比较的是"重试数 vs 正常请求数"，鉴权失败/限流拒绝/
 	// 余额不足这些根本没打到上游的请求不应该稀释这个比例）。
 	s.RetryBudget.RecordRequest()
-	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, chatEndpoint, reqMap)
+	resp, adp, picked, trace, err := s.callUpstreamWithRetry(ctx, log, snap, vm, features, principal.AccountTier, principal.AccountID, specChat.path, jsonRequest(specChat.path, reqMap))
 	if err != nil {
 		s.releaseQuietly(log, requestID)
-		status, code := classifyRelayError(err)
-		httpx.WriteError(w, r, status, code, "Upstream request failed.")
+		status, code, msg := classifyRelayError(err)
+		httpx.WriteError(w, r, status, code, msg)
 		s.logFailure(meta, trace, status, code, len(trace))
 		return
 	}
@@ -283,23 +267,39 @@ func clientIP(r *http.Request) string {
 type upstreamClientError struct {
 	class  adapter.ErrorClass
 	status int
+	detail string // 上游错误体里的原因（已截断），只用于 400 类错误回显给用户
 }
 
 func (e *upstreamClientError) Error() string {
 	return fmt.Sprintf("relay: upstream error (class=%s, status=%d)", e.class, e.status)
 }
 
-// classifyRelayError 把 callUpstreamWithRetry 的错误映射为返回给客户端的状态码/错误码，
-// 供 ChatCompletions 和 request_logs 共用同一套判定逻辑。
-func classifyRelayError(err error) (status int, code string) {
+// classifyRelayError 把 callUpstreamWithRetry 的错误映射为返回给客户端的状态码/错误码/
+// 提示，供各转发端点和 request_logs 共用同一套判定逻辑。提示要说清楚原因（多模态
+// 技术方案 D3）：以前一律是 "Upstream request failed."，用户无从判断是参数问题、
+// 渠道能力不匹配还是上游故障。
+func classifyRelayError(err error) (status int, code, message string) {
 	var uerr *upstreamClientError
 	switch {
 	case errors.As(err, &uerr):
-		return clientFacingError(uerr.class)
+		status, code = clientFacingError(uerr.class)
+		switch code {
+		case "invalid_request":
+			message = "Upstream rejected the request."
+			if uerr.detail != "" {
+				message = "Upstream rejected the request: " + uerr.detail
+			}
+		case "content_filtered":
+			message = "The upstream provider rejected the request by content moderation."
+		default:
+			message = "Upstream provider failed after retries."
+		}
+		return status, code, message
 	case errors.Is(err, router.ErrNoAvailableChannel):
-		return http.StatusServiceUnavailable, "no_available_channel"
+		return http.StatusServiceUnavailable, "no_available_channel",
+			"No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy)."
 	default:
-		return http.StatusBadGateway, "upstream_error"
+		return http.StatusBadGateway, "upstream_error", "Upstream provider failed after retries."
 	}
 }
 
@@ -313,7 +313,7 @@ func classifyRelayError(err error) (status int, code string) {
 // 调用方从这里开始才真正向客户端转发内容——转发开始之后就不再有重试的机会了。
 // trace 记录了每一次真正发起的尝试（无论成败），供 request_logs 落盘审计。
 func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, snap *catalog.Snapshot, vm *catalog.VirtualModel,
-	features router.Features, tier string, accountID int64, endpoint string, reqMap map[string]any) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
+	features router.Features, tier string, accountID int64, endpoint string, build requestBuilder) (*http.Response, adapter.Adapter, *router.Picked, []reqlog.AttemptTraceEntry, error) {
 
 	maxAttempts := s.Cfg.Retry.MaxAttempts
 	if maxAttempts <= 0 {
@@ -323,6 +323,21 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 
 	excludedChannels := map[int64]bool{}
 	excludedKeys := map[int64]bool{}
+	// 不能服务该端点的渠道直接排除：协议不支持（如 image 模型误挂在 anthropic 协议
+	// 渠道上），或供应商方言声明不支持 / 指定的 codec 不存在。宁可 503
+	// no_available_channel，也不能把请求打到错误的上游路径。
+	for _, c := range snap.ChannelsByVM[vm.ID] {
+		acct, ok := snap.ProviderAccounts[c.ProviderAccountID]
+		if !ok {
+			continue
+		}
+		if adp, ok := s.Adapters.For(acct.Protocol); !ok || !adapter.Serves(adp, acct, endpoint, c.UpstreamModel) {
+			excludedChannels[c.ID] = true
+		}
+		if name := adapter.CodecName(acct, endpoint, c.UpstreamModel); name != "" && slices.Contains(s.Cfg.DisabledCodecs, name) {
+			excludedChannels[c.ID] = true
+		}
+	}
 	var trace []reqlog.AttemptTraceEntry
 	var lastErr error
 	attemptsMade := 0 // 真正对上游发起过的尝试次数，不含熔断器竞态导致的空转（见下）
@@ -382,23 +397,52 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 			return nil, nil, nil, trace, fmt.Errorf("relay: no adapter registered for protocol %q", picked.Account.Protocol)
 		}
 
+		picked = s.withAltHost(picked)
 		target := adapter.Target{Channel: picked.Channel, Account: picked.Account, Key: picked.Key}
-		upstreamReq, berr := adp.BuildRequest(ctx, target, endpoint, reqMap)
+		codecName := adapter.CodecName(picked.Account, endpoint, picked.Channel.UpstreamModel)
+		entry := func(status string, latency int64) reqlog.AttemptTraceEntry {
+			return reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: status, LatencyMs: latency, Codec: codecName}
+		}
+		upstreamReq, berr := build(ctx, adp, target)
 		if berr != nil {
 			if done != nil {
 				done(false)
 			}
 			return nil, nil, nil, trace, fmt.Errorf("relay: build upstream request: %w", berr)
 		}
+		// 方言 transport.timeout_ms：非流式请求的整体超时（含读响应体；成功时在关闭响应体时释放）。
+		var actx context.Context
+		var cancel context.CancelFunc
+		if d := picked.Account.Dialect; d != nil && d.Transport.TimeoutMs > 0 && !features.Stream && ctx.Value(streamingKey{}) == nil {
+			actx, cancel = context.WithTimeout(upstreamReq.Context(), time.Duration(d.Transport.TimeoutMs)*time.Millisecond)
+		} else {
+			actx, cancel = context.WithCancel(upstreamReq.Context())
+		}
+		upstreamReq = upstreamReq.WithContext(actx)
+		// 首字节超时：按端点区分，拿到响应头后解除，不影响读响应体（流式可以持续很久）。
+		headerTimeout := s.Cfg.UpstreamHeaderTimeout
+		if endpoint == adapter.EndpointImages && s.Cfg.ImagesHeaderTimeout > 0 {
+			headerTimeout = s.Cfg.ImagesHeaderTimeout
+		}
+		var headerTimer *time.Timer
+		if headerTimeout > 0 {
+			headerTimer = time.AfterFunc(headerTimeout, cancel)
+		}
 
 		attemptStart := time.Now()
 		resp, derr := s.HTTP.Do(upstreamReq)
 		attemptLatency := time.Since(attemptStart).Milliseconds()
+		if headerTimer != nil && !headerTimer.Stop() && derr == nil {
+			// 计时器恰好在拿到响应头之后触发：响应体已不可读，按超时处理
+			_ = resp.Body.Close()
+			derr = fmt.Errorf("relay: upstream response header timeout after %s", headerTimeout)
+		}
 		if derr != nil {
+			cancel()
 			if done != nil {
 				done(false)
 			}
-			trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: "connection_error", LatencyMs: attemptLatency})
+			trace = append(trace, entry("connection_error", attemptLatency))
 			excludedChannels[picked.Channel.ID] = true
 			lastErr = derr
 			log.Warn("upstream call failed, retrying", "attempt", attempt, "channel_id", picked.Channel.ID, "error", derr)
@@ -406,50 +450,89 @@ func (s *Service) callUpstreamWithRetry(ctx context.Context, log *slog.Logger, s
 		}
 
 		if resp.StatusCode < 400 {
-			if done != nil {
-				done(true)
+			ie, perr := adapter.PeekInBandError(target, resp, s.Cfg.MaxUpstreamBody)
+			if perr == nil && ie == nil {
+				if done != nil {
+					done(true)
+				}
+				trace = append(trace, entry("success", attemptLatency))
+				resp.Body = cancelOnClose{resp.Body, cancel}
+				return resp, adp, picked, trace, nil
 			}
-			trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: "success", LatencyMs: attemptLatency})
-			return resp, adp, picked, trace, nil
+			_ = resp.Body.Close()
+			cancel()
+			if done != nil {
+				done(false)
+			}
+			if perr != nil {
+				trace = append(trace, entry("connection_error", attemptLatency))
+				excludedChannels[picked.Channel.ID] = true
+				lastErr = perr
+				continue
+			}
+			trace = append(trace, entry(string(ie.Class), attemptLatency))
+			lastErr = &upstreamClientError{class: ie.Class, status: ie.Status, detail: ie.Detail}
+			log.Warn("upstream returned an error inside a 2xx response", "attempt", attempt, "channel_id", picked.Channel.ID, "class", ie.Class)
+			if !ie.Class.Retryable() {
+				return nil, nil, nil, trace, lastErr
+			}
+			s.penalize(ctx, picked, ie.Class, resp.Header, excludedChannels, excludedKeys)
+			continue
 		}
 
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
+		cancel()
 		class := adp.ClassifyError(resp.StatusCode, errBody)
+		// 方言 errors.challenge_is_transient：Cloudflare 质询页的 403 不是 Key 失效。
+		if d := picked.Account.Dialect; class == adapter.ErrClassKeyInvalid && d != nil && d.Errors.ChallengeIsTransient && resp.Header.Get("Cf-Mitigated") == "challenge" {
+			class = adapter.ErrClassUpstreamUnavailable
+		}
 		if done != nil {
 			done(false)
 		}
-		trace = append(trace, reqlog.AttemptTraceEntry{ChannelID: picked.Channel.ID, KeyID: picked.Key.ID, Status: string(class), LatencyMs: attemptLatency})
-		lastErr = &upstreamClientError{class: class, status: resp.StatusCode}
+		trace = append(trace, entry(string(class), attemptLatency))
+		lastErr = &upstreamClientError{class: class, status: resp.StatusCode, detail: upstreamErrorDetail(errBody)}
 
 		log.Warn("upstream returned error", "attempt", attempt, "channel_id", picked.Channel.ID,
 			"key_id", picked.Key.ID, "status", resp.StatusCode, "class", class)
 
+		// 方言 auth.alternate_hosts：Key 在当前域名上无效时换下一个备用域名重试，不冻结 Key。
+		if class == adapter.ErrClassKeyInvalid && s.nextAltHost(picked) {
+			log.Info("key rejected, switching to alternate host", "channel_id", picked.Channel.ID, "key_id", picked.Key.ID)
+			continue
+		}
 		if !class.Retryable() {
 			return nil, nil, nil, trace, lastErr
 		}
 
-		switch class {
-		case adapter.ErrClassRateLimited:
-			d := retryAfter(resp.Header, s.Cfg.Retry.DefaultCooldown, s.Cfg.Retry.MaxCooldown)
-			if s.Health != nil {
-				s.Health.CooldownKey(ctx, picked.Key.ID, d)
-			}
-			excludedKeys[picked.Key.ID] = true
-		case adapter.ErrClassKeyExhausted, adapter.ErrClassKeyInvalid:
-			// 技术方案 §7.6：这类问题本质上需要人工介入（换 Key/充值），这里先用较长的
-			// 冷却时间近似"标记失效"，避免同一 Key 在短时间内被反复选中；DB 状态更新与
-			// 告警是运维工具的职责，留作后续（worker 或 admin 侧）。
-			if s.Health != nil {
-				s.Health.CooldownKey(ctx, picked.Key.ID, s.Cfg.Retry.KeyDownCooldown)
-			}
-			excludedKeys[picked.Key.ID] = true
-		case adapter.ErrClassUpstreamUnavailable:
-			excludedChannels[picked.Channel.ID] = true
-		}
+		s.penalize(ctx, picked, class, resp.Header, excludedChannels, excludedKeys)
 	}
 
 	return nil, nil, nil, trace, fmt.Errorf("relay: exhausted %d attempts: %w", maxAttempts, lastErr)
+}
+
+// penalize 按错误类别冷却 Key 或排除渠道（技术方案 §7.6），HTTP 错误与 2xx 内的错误共用。
+func (s *Service) penalize(ctx context.Context, picked *router.Picked, class adapter.ErrorClass, header http.Header,
+	excludedChannels, excludedKeys map[int64]bool) {
+	switch class {
+	case adapter.ErrClassRateLimited:
+		d := retryAfter(header, s.Cfg.Retry.DefaultCooldown, s.Cfg.Retry.MaxCooldown)
+		if s.Health != nil {
+			s.Health.CooldownKey(ctx, picked.Key.ID, d)
+		}
+		excludedKeys[picked.Key.ID] = true
+	case adapter.ErrClassKeyExhausted, adapter.ErrClassKeyInvalid:
+		// 技术方案 §7.6：这类问题本质上需要人工介入（换 Key/充值），这里先用较长的
+		// 冷却时间近似"标记失效"，避免同一 Key 在短时间内被反复选中；DB 状态更新与
+		// 告警是运维工具的职责，留作后续（worker 或 admin 侧）。
+		if s.Health != nil {
+			s.Health.CooldownKey(ctx, picked.Key.ID, s.Cfg.Retry.KeyDownCooldown)
+		}
+		excludedKeys[picked.Key.ID] = true
+	case adapter.ErrClassUpstreamUnavailable:
+		excludedChannels[picked.Channel.ID] = true
+	}
 }
 
 // retryAfter 解析上游的 Retry-After 头（RFC 7231，秒数形式；HTTP-date 形式不常见，
@@ -495,6 +578,9 @@ func (s *Service) handleNonStream(ctx context.Context, log *slog.Logger, w http.
 		usage = fallbackUsage(estInput, reserveOutput)
 		log.Warn("upstream did not return usage, using conservative fallback", "request_id", meta.requestID)
 	}
+	if meta.logEndpoint == logEndpointEmbeddings {
+		adapter.ApplyResponseTransforms(targetOf(picked), adapter.EndpointEmbeddings, meta.reqMap, rewritten)
+	}
 
 	list, charged, promoID := s.settleQuietly(ctx, log, meta, sellBook, usage)
 	httpx.WriteJSON(w, http.StatusOK, rewritten)
@@ -529,6 +615,19 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 	for {
 		chunk, err := dec.Next()
 		if err != nil {
+			// 上游在流中用 error chunk 报错（OpenRouter 等）：流已经开始不能重试，
+			// 写出 OpenAI 风格的 error chunk 后结束，按已转发内容结算（同断流）。
+			var se *adapter.StreamError
+			if errors.As(err, &se) {
+				meta.streamErr = "upstream_error"
+				log.Warn("upstream reported an error mid-stream", "error", se.Message)
+				if raw, merr := json.Marshal(map[string]any{"error": map[string]any{
+					"message": "Upstream provider failed mid-stream: " + se.Message, "type": "api_error",
+					"code": "upstream_error", "request_id": meta.requestID}}); merr == nil {
+					_, _ = w.Write(append(append([]byte("data: "), raw...), '\n', '\n'))
+					flusher.Flush()
+				}
+			}
 			break // io.EOF（正常结束）或读取错误（客户端断开/上游中断）都在这里停止转发
 		}
 		stats.observe(chunk, time.Now())
@@ -536,8 +635,13 @@ func (s *Service) handleStream(ctx context.Context, log *slog.Logger, w http.Res
 		// usage-only chunk 转发出去——协议行为要和客户端自己发起、不带
 		// stream_options 的请求完全一致（技术方案 §7.4）。usage 已经在
 		// dec.Next() 内部解析并累计进 dec.Usage()，跳过转发不影响计费。
-		if !meta.clientWantsUsage && isUsageOnlyChunk(chunk) {
-			continue
+		// 有的上游（OpenRouter、SiliconFlow）在带内容的 chunk 上也附带 usage，
+		// 同样剥掉，让客户端看到的行为在各家上游之间一致（多供应商实施方案 §4）。
+		if !meta.clientWantsUsage {
+			if isUsageOnlyChunk(chunk) {
+				continue
+			}
+			chunk = stripChunkUsage(chunk)
 		}
 		if _, werr := w.Write(chunk); werr != nil {
 			break // 客户端已断开，停止写入；下面仍然会按已产生内容结算
@@ -611,11 +715,14 @@ func (s *Service) logSuccess(meta requestMeta, picked *router.Picked, trace []re
 	rec := reqlog.Record{
 		RequestID: meta.requestID, CreatedAt: meta.start, AccountID: meta.accountID, APIKeyID: meta.apiKeyID,
 		VirtualModel: meta.vmName, VirtualModelID: meta.vmID, Endpoint: meta.logEndpoint, IsStream: meta.isStream,
-		Status: "success", HTTPStatus: httpStatus, Attempts: len(trace), AttemptTrace: trace,
+		Status: "success", HTTPStatus: httpStatus, ErrorCode: meta.streamErr, Attempts: len(trace), AttemptTrace: trace,
 		TTFTMillis: &ttftMs, LatencyMillis: time.Since(meta.start).Milliseconds(),
 		Usage: usage, ClientIP: meta.clientIP, UserAgent: meta.userAgent,
 		GenMillis: meta.genMs, ToolCalls: meta.toolCalls, ImageInputs: meta.imageInputs,
 		AppName: meta.appName, AppURL: meta.appURL,
+	}
+	if meta.streamErr != "" {
+		rec.Status = "upstream_error"
 	}
 	if picked != nil {
 		rec.ChannelID = &picked.Channel.ID
@@ -652,4 +759,51 @@ func (s *Service) logFailure(meta requestMeta, trace []reqlog.AttemptTraceEntry,
 		rec.ProviderKeyID = &last.KeyID
 	}
 	s.ReqLog.Write(rec)
+}
+
+// streamingKey 标记流式请求的 context（见 dispatch）。
+type streamingKey struct{}
+
+// cancelOnClose 在关闭响应体时释放方言超时的 context。
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
+// withAltHost 返回把账号 base_url 换成该 Key 已记住的备用域名后的 picked（没有则原样返回）。
+func (s *Service) withAltHost(p *router.Picked) *router.Picked {
+	v, ok := s.altHosts.Load(p.Key.ID)
+	if !ok || v.(string) == p.Account.BaseURL {
+		return p
+	}
+	acct := *p.Account
+	acct.BaseURL = v.(string)
+	cp := *p
+	cp.Account = &acct
+	return &cp
+}
+
+// nextAltHost 让该 Key 改用方言 auth.alternate_hosts 中的下一个域名；已经是最后一个时
+// 清掉记忆（回到主域名）并返回 false，由调用方按 Key 失效处理。
+func (s *Service) nextAltHost(p *router.Picked) bool {
+	d := p.Account.Dialect
+	if d == nil || len(d.Auth.AlternateHosts) == 0 {
+		return false
+	}
+	next := 0
+	if i := slices.Index(d.Auth.AlternateHosts, p.Account.BaseURL); i >= 0 {
+		next = i + 1
+	}
+	if next >= len(d.Auth.AlternateHosts) {
+		s.altHosts.Delete(p.Key.ID)
+		return false
+	}
+	s.altHosts.Store(p.Key.ID, d.Auth.AlternateHosts[next])
+	return true
 }

@@ -3,7 +3,7 @@ title: Models
 description: What model IDs are, and how the public /v1/catalog differs from /v1/models.
 section: getting-started
 order: 30
-translatedFrom: 7e711b73bdeb
+translatedFrom: bd59684f3264
 ---
 
 ## Model IDs
@@ -59,10 +59,11 @@ curl {{BASE_URL}}/v1/catalog
 | Field | Description |
 |---|---|
 | `name` | The model ID to pass as `model` |
-| `type` | `chat`, `embedding`, etc.; `/v1/embeddings` only accepts `embedding` models |
+| `type` | Model type: `chat`, `embedding`, `rerank`, `image`, `audio`. It determines which endpoint the model can be used with (see [Model types and endpoints](#model-types-and-endpoints) below) |
 | `context_window` / `max_output` | Context window and maximum output tokens |
-| `capabilities` | Supported features, e.g. `stream`, `tools` |
+| `capabilities` | Supported features, e.g. `stream`, `tools`, `vision` (accepts image input), `tts` (speech synthesis), `asr` (speech recognition) |
 | `sell_price` | Price in CNY; `unit_price` is a decimal string in yuan. See [Billing](/docs/en/billing) |
+| `limits` | Interface constraints of this model on the platform; omitted when there are none. See [Interface constraints](#interface-constraints) below |
 | `display_name`, `description`, `provider_display`, `tags`, `scores` | Display metadata; may be absent |
 | `status` | `active` is callable; `deprecated` is listed for reference only, and calling it returns `404 model_not_found` |
 
@@ -87,6 +88,39 @@ curl {{BASE_URL}}/v1/models \
 ```
 
 `created` is currently always `0`; it is not the model's listing date.
+
+## Model types and endpoints
+
+Each endpoint only accepts models of a specific type. A type mismatch returns `404 model_not_found`; the request is not forwarded upstream and nothing is charged.
+
+| Endpoint | Model `type` | Required `capabilities` | Billing unit | Docs |
+|---|---|---|---|---|
+| `POST /v1/chat/completions`, `POST /v1/messages` | `chat` | `vision` for image input | Input / output tokens | [Streaming](/docs/en/streaming), [Vision](/docs/en/vision) |
+| `POST /v1/embeddings` | `embedding` | — | Input tokens | [Embeddings](/docs/en/embeddings) |
+| `POST /v1/rerank` | `rerank` | — | Input tokens | [Rerank](/docs/en/rerank) |
+| `POST /v1/images/generations` | `image` | — | Per image | [Image generation](/docs/en/images) |
+| `POST /v1/audio/speech` | `audio` | `tts` | Per million characters | [Speech synthesis and recognition](/docs/en/audio) |
+| `POST /v1/audio/transcriptions` | `audio` | `asr` | Per second of audio | [Speech synthesis and recognition](/docs/en/audio) |
+
+## Interface constraints
+
+The same endpoint may be served by different upstream providers; the gateway normalizes requests and responses to the OpenAI shapes above. Where a provider cannot match them, the `limits` field in `GET /v1/catalog` says so (the strictest value across the model's upstreams):
+
+| Field | Meaning | What it means for you |
+|---|---|---|
+| `b64_only` | Image generation returns `data[].b64_json` only | Do not rely on `data[].url`; decode the base64 |
+| `audio_formats` | Audio formats speech synthesis actually returns, e.g. `["wav"]` | Save the file in this format; `response_format` may be ignored |
+| `response_formats` | Supported `response_format` values | Use one of the listed formats for transcription (e.g. `json` only) |
+| `max_file_bytes` | Maximum upload size in bytes | Larger files are rejected with a 4xx error; compress or split the audio first |
+
+```json
+"limits": {"audio_formats": ["wav"]}
+```
+
+Other differences to keep in mind:
+
+- **Reasoning models**: some reasoning models think before answering; with a small `max_tokens`, `content` can come back empty. Use at least 1024.
+- **Regional restrictions**: when an upstream rejects requests from the current region, the gateway fails over to other channels; if none is available it returns `503 no_available_channel`.
 
 ## Account tiers and visibility
 

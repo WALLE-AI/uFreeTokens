@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -189,6 +190,21 @@ func run() error {
 	return nil
 }
 
+// relayConfig 在 relay.DefaultConfig 之上叠加配置文件/环境变量里的转发开关。
+func relayConfig(cfg *config.Config) relay.Config {
+	rc := relay.DefaultConfig()
+	rc.EnforceVision = cfg.Relay.EnforceVision
+	if cfg.Relay.ImageTokenEstimate > 0 {
+		rc.ImageTokenEstimate = cfg.Relay.ImageTokenEstimate
+	}
+	for _, c := range strings.Split(cfg.Relay.DisabledCodecs, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			rc.DisabledCodecs = append(rc.DisabledCodecs, c)
+		}
+	}
+	return rc
+}
+
 // buildRelayService 组装 relay.Service 所需的全部依赖：解密上游 Key 的信封加密盒、
 // 配置快照 Store、钱包引擎、协议适配器注册表、健康度/熔断注册表、面向上游的 HTTP 客户端。
 func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, logger *slog.Logger) (*relay.Service, error) {
@@ -212,11 +228,13 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   64,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second, // 等首字节的上限；流式响应体本身不受此约束
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 64,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			// 等首字节的硬上限；按端点区分的超时（对话 60 秒、图像 180 秒）由 relay 控制，
+			// 见 relay.Config.UpstreamHeaderTimeout。流式响应体本身不受此约束。
+			ResponseHeaderTimeout: 300 * time.Second,
 			ForceAttemptHTTP2:     true,
 		},
 		// 不设置 Client.Timeout：流式响应可能持续数十秒到数分钟，
@@ -233,7 +251,7 @@ func buildRelayService(pg *pgxpool.Pool, rdb *redis.Client, cfg *config.Config, 
 		Promotion:   promotionEngine,
 		ReqLog:      reqLogWriter,
 		Logger:      logger,
-		Cfg:         relay.DefaultConfig(),
+		Cfg:         relayConfig(cfg),
 		RetryBudget: relay.DefaultRetryBudget(),
 	}, nil
 }

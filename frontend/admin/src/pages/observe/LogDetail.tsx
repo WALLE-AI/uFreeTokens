@@ -125,6 +125,7 @@ function DetailBody({ d }: { d: RequestLogDetail }) {
                       渠道 #{a.channel_id}
                     </Link>
                     <span className="font-mono text-gray-400">密钥 #{a.key_id}</span>
+                    {a.codec && <span className="font-mono text-purple-600" title="供应商方言 codec">{a.codec}</span>}
                     <span className={cn('font-medium', ok ? 'text-emerald-700' : 'text-rose-700')}>{ATTEMPT_STATUS_LABELS[a.status] ?? a.status}</span>
                     <span className="ml-auto font-mono text-gray-500">{formatMs(a.latency_ms)}</span>
                   </div>
@@ -145,6 +146,9 @@ function DetailBody({ d }: { d: RequestLogDetail }) {
             ['缓存读 / 写', <span key="c" className="font-mono"><Num v={d.cache_read_tokens} /> / <Num v={d.cache_write_tokens} /></span>],
             ['输出 tokens', <Num key="o" v={d.output_tokens} />],
             ['推理 tokens', <Num key="r" v={d.reasoning_tokens} />],
+            ['图片张数', <Num key="img" v={d.image_count} />],
+            ['合成字符', <Num key="ch" v={d.input_chars} />],
+            ['音频时长 (ms)', <Num key="au" v={d.audio_ms} />],
           ]}
         />
       </section>

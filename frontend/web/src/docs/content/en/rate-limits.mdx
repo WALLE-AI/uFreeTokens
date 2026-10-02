@@ -3,16 +3,16 @@ title: Rate limits
 description: Per-API-key RPM, TPM and concurrency limits, the per-IP limits on the public endpoints (catalog, rankings, benchmarks), and how to respond when you hit them.
 section: guides
 order: 70
-translatedFrom: f9090b9201bc
+translatedFrom: 0eed808bde07
 ---
 
 ## Overview
 
 | Limit | Applies to | Endpoints | When exceeded |
 | --- | --- | --- | --- |
-| RPM (requests per minute) | Each API key | `/v1/chat/completions`, `/v1/embeddings`, `/v1/messages` | `429 rate_limit_exceeded` |
-| TPM (tokens per minute) | Each API key | Same as above | `429 rate_limit_exceeded` |
-| Concurrency | Each API key | Same as above | `429 concurrency_limit_exceeded` |
+| RPM (requests per minute) | Each API key | All relay endpoints: `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`, `/v1/rerank`, `/v1/images/generations`, `/v1/audio/speech`, `/v1/audio/transcriptions` | `429 rate_limit_exceeded` |
+| TPM (tokens per minute) | Each API key | Token-billed endpoints: `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`, `/v1/rerank` | `429 rate_limit_exceeded` |
+| Concurrency | Each API key | All relay endpoints (same as RPM) | `429 concurrency_limit_exceeded` |
 | 60 requests per minute per IP | Client IP | `GET /v1/catalog` (no auth) | `429 rate_limit_exceeded` |
 | 60 requests per minute per IP (shared) | Client IP | all ranking endpoints such as `GET /v1/rankings/models`, `GET /v1/benchmarks[/{slug}]` (no auth) | `429 rate_limit_exceeded` |
 
@@ -32,14 +32,15 @@ Multiple keys under the same account are counted independently.
 
 ### RPM
 
-Every authenticated request to the chat, embeddings or Messages endpoints counts once — including requests later rejected for reasons such as an unknown model or insufficient balance.
+Every authenticated request to a relay endpoint counts once — including requests later rejected for reasons such as insufficient balance.
 
 ### TPM
 
 TPM is deducted **before** the request runs, using estimates rather than actual usage:
 
 - Chat completions and Messages: estimated input tokens (from request body size, roughly 4 bytes per token) **plus** the request's output reservation. The output reservation is the smallest of `max_tokens` (or `max_completion_tokens`), the model's maximum output length, and the platform's pre-authorization cap.
-- Embeddings: estimated input tokens only.
+- Embeddings and rerank: estimated input tokens only.
+- Image generation, speech synthesis and speech recognition: not counted toward TPM.
 
 The deduction is not refunded based on actual usage. TPM uses a fixed 60-second window (starting at the first deduction in the window) that resets when it expires. If a single request's estimate alone exceeds your TPM limit, it will be rejected no matter when you send it — reduce the request body or `max_tokens`.
 

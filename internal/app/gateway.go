@@ -107,19 +107,23 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 
 			authed.Get("/models", listModelsHandler(d.PG))
 			authed.Get("/usage", usageHandler(d.PG))
-			if d.Relay != nil {
-				authed.Post("/chat/completions", d.Relay.ChatCompletions)
-				authed.Post("/embeddings", d.Relay.Embeddings)
-				authed.Post("/messages", d.Relay.Messages)
-			} else {
-				authed.Post("/chat/completions", notImplementedHandler("chat.completions"))
-				authed.Post("/embeddings", notImplementedHandler("embeddings"))
-				authed.Post("/messages", notImplementedHandler("messages"))
+			disabled := disabledEndpoints(d.Cfg)
+			relayRoute := func(path, name, group string, h func(http.ResponseWriter, *http.Request)) {
+				if d.Relay == nil || disabled[group] {
+					authed.Post(path, notImplementedHandler(name))
+					return
+				}
+				authed.Post(path, h)
 			}
+			rs := d.Relay
+			relayRoute("/chat/completions", "chat.completions", "chat", relayHandler(rs, (*relay.Service).ChatCompletions))
+			relayRoute("/embeddings", "embeddings", "embeddings", relayHandler(rs, (*relay.Service).Embeddings))
+			relayRoute("/messages", "messages", "messages", relayHandler(rs, (*relay.Service).Messages))
+			relayRoute("/rerank", "rerank", "rerank", relayHandler(rs, (*relay.Service).Rerank))
+			relayRoute("/images/generations", "images.generations", "images", relayHandler(rs, (*relay.Service).ImagesGenerations))
+			relayRoute("/audio/speech", "audio.speech", "audio", relayHandler(rs, (*relay.Service).AudioSpeech))
+			relayRoute("/audio/transcriptions", "audio.transcriptions", "audio", relayHandler(rs, (*relay.Service).AudioTranscriptions))
 			authed.Post("/completions", notImplementedHandler("completions"))
-			authed.Post("/images/generations", notImplementedHandler("images.generations"))
-			authed.Post("/audio/transcriptions", notImplementedHandler("audio.transcriptions"))
-			authed.Post("/audio/speech", notImplementedHandler("audio.speech"))
 		})
 	})
 
@@ -156,6 +160,27 @@ func NewGatewayRouter(d GatewayDeps) http.Handler {
 // splitCommaList 把 gateway.cors_origins 的逗号分隔字符串拆成 Origin 列表，
 // 修剪空白、丢弃空项；cfg 为 nil（测试里直接构造 GatewayDeps 不带 Cfg 的场景）
 // 或字段为空都返回 nil，调用方据此判断"不启用 CORS"。
+// disabledEndpoints 解析 relay.disabled_endpoints（逗号分隔）。只认多模态端点组
+// rerank / images / audio——对话与向量是核心链路，不提供配置下线。
+func disabledEndpoints(cfg *config.Config) map[string]bool {
+	out := map[string]bool{}
+	if cfg == nil {
+		return out
+	}
+	for _, p := range strings.Split(cfg.Relay.DisabledEndpoints, ",") {
+		switch g := strings.TrimSpace(strings.ToLower(p)); g {
+		case "rerank", "images", "audio":
+			out[g] = true
+		}
+	}
+	return out
+}
+
+// relayHandler 把 relay.Service 的方法表达式绑定到实例上。
+func relayHandler(rs *relay.Service, m func(*relay.Service, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { m(rs, w, r) }
+}
+
 func splitCommaList(cfg *config.Config) []string {
 	if cfg == nil || cfg.Gateway.CORSOrigins == "" {
 		return nil

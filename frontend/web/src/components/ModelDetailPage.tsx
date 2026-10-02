@@ -24,6 +24,7 @@ import {
 import { Model } from '../types';
 import { ProviderIcon } from './ProviderIcon';
 import { ModelBenchmarksSection } from './ModelBenchmarksSection';
+import { ModelApiSection } from './ModelApiSection';
 
 interface ModelDetailPageProps {
   model: Model;
@@ -362,10 +363,16 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
               <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
                 输入 / 输出单价
               </div>
-              <div className="mt-1 text-sm font-bold text-gray-900 font-mono">
-                ${model.inputPricePerM.toFixed(2)} / ${model.outputPricePerM.toFixed(2)}{' '}
-                <span className="text-xs font-normal text-gray-400">每百万 Token</span>
-              </div>
+              {model.priceItems && model.priceItems.length > 0 ? (
+                <div className="mt-1 text-sm font-bold text-gray-900 font-mono">
+                  {model.priceItems.map((p) => p.display).join('  ·  ')}
+                </div>
+              ) : (
+                <div className="mt-1 text-sm font-bold text-gray-900 font-mono">
+                  ${model.inputPricePerM.toFixed(2)} / ${model.outputPricePerM.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-gray-400">每百万 Token</span>
+                </div>
+              )}
             </div>
 
             <div className="border border-gray-200 rounded-lg p-3 bg-white">
@@ -536,6 +543,17 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
                 </p>
               </div>
 
+              {model.priceItems && model.priceItems.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {model.priceItems.map((p) => (
+                    <div key={p.label} className="p-4 rounded-lg border border-purple-200 bg-purple-50/40">
+                      <div className="text-[11px] text-purple-700 font-medium">{p.label}</div>
+                      <div className="text-lg font-bold text-purple-900 font-mono mt-0.5">{p.display}</div>
+                      <div className="text-[10px] text-purple-600 mt-1">按实际用量结算，失败不计费</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="p-4 rounded-lg border border-purple-200 bg-purple-50/40">
                   <div className="text-[11px] text-purple-700 font-medium">Prompt Token 定价</div>
@@ -565,7 +583,10 @@ export const ModelDetailPage: React.FC<ModelDetailPageProps> = ({
                   <div className="text-[10px] text-gray-400 mt-1">自动撮合最优质的低价算力提供方</div>
                 </div>
               </div>
+              )}
             </section>
+
+            <ModelApiSection model={model} />
 
             {/* 3. SECTION: Performance */}
             <section id="performance" className="space-y-4 pt-2 scroll-mt-28">

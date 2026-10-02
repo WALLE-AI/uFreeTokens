@@ -58,6 +58,7 @@ func TestGatewayOpenAPI_UpToDate(t *testing.T) {
 		"POST /v1/images/generations":   "createImage",
 		"POST /v1/audio/transcriptions": "createTranscription",
 		"POST /v1/audio/speech":         "createSpeech",
+		"POST /v1/rerank":               "createRerank",
 		"GET /v1/rankings/models":       "getModelRankings",
 		"GET /v1/rankings/authors":      "getAuthorRankings",
 		"GET /v1/rankings/speed":        "getSpeedRankings",

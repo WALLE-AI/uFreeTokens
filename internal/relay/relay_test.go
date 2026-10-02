@@ -337,6 +337,12 @@ func newTestGateway(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *r
 // 提前放弃重试（技术方案 §7.7）。
 func newTestGatewayWithBudget(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client, budget *relay.RetryBudget) (http.Handler, *reqlog.Writer) {
 	t.Helper()
+	return newTestGatewayWithConfig(t, pool, box, rdb, budget, relay.DefaultConfig())
+}
+
+// newTestGatewayWithConfig 允许测试指定 relay.Config（如 DisabledCodecs）。
+func newTestGatewayWithConfig(t *testing.T, pool *pgxpool.Pool, box *secretbox.Box, rdb *redis.Client, budget *relay.RetryBudget, cfg relay.Config) (http.Handler, *reqlog.Writer) {
+	t.Helper()
 	logger := observability.NewLogger(config.LogConfig{Level: "error", Format: "console"})
 	reqLogWriter := reqlog.NewWriter(pool, logger)
 	relaySvc := &relay.Service{
@@ -349,7 +355,7 @@ func newTestGatewayWithBudget(t *testing.T, pool *pgxpool.Pool, box *secretbox.B
 		Promotion:   promotion.New(pool),
 		ReqLog:      reqLogWriter,
 		Logger:      logger,
-		Cfg:         relay.DefaultConfig(),
+		Cfg:         cfg,
 		RetryBudget: budget,
 	}
 	h := app.NewGatewayRouter(app.GatewayDeps{

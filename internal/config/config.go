@@ -26,6 +26,22 @@ type Config struct {
 	Log      LogConfig      `koanf:"log"`
 	Console  ConsoleConfig  `koanf:"console"`
 	Public   PublicConfig   `koanf:"public"`
+	Relay    RelayConfig    `koanf:"relay"`
+}
+
+// RelayConfig 是数据面转发的可调开关（多模态技术方案 §4、§11）。环境变量
+// UFT_RELAY_ENFORCE_VISION / UFT_RELAY_IMAGE_TOKEN_ESTIMATE / UFT_RELAY_DISABLED_ENDPOINTS。
+type RelayConfig struct {
+	// EnforceVision 为 true 时带图片的对话请求只路由到具备 vision 能力的渠道。
+	EnforceVision bool `koanf:"enforce_vision"`
+	// ImageTokenEstimate 是对话请求里每张图片按多少输入 token 预估。
+	ImageTokenEstimate int `koanf:"image_token_estimate"`
+	// DisabledEndpoints 是逗号分隔的、临时下线的多模态端点（rerank / images / audio），
+	// 下线后返回 503 not_implemented，用于出问题时快速回退而不回滚代码。
+	DisabledEndpoints string `koanf:"disabled_endpoints"`
+	// DisabledCodecs 是逗号分隔的、临时停用的 codec（如 dashscope.tts）：用到它们的渠道
+	// 不参与路由（多供应商实施方案 §12 回滚）。环境变量 UFT_RELAY_DISABLED_CODECS。
+	DisabledCodecs string `koanf:"disabled_codecs"`
 }
 
 type GatewayConfig struct {
@@ -120,6 +136,10 @@ func defaults() *koanf.Koanf {
 		"billing.reserve_output_cap":    8192,
 		"billing.reservation_ttl":       "30m",
 		"billing.rounding":              "ceil_micro",
+		"relay.enforce_vision":          false,
+		"relay.image_token_estimate":    1500,
+		"relay.disabled_endpoints":      "",
+		"relay.disabled_codecs":         "",
 		"postgres.dsn":                  "postgres://uft:uft@localhost:5432/uft?sslmode=disable",
 		"postgres.max_conns":            20,
 		"redis.addr":                    "localhost:6379",

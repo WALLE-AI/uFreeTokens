@@ -1,0 +1,5 @@
+{
+  "notes": "待认证（来自 freellmapi 实测注释）：国内站 open.bigmodel.cn 与国际站 api.z.ai 的 Key 不互通；glm-*-flash 推理模型首字节可达 40 秒以上。",
+  "auth": {"alternate_hosts": ["https://api.z.ai/api/paas/v4"]},
+  "transport": {"timeout_ms": 120000}
+}

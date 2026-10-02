@@ -58,8 +58,17 @@ export type AdminEnv = 'production' | 'staging' | 'dev';
 
 // ---------- 价格 ----------
 
-export type Meter = 'input' | 'input_cache_read' | 'input_cache_write' | 'output' | 'output_reasoning' | 'request';
-export type PriceUnit = 'per_1m_tokens' | 'per_request' | 'per_image' | 'per_second';
+export type Meter =
+  | 'input'
+  | 'input_cache_read'
+  | 'input_cache_write'
+  | 'output'
+  | 'output_reasoning'
+  | 'request'
+  | 'image'
+  | 'input_char'
+  | 'audio_second';
+export type PriceUnit = 'per_1m_tokens' | 'per_request' | 'per_image' | 'per_second' | 'per_1m_chars';
 
 // admin.PriceComponentInput（请求与响应同形）
 export interface PriceComponent {
@@ -863,6 +872,10 @@ export interface RequestLogItem {
   latency_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  // 多模态用量（迁移 00031）：生成图片张数、语音合成字符数、语音识别时长（毫秒）
+  image_count: number | null;
+  input_chars: number | null;
+  audio_ms: number | null;
   usage_source: 'upstream' | 'estimated' | 'mixed';
   charged_amount_micro: Micro | null;
   list_amount_micro: Micro | null;
@@ -897,6 +910,7 @@ export interface AttemptTraceEntry {
   // success / rate_limited / key_exhausted / key_invalid / upstream_unavailable / bad_request / content_filtered / connection_error
   status: string;
   latency_ms: number;
+  codec?: string; // 方言指定的 codec（空 = 协议默认透传）
 }
 
 // ---------- 管理员身份与权限（B5，internal/adminauth） ----------
@@ -1029,6 +1043,25 @@ export interface ImportModelItemInput {
   sell_input?: DecimalString;
   sell_output?: DecimalString;
   keep_existing_sell?: boolean;
+  // 按计量项定价（图像、语音等非 token 计价的模型），与 cost_input/cost_output 二选一
+  cost_components?: ImportPriceInput[];
+  sell_components?: ImportPriceInput[];
+  // 写入新建渠道的 param_overrides（如 {"$voice_prefix_upstream_model": true}）
+  param_overrides?: Record<string, unknown>;
+}
+
+export interface ImportPriceInput {
+  meter: Meter;
+  unit: PriceUnit;
+  price: DecimalString;
+}
+
+export interface ImportPreviewComponent {
+  meter: Meter;
+  unit: PriceUnit;
+  cost_cny: DecimalString | null;
+  sell: DecimalString;
+  margin_ratio: DecimalString | null;
 }
 
 export interface ImportModelRow {
@@ -1043,6 +1076,7 @@ export interface ImportModelRow {
   sell_output: DecimalString | null;
   margin_ratio: DecimalString | null;
   publish_sell_price: boolean;
+  components?: ImportPreviewComponent[];
   errors: string[];
   ok: boolean;
   result?: {

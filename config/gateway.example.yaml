@@ -49,3 +49,10 @@ public:
   rankings_enabled: true        # false 时 /v1/rankings/* 返回 503，前端显示"数据维护中"
   rankings_show_absolute: false # 是否公开绝对 token 数；默认只公开份额与排名
   rankings_min_accounts: 3      # 统计期内独立账户数低于该值的模型/作者/应用不单独上榜
+
+# 数据面转发开关（Gateway 多模态接口补全与缺陷修复技术实施方案）
+relay:
+  enforce_vision: false         # true 时带图片的对话请求只路由到具备 vision 能力的渠道
+  image_token_estimate: 1500    # 对话请求里每张图片按多少输入 token 预估（路由、TPM、预扣）
+  disabled_endpoints: ""        # 逗号分隔，临时下线的端点：rerank / images / audio（返回 503 not_implemented）
+  disabled_codecs: ""           # 逗号分隔，临时停用的 codec（如 dashscope.tts）：用到它的渠道不参与路由

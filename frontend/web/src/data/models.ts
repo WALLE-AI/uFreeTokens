@@ -1,5 +1,5 @@
-import { Model, ModelScores } from '../types';
-import { CatalogModel } from '../api/catalog';
+import { ModalityType, Model, ModelScores, PriceItem } from '../types';
+import { CatalogModel, CatalogSellPriceComponent } from '../api/catalog';
 
 export const INITIAL_MODELS: Model[] = [
   {
@@ -811,6 +811,83 @@ function normalizeScores(raw: Record<string, unknown> | undefined, fallback?: Mo
   return scores;
 }
 
+// 计量项的展示名与单位后缀（与 GET /v1/catalog 的 meter / unit 取值一致，见文档「计费与余额」）。
+const METER_LABELS: Record<string, string> = {
+  input: '输入',
+  output: '输出',
+  input_cache_read: '缓存命中输入',
+  input_cache_write: '缓存写入',
+  output_reasoning: '推理输出',
+  image: '图像生成',
+  input_char: '语音合成',
+  audio_second: '语音识别',
+  request: '按次',
+};
+const UNIT_SUFFIX: Record<string, string> = {
+  per_1m_tokens: '百万 Token',
+  per_image: '张',
+  per_1m_chars: '百万字符',
+  per_second: '秒',
+  per_request: '次',
+};
+
+// formatPriceComponent 把一个售价分项格式化成「¥0.05 / 张」。
+export function formatPriceComponent(c: CatalogSellPriceComponent, symbol: string): string {
+  return `${symbol}${c.unitPrice} / ${UNIT_SUFFIX[c.unit] ?? c.unit}`;
+}
+
+// catalogPriceItems 按计量项列出售价（只取默认档，计量项顺序与目录一致）。
+function catalogPriceItems(cm: CatalogModel, symbol: string): PriceItem[] {
+  return (cm.sellPrice?.components ?? []).map((c) => ({
+    label: METER_LABELS[c.meter] ?? c.meter,
+    display: formatPriceComponent(c, symbol),
+  }));
+}
+
+// catalogModalities / catalogTypeTags 由目录的 type + capabilities 推导模态与分类标签，
+// 让图像、语音、嵌入、重排序模型在模型库里能被正确筛选（mock 数据只覆盖对话模型）。
+function catalogModalities(cm: CatalogModel): ModalityType[] {
+  switch (cm.type) {
+    case 'image':
+      return ['text', 'image'];
+    case 'audio':
+      return cm.capabilities.includes('asr') ? ['audio'] : ['text', 'audio'];
+    case 'chat':
+      return cm.capabilities.includes('vision') ? ['text', 'image'] : ['text'];
+    default:
+      return ['text'];
+  }
+}
+
+function catalogTypeTags(cm: CatalogModel): string[] {
+  switch (cm.type) {
+    case 'embedding':
+      return ['embedding'];
+    case 'rerank':
+      return ['rerank'];
+    case 'image':
+      return ['image-generation'];
+    case 'audio':
+      return cm.capabilities.includes('asr') ? ['transcription'] : ['voice'];
+    default:
+      return [];
+  }
+}
+
+// priceCell 是模型表格「输入 / 输出价格」两列的内容：真实目录模型按计量项展示
+// （CNY，非 token 计价的模型在输入列展示其计量项，如「¥0.05 / 张」）；mock 数据保持原样。
+export function priceCell(model: Model, side: 'input' | 'output'): string | null {
+  if (!model.priceItems) {
+    if (side === 'input') return model.isHourly ? model.inputPriceDisplay : `$${model.inputPricePerM.toFixed(2)}`;
+    return model.outputPriceDisplay ? (model.isHourly ? '免费' : `$${model.outputPricePerM.toFixed(2)}`) : null;
+  }
+  const label = side === 'input' ? '输入' : '输出';
+  const item = model.priceItems.find((p) => p.label === label);
+  if (item) return item.display;
+  if (side === 'input' && model.priceItems.length > 0) return model.priceItems[0].display;
+  return null;
+}
+
 // modelFromCatalog 把 GET /v1/catalog 的一条真实模型数据转成 Model——技术
 // 方案迭代6：模型库以这个接口为主数据源，mockOverride（按 id 从
 // INITIAL_MODELS 里找到的同名条目，找不到则 undefined）只用来补运营还没
@@ -828,6 +905,15 @@ export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model 
   // 售价来自 sell_price.currency（技术方案：对外售价统一 CNY），用 ¥ 而不是
   // mock 数据惯用的 $，避免用户把真实计价误认成美元。
   const priceSymbol = cm.sellPrice?.currency === 'USD' ? '$' : '¥';
+  const priceItems = catalogPriceItems(cm, priceSymbol);
+  // 非 token 计价（图像、语音）的模型没有 input/output 单价，列表里展示第一个计量项。
+  const tokenPriced = !!(inputComponent || outputComponent);
+  const typeTags = catalogTypeTags(cm);
+  const operatorTags = cm.tags && cm.tags.length > 0 ? cm.tags : mockOverride?.tags || [];
+  const modalities = catalogModalities(cm);
+  if (cm.type === 'chat') {
+    for (const m of mockOverride?.modalities ?? []) if (!modalities.includes(m)) modalities.push(m);
+  }
 
   return {
     id: cm.name,
@@ -847,12 +933,17 @@ export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model 
     maxOutputTokens: cm.maxOutput,
     inputPricePerM,
     outputPricePerM,
-    inputPriceDisplay: `${priceSymbol}${inputPricePerM} / 百万 Input Token`,
-    outputPriceDisplay: `${priceSymbol}${outputPricePerM} / 百万 Output Token`,
+    inputPriceDisplay: tokenPriced || priceItems.length === 0
+      ? `${priceSymbol}${inputPricePerM} / 百万 Input Token`
+      : `${priceItems[0].display}（${priceItems[0].label}）`,
+    // 没有 output 计量项的模型（嵌入、重排序、图像、语音）不展示输出价格。
+    outputPriceDisplay: outputComponent || (!cm.sellPrice && mockOverride?.outputPriceDisplay)
+      ? `${priceSymbol}${outputPricePerM} / 百万 Output Token`
+      : null,
     tokensDisplay: mockOverride?.tokensDisplay,
-    modalities: mockOverride?.modalities || ['text'],
+    modalities,
     category: mockOverride?.category || 'Other',
-    tags: cm.tags && cm.tags.length > 0 ? cm.tags : mockOverride?.tags || [],
+    tags: [...new Set([...operatorTags, ...typeTags])],
     variants: mockOverride?.variants || ['standard'],
     hasDiscount: mockOverride?.hasDiscount,
     discountPercent: mockOverride?.discountPercent,
@@ -864,6 +955,8 @@ export function modelFromCatalog(cm: CatalogModel, mockOverride?: Model): Model 
     modelAgeMonths: mockOverride?.modelAgeMonths ?? 0,
     isDeprecated: cm.status === 'deprecated' || mockOverride?.isDeprecated,
     scores: normalizeScores(cm.scores, mockOverride?.scores),
+    modelType: cm.type,
+    priceItems,
   };
 }
 
@@ -891,7 +984,7 @@ export function matchesPrimaryTag(model: Model, tag: string): boolean {
     case 'text':
       return model.modalities.includes('text');
     case 'image':
-      return model.modalities.includes('image');
+      return model.modalities.includes('image') || model.tags.includes('image-generation');
     case 'video':
       return model.modalities.includes('video');
     case 'audio':

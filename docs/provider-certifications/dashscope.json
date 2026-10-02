@@ -1,0 +1,218 @@
+{
+  "provider": "dashscope",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "protocol": "openai",
+  "preset": "dashscope",
+  "key_env": "DASHSCOPE_API_KEY",
+  "voice": "alloy",
+  "models": {
+    "asr": "qwen3-asr-flash",
+    "chat": "qwen-flash",
+    "embedding": "text-embedding-v4",
+    "image": "qwen-image-3.0",
+    "rerank": "qwen3-rerank",
+    "tts": "qwen3-tts-flash",
+    "vlm": "qwen3-vl-flash"
+  },
+  "checked_at": "2026-10-02T10:43:32.7109651Z",
+  "key_valid": {
+    "capability": "key",
+    "model": "",
+    "status": "pass",
+    "latency_ms": 704,
+    "detail": "HTTP 200 via models"
+  },
+  "model_list": {
+    "total": 261,
+    "paths": {
+      "/models": 261
+    },
+    "missing": [
+      "qwen3-asr-flash",
+      "qwen3-rerank",
+      "text-embedding-v4"
+    ]
+  },
+  "checks": [
+    {
+      "capability": "chat",
+      "model": "qwen-flash",
+      "status": "pass",
+      "latency_ms": 640,
+      "detail": "我是通义千问，阿里巴巴集团研发的超大规模语言模型，能回答问题、创作文字，如写故事、写公文、写邮件、写剧本、逻辑推理、编程…",
+      "usage": {
+        "InputTokens": 13,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 49,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "chat_stream",
+      "model": "qwen-flash",
+      "status": "pass",
+      "latency_ms": 295,
+      "detail": "9 chunks, usage ok",
+      "usage": {
+        "InputTokens": 9,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "OutputTokens": 9,
+        "ReasoningTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "AudioMillis": 0,
+        "Requests": 0,
+        "UpstreamCost": 0,
+        "Source": "upstream"
+      }
+    },
+    {
+      "capability": "tools",
+      "model": "qwen-flash",
+      "status": "pass",
+      "latency_ms": 302,
+      "detail": "tool_calls=1",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 151,
+        "OutputTokens": 19,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "vlm",
+      "model": "qwen3-vl-flash",
+      "status": "pass",
+      "latency_ms": 2887,
+      "detail": "图片里是一只**狗**，具体来看，它很像一只**金毛寻回犬**（Golden Retriever）或其混种（如金毛与拉布…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 1039,
+        "OutputTokens": 205,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "embedding",
+      "model": "text-embedding-v4",
+      "status": "pass",
+      "latency_ms": 170,
+      "detail": "dim=1024",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 4,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "rerank",
+      "model": "qwen3-rerank",
+      "status": "pass",
+      "latency_ms": 142,
+      "detail": "codec=openai.passthrough {\"id\":\"7fefc05b-9c7a-9f8a-921e-7bf0a80b555d\",\"model\":\"qwen3-rerank\",\"object\":\"li…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 45,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "image",
+      "model": "qwen-image-3.0",
+      "status": "pass",
+      "latency_ms": 57919,
+      "detail": "codec=dashscope.image {\"created\":1790930836,\"data\":[{\"url\":\"https://dashscope-a717.oss-accelerate.aliy…",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 1,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "tts",
+      "model": "qwen3-tts-flash",
+      "status": "pass",
+      "latency_ms": 1035,
+      "detail": "codec=dashscope.tts audio/wav 172844 bytes",
+      "usage": {
+        "AudioMillis": 0,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 0,
+        "Source": "",
+        "UpstreamCost": 0
+      }
+    },
+    {
+      "capability": "asr",
+      "model": "qwen3-asr-flash",
+      "status": "pass",
+      "latency_ms": 700,
+      "detail": "codec=dashscope.asr_chat {\"text\":\"今天天气很好，我们一起去公园散步吧。\",\"usage\":{\"seconds\":3,\"type\":\"duration\"}}",
+      "usage": {
+        "AudioMillis": 3000,
+        "CacheReadTokens": 0,
+        "CacheWriteTokens": 0,
+        "Images": 0,
+        "InputChars": 0,
+        "InputTokens": 0,
+        "OutputTokens": 0,
+        "ReasoningTokens": 0,
+        "Requests": 1,
+        "Source": "upstream",
+        "UpstreamCost": 0
+      }
+    }
+  ]
+}

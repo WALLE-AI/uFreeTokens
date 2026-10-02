@@ -60,6 +60,12 @@ OpenAI 协议约定以 `data: [DONE]` 标记流结束。网关在读到上游的
 
 流一旦开始（已经返回 `200` 和第一个字节），网关就不会再切换渠道重试；如果上游在中途中断，流会直接结束，**不会**再发送一个错误事件。可以通过最后是否收到带 `finish_reason` 的 chunk 判断输出是否完整。
 
+<Callout type="info" title="语音合成的流式不是 SSE">
+
+`/v1/audio/speech` 的 `stream: true` 返回的是分块传输的二进制音频，而不是本页介绍的 `text/event-stream` 事件流，见[语音合成与识别](/docs/zh/audio)。
+
+</Callout>
+
 ## 用量 chunk
 
 为了准确计费，网关**总是**要求上游在流的末尾返回用量（向上游注入 `stream_options.include_usage=true`）。但这个只含用量的 chunk 是否转发给你，取决于你自己的请求：

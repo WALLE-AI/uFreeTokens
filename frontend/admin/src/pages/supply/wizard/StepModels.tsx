@@ -140,7 +140,7 @@ export function StepModels({ state, update, goto, mode = 'onboard' }: StepProps)
       for (const id of s.selected) {
         if (!rows[id]) {
           const m = s.models.find((x) => x.id === id);
-          if (m) rows[id] = defaultRow(m, s.refPrices[id], s.platformStatus[id]);
+          if (m) rows[id] = defaultRow(m, s.refPrices[id], s.platformStatus[id], s.provider.code || s.provider.presetId);
         }
       }
       return { ...s, rows };

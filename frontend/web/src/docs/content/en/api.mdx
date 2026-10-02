@@ -3,7 +3,7 @@ title: API reference overview
 description: Base URL, authentication, request and response conventions, error format, money units, and the full list of endpoints.
 section: api
 order: 0
-translatedFrom: a9cd4bd3ecdb
+translatedFrom: 497e3e847f12
 ---
 
 ## Base URL
@@ -26,8 +26,8 @@ Only `Authorization: Bearer` is accepted; `x-api-key` is not. See [Authenticatio
 
 ## Request and response conventions
 
-- Request bodies are JSON; sending `Content-Type: application/json` is recommended.
-- Successful responses are JSON; streaming requests (`stream: true`) return `text/event-stream`.
+- Request bodies are JSON; sending `Content-Type: application/json` is recommended. Speech recognition uses `multipart/form-data`.
+- Successful responses are JSON; streaming chat (`stream: true`) returns `text/event-stream`; speech synthesis returns an audio file.
 - Field names and semantics follow OpenAI (Anthropic for `/v1/messages`). The gateway forwards your parameters to the upstream model, so support for optional parameters can vary between models.
 
 ## Request IDs
@@ -60,7 +60,7 @@ All errors use the OpenAI-compatible shape (including on `/v1/messages`):
 
 | HTTP status | `type` |
 |---|---|
-| 400, 404, etc. | `invalid_request_error` |
+| 400, 404, 413, 415, etc. | `invalid_request_error` |
 | 401 | `authentication_error` |
 | 402 | `insufficient_quota` |
 | 403 | `permission_error` |
@@ -86,6 +86,12 @@ See [Billing](/docs/en/billing).
 | POST | [`/v1/chat/completions`](/docs/en/api/createChatCompletion) | Chat completions, with streaming and tool calling | API key |
 | POST | [`/v1/embeddings`](/docs/en/api/createEmbedding) | Text embeddings | API key |
 | POST | [`/v1/messages`](/docs/en/api/createMessage) | Anthropic Messages-compatible entry point | API key |
+| POST | [`/v1/rerank`](/docs/en/api/createRerank) | Document reranking | API key |
+| POST | [`/v1/images/generations`](/docs/en/api/createImage) | Image generation | API key |
+| POST | [`/v1/audio/speech`](/docs/en/api/createSpeech) | Speech synthesis (returns an audio file) | API key |
+| POST | [`/v1/audio/transcriptions`](/docs/en/api/createTranscription) | Speech recognition (`multipart/form-data` upload) | API key |
+
+Request bodies are generally JSON; `/v1/audio/transcriptions` uploads a file as `multipart/form-data`, and a successful `/v1/audio/speech` response is binary audio. Request bodies are limited to 20 MB; larger ones return `413 request_too_large`.
 
 ### Not implemented yet
 
@@ -94,6 +100,3 @@ These paths are reserved and currently return `503` with error code `not_impleme
 | Method | Path | Description |
 |---|---|---|
 | POST | [`/v1/completions`](/docs/en/api/createCompletion) | Legacy text completions |
-| POST | [`/v1/images/generations`](/docs/en/api/createImage) | Image generation |
-| POST | [`/v1/audio/transcriptions`](/docs/en/api/createTranscription) | Speech-to-text |
-| POST | [`/v1/audio/speech`](/docs/en/api/createSpeech) | Text-to-speech |

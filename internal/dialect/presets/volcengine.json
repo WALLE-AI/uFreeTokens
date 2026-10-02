@@ -1,0 +1,9 @@
+{
+  "notes": "来自官方文档（2026-10-02），尚未实测认证：图像不认 n、需要 size≥2K、默认带水印；无通用 rerank；TTS/ASR 属于豆包语音（独立协议）。",
+  "endpoints": {
+    "images": {"transforms": ["ark_n_to_sequential"], "defaults": {"watermark": false, "size": "2K"}},
+    "rerank": {"supported": false},
+    "speech": {"supported": false},
+    "transcriptions": {"supported": false}
+  }
+}

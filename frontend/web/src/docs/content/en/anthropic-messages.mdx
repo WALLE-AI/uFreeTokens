@@ -3,7 +3,7 @@ title: Anthropic Messages API
 description: Call models on the gateway with the Anthropic Messages API request and response format via POST /v1/messages.
 section: guides
 order: 20
-translatedFrom: df3ab3d5defa
+translatedFrom: c335c1a978c4
 ---
 
 `POST /v1/messages` accepts requests in the Anthropic Messages API shape and returns Anthropic-shaped responses. Internally the gateway translates the request to the `chat.completions` format and runs it through exactly the same authentication, rate limiting, pre-authorization, routing and settlement pipeline as `/v1/chat/completions`. Billing is identical, and so is the set of callable models (any chat model in the catalog, not just Claude).
@@ -32,7 +32,7 @@ With the official Anthropic SDKs, pass your key as `auth_token` (Python) / `auth
 | --- | --- | --- | --- |
 | `model` | string | Yes | Model ID, e.g. `deepseek-ai/DeepSeek-V4-Flash`. See the [model list](/docs/en/models) |
 | `max_tokens` | integer | Recommended | Maximum output tokens; also determines the pre-authorization cap. Required by the Anthropic protocol; the gateway does not enforce it, and if omitted pre-authorizes based on the model's maximum output length (subject to the platform cap) |
-| `messages` | array | Yes | Conversation messages with `role` `user` or `assistant`; `content` is a string or an array of `{"type": "text", "text": "..."}` blocks |
+| `messages` | array | Yes | Conversation messages with `role` `user` or `assistant`; `content` is a string or an array of `text` and `image` blocks (see [Image input](#image-input)) |
 | `system` | string or array | No | System prompt; a string or an array of text blocks |
 | `temperature` | number | No | Passed to the upstream as-is |
 | `top_p` | number | No | Passed to the upstream as-is |
@@ -40,9 +40,20 @@ With the official Anthropic SDKs, pass your key as `auth_token` (Python) / `auth
 
 Translation rules to keep in mind:
 
-- In a `content` array, only blocks of `type` `text` are kept and concatenated into one string; images and other non-text blocks are **silently dropped**.
+- In a `content` array, `text` and `image` blocks are kept; blocks of other types (such as `document` or `tool_result`) are **silently dropped**. Text-only content is concatenated into one string; content with images is converted to OpenAI multi-part content.
 - Fields not listed above (such as `top_k` or `metadata`) are not forwarded to the upstream.
 - A request body containing a `tools` field is rejected with `400 invalid_request`.
+
+## Image input
+
+Put `image` blocks in the `content` array. `source` supports two forms, and you need a model whose `capabilities` include `vision`:
+
+```json
+{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo..."}}
+{"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}}
+```
+
+`data` does not include the `data:image/png;base64,` prefix. See [Vision](/docs/en/vision) for size limits and billing.
 
 ## Response
 

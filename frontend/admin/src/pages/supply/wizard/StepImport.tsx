@@ -6,8 +6,9 @@ import { importModels } from '../../../api/catalog';
 import { Button } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
 import type { ImportModelItemInput, ImportModelRow } from '../../../types';
-import { resolvedAccountId, resolvedProviderId, type ImportResult, type RowConfig, type WizardState } from './state';
+import { KIND_INFO, resolvedAccountId, resolvedProviderId, type ImportResult, type RowConfig, type WizardState } from './state';
 import { StepFooter, type StepProps } from './ui';
+import { unitLabel } from '../../pricing/shared';
 
 // 每批提交的模型数：服务端逐个模型各自一个事务导入，分批只是为了进度可见、可中途停止。
 const IMPORT_BATCH = 10;
@@ -16,20 +17,36 @@ const IMPORT_BATCH = 10;
 // 由服务端用 decimal 计算（不再在浏览器里用浮点数算售价并提交）。
 function importItem(id: string, row: RowConfig, s: WizardState): ImportModelItemInput {
   const opt = (v: string | null) => (v !== null && v.trim() !== '' ? v.trim() : undefined);
-  return {
+  const kind = row.kind ?? 'chat';
+  const info = KIND_INFO[kind];
+  const base: ImportModelItemInput = {
     upstream_model: id,
     name: row.name.trim(),
     family: row.family.trim(),
-    type: 'chat',
+    type: info.type,
     context_window: Number(row.contextWindow),
     max_output: Number(row.maxOutput),
-    capabilities: ['stream'],
-    cost_input: opt(row.costIn),
-    cost_output: opt(row.costOut),
     markup_percent: opt(row.markup) ?? opt(s.globalMarkup),
-    sell_input: opt(row.sellIn),
-    sell_output: opt(row.sellOut),
     keep_existing_sell: row.keepSell,
+  };
+  if (kind === 'chat') {
+    return {
+      ...base,
+      capabilities: row.vision ? ['stream', 'vision'] : ['stream'],
+      cost_input: opt(row.costIn),
+      cost_output: opt(row.costOut),
+      sell_input: opt(row.sellIn),
+      sell_output: opt(row.sellOut),
+    };
+  }
+  // 非对话模型按计量项定价：一个计量项（张 / 百万字符 / 秒 / 百万 token）
+  const comp = (price: string | undefined) => (price === undefined ? [] : [{ meter: info.meter!, unit: info.unit!, price }]);
+  return {
+    ...base,
+    capabilities: kind === 'tts' ? ['tts'] : kind === 'asr' ? ['asr'] : [],
+    cost_components: comp(opt(row.costIn)),
+    sell_components: comp(opt(row.sellIn)),
+    param_overrides: kind === 'tts' && row.voicePrefix ? { $voice_prefix_upstream_model: true } : undefined,
   };
 }
 
@@ -207,7 +224,11 @@ function PlanLine({ row }: { row: ImportModelRow }) {
   const margin = row.margin_ratio !== null ? `${(Number(row.margin_ratio) * 100).toFixed(2)}%` : '—';
   return (
     <div className="text-[11px] text-gray-500 mt-0.5 font-mono">
-      {row.publish_sell_price ? `售价 ¥${row.sell_input} / ¥${row.sell_output} · 毛利 ${margin}` : '保留现有售价'}
+      {!row.publish_sell_price
+        ? '保留现有售价'
+        : row.components?.length
+          ? `售价 ${row.components.map((c) => `¥${c.sell} ${unitLabel(c.unit)}`).join('、')} · 毛利 ${margin}`
+          : `售价 ¥${row.sell_input} / ¥${row.sell_output} · 毛利 ${margin}`}
     </div>
   );
 }

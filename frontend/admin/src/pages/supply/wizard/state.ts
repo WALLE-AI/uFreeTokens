@@ -1,4 +1,4 @@
-import type { FXRate, Protocol, ReferencePrice, UpstreamModel } from '../../../types';
+import type { FXRate, Meter, PriceUnit, Protocol, ReferencePrice, UpstreamModel } from '../../../types';
 
 // 接入向导的状态（UI_DESIGN.md §5.1）。整个对象存 sessionStorage，刷新可恢复；
 // 上游密钥明文**不**持久化（只在内存里，刷新后需要重新输入）。
@@ -9,13 +9,45 @@ export type Step = 1 | 2 | 3 | 4 | 5;
 // 但这个上游账号还没有对应渠道（导入会新增一条渠道）；listed = 渠道已存在。
 export type PlatformStatus = 'new' | 'vm_exists' | 'listed';
 
+// ModelKind 是向导里的模型种类：决定导入的 type / capabilities 与计价方式
+// （网关按 type + 能力决定模型服务哪个接口，见多模态技术方案 §2.1）。
+export type ModelKind = 'chat' | 'embedding' | 'rerank' | 'image' | 'tts' | 'asr';
+
+// 非对话模型只有一个计量项：costIn / sellIn 就是这个计量项的单价。
+export const KIND_INFO: Record<ModelKind, { label: string; type: string; meter?: Meter; unit?: PriceUnit; unitLabel: string }> = {
+  chat: { label: '对话', type: 'chat', unitLabel: '百万 token（入 / 出）' },
+  embedding: { label: '嵌入', type: 'embedding', meter: 'input', unit: 'per_1m_tokens', unitLabel: '百万 token' },
+  rerank: { label: '重排序', type: 'rerank', meter: 'input', unit: 'per_1m_tokens', unitLabel: '百万 token' },
+  image: { label: '图像生成', type: 'image', meter: 'image', unit: 'per_image', unitLabel: '张' },
+  tts: { label: '语音合成', type: 'audio', meter: 'input_char', unit: 'per_1m_chars', unitLabel: '百万字符' },
+  asr: { label: '语音识别', type: 'audio', meter: 'audio_second', unit: 'per_second', unitLabel: '秒' },
+};
+
+// inferKind 按模型 ID 猜种类（运营可在定价步骤里改），覆盖常见的开源模型命名。
+export function inferKind(id: string): ModelKind {
+  const s = id.toLowerCase();
+  if (/rerank/.test(s)) return 'rerank';
+  if (/embed|bge-(m3|large|base|small)|gte-|e5-/.test(s)) return 'embedding';
+  if (/cosyvoice|tts|speech|moss-ttsd|fish-speech/.test(s)) return 'tts';
+  if (/sensevoice|whisper|asr|transcri|paraformer/.test(s)) return 'asr';
+  if (/kolors|flux|stable-diffusion|sdxl|sd3|qwen-image|z-image|dall-e|gpt-image|seedream|cogview|hunyuan-image/.test(s)) return 'image';
+  return 'chat';
+}
+
+export function inferVision(id: string): boolean {
+  return /(^|[-_/])vl([-_]|$)|vision|-vl-|4\.\dv\b|omni|pixtral|llava/i.test(id);
+}
+
 export interface RowConfig {
   name: string; // 虚拟模型名（对外 model ID），默认 = 上游模型 ID
+  kind: ModelKind;
+  vision: boolean; // 对话模型是否可输入图片（导入为 vision 能力）
+  voicePrefix: boolean; // 语音合成：短音色名补上游模型前缀（SiliconFlow 需要）
   family: string;
   contextWindow: string;
   maxOutput: string;
-  costIn: string; // 成本币种（WizardState.costCurrency）/ 百万 token
-  costOut: string;
+  costIn: string; // 成本币种（WizardState.costCurrency）/ 百万 token；非对话模型是唯一计量项的单价
+  costOut: string; // 只有对话模型用
   markup: string | null; // 单行加价率覆盖（百分比），null = 用全局值
   sellIn: string | null; // 手工覆盖售价（CNY / 百万 token），null = 自动计算
   sellOut: string | null;
@@ -114,7 +146,12 @@ export function loadState(key = STORAGE_KEY, fallback: WizardState = INITIAL_STA
     for (const [k, v] of Object.entries(parsed.results ?? {})) {
       results[k] = v.state === 'running' ? { state: 'pending' } : v;
     }
-    return { ...fallback, ...parsed, results };
+    // 旧版本保存的状态没有 kind 等字段，按对话模型补齐
+    const rows: Record<string, RowConfig> = {};
+    for (const [k, r] of Object.entries(parsed.rows ?? {})) {
+      rows[k] = { ...r, kind: r.kind ?? 'chat', vision: r.vision ?? false, voicePrefix: r.voicePrefix ?? false };
+    }
+    return { ...fallback, ...parsed, results, rows };
   } catch {
     return fallback;
   }
@@ -173,14 +210,20 @@ export function defaultFamily(m: UpstreamModel): string {
   return (last.toLowerCase().split(/[-_.:\s]/)[0] || 'unknown').slice(0, 32);
 }
 
-export function defaultRow(m: UpstreamModel, ref: ReferencePrice | undefined, status: PlatformStatus | undefined): RowConfig {
+export function defaultRow(m: UpstreamModel, ref: ReferencePrice | undefined, status: PlatformStatus | undefined, providerCode = ''): RowConfig {
+  const kind = inferKind(m.id);
+  // 参考价只有 token 单价，只对按 token 计价的种类有意义
+  const tokenRef = (kind === 'chat' || kind === 'embedding' || kind === 'rerank') && ref?.matched;
   return {
     name: m.id,
+    kind,
+    vision: kind === 'chat' && inferVision(m.id),
+    voicePrefix: kind === 'tts' && /siliconflow/i.test(providerCode),
     family: defaultFamily(m),
     contextWindow: '128000',
     maxOutput: '8192',
-    costIn: ref?.matched && ref.input ? ref.input : '',
-    costOut: ref?.matched && ref.output ? ref.output : '',
+    costIn: tokenRef && ref?.input ? ref.input : '',
+    costOut: tokenRef && kind === 'chat' && ref?.output ? ref.output : '',
     markup: null,
     sellIn: null,
     sellOut: null,
@@ -222,15 +265,17 @@ export function computeRow(
   currency = 'USD',
 ): RowPricing {
   const errors: string[] = [];
+  // 非对话模型只有一个计量项（costIn / sellIn），输出侧不参与
+  const single = (row.kind ?? 'chat') !== 'chat';
   const cIn = pos(row.costIn);
-  const cOut = pos(row.costOut);
+  const cOut = single ? null : pos(row.costOut);
   const markupPct = pos(row.markup ?? globalMarkup) ?? 0;
   const conv = (c: number | null) => (c === null || fx === null ? null : c * fx * multiplier);
   const costInCNY = conv(cIn);
   const costOutCNY = conv(cOut);
   const auto = (c: number | null) => (c === null ? null : round4(c * (1 + markupPct / 100)));
   const sellIn = row.sellIn !== null ? pos(row.sellIn) : auto(costInCNY);
-  const sellOut = row.sellOut !== null ? pos(row.sellOut) : auto(costOutCNY);
+  const sellOut = single ? null : row.sellOut !== null ? pos(row.sellOut) : auto(costOutCNY);
 
   let margin: number | null = null;
   const check = (s: number | null, c: number | null) => {
@@ -245,9 +290,9 @@ export function computeRow(
   if (!row.family.trim()) errors.push('缺少 family');
   if (!(Number(row.contextWindow) > 0)) errors.push('上下文窗口无效');
   if (!(Number(row.maxOutput) > 0)) errors.push('最大输出无效');
-  if (cIn === null || cOut === null) errors.push('缺少成本价');
+  if (cIn === null || (!single && cOut === null)) errors.push('缺少成本价');
   if (fx === null) errors.push(`缺少 ${currency}→CNY 汇率`);
-  if (!row.keepSell && (!sellIn || !sellOut)) errors.push('缺少售价');
+  if (!row.keepSell && (!sellIn || (!single && !sellOut))) errors.push('缺少售价');
   if (!row.keepSell && margin !== null && margin < 0) errors.push('负毛利');
 
   return { costInCNY, costOutCNY, sellIn, sellOut, margin, missingRef: !ref?.matched, errors };

@@ -92,7 +92,7 @@ export interface OperationEntry {
   op: Operation;
 }
 
-export const TAG_ORDER = ['Catalog', 'Models', 'Usage', 'Chat', 'Embeddings', 'Anthropic', 'Not implemented'];
+export const TAG_ORDER = ['Catalog', 'Models', 'Usage', 'Chat', 'Embeddings', 'Anthropic', 'Rerank', 'Images', 'Audio', 'Not implemented'];
 
 export function operations(): OperationEntry[] {
   const out: OperationEntry[] = [];
@@ -145,4 +145,24 @@ export function descHtml(node: Described | undefined, locale: Locale): string {
 export function jsonContent(r: { content?: Record<string, MediaType> } | undefined): MediaType | undefined {
   if (!r?.content) return undefined;
   return r.content['application/json'] ?? Object.values(r.content)[0];
+}
+
+// isMultipart：请求体是 multipart/form-data（语音识别上传文件）。示例是表单字段对象，
+// 文件字段（schema format=binary）不在示例里，由调用方另行提供。
+export function isMultipart(entry: OperationEntry): boolean {
+  return !!entry.op.requestBody?.content?.['multipart/form-data'];
+}
+
+// fileFields 是 multipart 请求里 format=binary 的字段名（如 file）。
+export function fileFields(entry: OperationEntry): string[] {
+  const schema = resolve(entry.op.requestBody?.content?.['multipart/form-data']?.schema);
+  return Object.entries(schema?.properties ?? {})
+    .filter(([, p]) => p.format === 'binary')
+    .map(([name]) => name);
+}
+
+// binaryResponseType：200 响应是二进制（如语音合成的 audio/mpeg）时返回其 Content-Type。
+export function binaryResponseType(entry: OperationEntry): string | undefined {
+  const content = resolve(entry.op.responses?.['200'])?.content ?? {};
+  return Object.keys(content).find((ct) => ct !== 'application/json' && ct !== 'text/event-stream' && content[ct]?.schema?.format === 'binary');
 }

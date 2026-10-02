@@ -76,6 +76,17 @@ export interface Model {
   // 也就是这把 API Key 实际能调用它，而不是纯 mock 展示数据。未连接 Key 时
   // 始终是 undefined（见 App.tsx 的模型列表合并逻辑）。
   isCallable?: boolean;
+  // modelType 是 GET /v1/catalog 的 type（chat / embedding / rerank / image / audio），
+  // 决定模型用哪个接口调用；mock 数据没有这个字段。
+  modelType?: string;
+  // priceItems 是按计量项格式化好的售价（如「¥0.05 / 张」），非 token 计价的模型
+  // （图像、语音）只能靠它展示价格；mock 数据没有这个字段。
+  priceItems?: PriceItem[];
+}
+
+export interface PriceItem {
+  label: string; // 输入 / 输出 / 每张图片 / 合成字符 / 识别时长 / 按次
+  display: string; // ¥0.05 / 张
 }
 
 export interface FilterState {

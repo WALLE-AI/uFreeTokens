@@ -1229,14 +1229,14 @@
         "description": "A model in the public catalog. Internal routing details (channels, upstream accounts, cost prices) are never exposed.",
         "properties": {
           "capabilities": {
-            "description": "Declared capabilities, e.g. `stream`, `tools`, `json_schema`, `vision`.",
+            "description": "Declared capabilities, e.g. `stream`, `tools`, `json_schema`, `vision` (accepts image input), `tts` (speech synthesis), `asr` (speech recognition).",
             "items": {
               "type": "string"
             },
             "type": "array",
             "x-i18n": {
               "zh": {
-                "description": "声明的能力，如 `stream`、`tools`、`json_schema`、`vision`。"
+                "description": "声明的能力，如 `stream`、`tools`、`json_schema`、`vision`（可输入图片）、`tts`（语音合成）、`asr`（语音识别）。"
               }
             }
           },
@@ -1273,6 +1273,22 @@
             "x-i18n": {
               "zh": {
                 "description": "模型系列，如 `deepseek`。"
+              }
+            }
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limits"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Interface constraints of this model on the platform, derived from the upstream providers serving it (the strictest across them). Omitted when there are none.",
+            "x-i18n": {
+              "zh": {
+                "description": "该模型在本平台上的接口约束，由提供它的上游决定（取所有上游中最严格的一项）；没有约束时省略。"
               }
             }
           },
@@ -1351,11 +1367,11 @@
             }
           },
           "type": {
-            "description": "Model type: `chat`, `embedding`, `image`, `audio` or `rerank`.",
+            "description": "Model type: `chat`, `embedding`, `image`, `audio` or `rerank`. It decides which endpoint the model serves; `audio` models are told apart by the `tts` / `asr` capability.",
             "type": "string",
             "x-i18n": {
               "zh": {
-                "description": "模型类型：`chat`、`embedding`、`image`、`audio` 或 `rerank`。"
+                "description": "模型类型：`chat`、`embedding`、`image`、`audio` 或 `rerank`，决定模型可用于哪个接口；`audio` 模型再按能力 `tts` / `asr` 区分。"
               }
             }
           }
@@ -1416,20 +1432,20 @@
         "description": "One price component.",
         "properties": {
           "meter": {
-            "description": "What is metered: `input`, `input_cache_read`, `input_cache_write`, `output`, `output_reasoning` or `request`.",
+            "description": "What is metered: `input`, `input_cache_read`, `input_cache_write`, `output`, `output_reasoning`, `request`, `image` (generated images), `input_char` (speech-synthesis input characters) or `audio_second` (transcribed audio duration).",
             "type": "string",
             "x-i18n": {
               "zh": {
-                "description": "计量项：`input`、`input_cache_read`、`input_cache_write`、`output`、`output_reasoning` 或 `request`。"
+                "description": "计量项：`input`、`input_cache_read`、`input_cache_write`、`output`、`output_reasoning`、`request`、`image`（生成的图片）、`input_char`（语音合成输入字符）或 `audio_second`（语音识别音频时长）。"
               }
             }
           },
           "unit": {
-            "description": "Pricing unit: `per_1m_tokens`, `per_request`, `per_image` or `per_second`.",
+            "description": "Pricing unit: `per_1m_tokens`, `per_request`, `per_image`, `per_second` or `per_1m_chars`.",
             "type": "string",
             "x-i18n": {
               "zh": {
-                "description": "计价单位：`per_1m_tokens`、`per_request`、`per_image` 或 `per_second`。"
+                "description": "计价单位：`per_1m_tokens`、`per_request`、`per_image`、`per_second` 或 `per_1m_chars`。"
               }
             }
           },
@@ -1478,16 +1494,16 @@
             }
           },
           "messages": {
-            "description": "Conversation messages, passed through unchanged. Their size counts toward the input-token estimate used for pre-authorization.",
+            "description": "Conversation messages, passed through unchanged. Their text size counts toward the input-token estimate used for pre-authorization; each image counts as a fixed 1,500 tokens.",
             "items": {
               "additionalProperties": true,
               "description": "A chat message (passed through unchanged).",
               "properties": {
                 "content": {
-                  "description": "Message content: a string or an array of content parts.",
+                  "description": "Message content: a string or an array of content parts, e.g. `{\"type\": \"text\", \"text\": \"...\"}` and `{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://... or data:image/png;base64,...\"}}` (images need a model with the `vision` capability).",
                   "x-i18n": {
                     "zh": {
-                      "description": "消息内容：字符串或内容分段数组。"
+                      "description": "消息内容：字符串或内容分段数组，如 `{\"type\": \"text\", \"text\": \"...\"}` 与 `{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://... 或 data:image/png;base64,...\"}}`（图片需要具备 `vision` 能力的模型）。"
                     }
                   }
                 },
@@ -1514,7 +1530,7 @@
             "type": "array",
             "x-i18n": {
               "zh": {
-                "description": "对话消息，原样透传；其大小计入预扣时的输入 token 估算。"
+                "description": "对话消息，原样透传；文本大小计入预扣时的输入 token 估算，每张图片按固定 1,500 token 估算。"
               }
             }
           },
@@ -2004,9 +2020,201 @@
           }
         }
       },
+      "ImageGenerationRequest": {
+        "additionalProperties": true,
+        "description": "Image generation request. Only `model` is rewritten; all other fields are passed through, so both the OpenAI fields (`n`, `size`) and upstream-native fields (e.g. SiliconFlow's `image_size`, `batch_size`, `num_inference_steps`, `negative_prompt`, `seed`) can be used.",
+        "properties": {
+          "model": {
+            "description": "ID of an `image`-type model.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`image` 类型的模型 ID。"
+              }
+            }
+          },
+          "n": {
+            "description": "Number of images, 1-4 (default 1). `batch_size` is accepted as an alias.",
+            "maximum": 4,
+            "minimum": 1,
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "生成张数，1–4（默认 1）。也接受 `batch_size`。"
+              }
+            }
+          },
+          "prompt": {
+            "description": "Text description of the image.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "图片描述。"
+              }
+            }
+          },
+          "size": {
+            "description": "Image size such as `1024x1024`; supported values depend on the model.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "图片尺寸，如 `1024x1024`；可选值取决于模型。"
+              }
+            }
+          }
+        },
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "图像生成请求。只改写 `model`，其余字段原样透传，因此 OpenAI 字段（`n`、`size`）和上游原生字段（如 SiliconFlow 的 `image_size`、`batch_size`、`num_inference_steps`、`negative_prompt`、`seed`）都可以使用。"
+          }
+        }
+      },
+      "ImageGenerationResponse": {
+        "additionalProperties": true,
+        "description": "Generated images (OpenAI shape). Image URLs are temporary — download them promptly (SiliconFlow URLs expire after 1 hour).",
+        "properties": {
+          "created": {
+            "description": "Unix timestamp (seconds).",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "Unix 时间戳（秒）。"
+              }
+            }
+          },
+          "data": {
+            "description": "Generated images; billing counts these.",
+            "items": {
+              "additionalProperties": true,
+              "description": "One image.",
+              "properties": {
+                "b64_json": {
+                  "description": "Base64 image, when the model returns it instead of a URL.",
+                  "type": "string",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "模型返回 base64 而非链接时的图片数据。"
+                    }
+                  }
+                },
+                "url": {
+                  "description": "Temporary image URL.",
+                  "type": "string",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "临时图片链接。"
+                    }
+                  }
+                }
+              },
+              "type": "object",
+              "x-i18n": {
+                "zh": {
+                  "description": "一张图片。"
+                }
+              }
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "生成的图片；按条数计费。"
+              }
+            }
+          },
+          "id": {
+            "description": "The request ID.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "请求 ID。"
+              }
+            }
+          },
+          "model": {
+            "description": "The model ID you requested.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "你请求的模型 ID。"
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "created",
+          "data"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "生成的图片（OpenAI 形状）。图片 URL 是临时链接，请及时下载（SiliconFlow 的链接 1 小时后失效）。"
+          }
+        }
+      },
+      "Limits": {
+        "description": "Interface constraints of a model.",
+        "properties": {
+          "audio_formats": {
+            "description": "Audio formats speech synthesis actually returns, regardless of `response_format`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "语音合成实际返回的音频格式（与 `response_format` 无关）。"
+              }
+            }
+          },
+          "b64_only": {
+            "description": "Image generation returns `data[].b64_json` only, never `url`.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "图像生成只返回 `data[].b64_json`，不返回 `url`。"
+              }
+            }
+          },
+          "max_file_bytes": {
+            "description": "Maximum size of an uploaded file (speech recognition), in bytes.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "上传文件（语音识别）的大小上限，字节。"
+              }
+            }
+          },
+          "response_formats": {
+            "description": "Supported `response_format` values.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "支持的 `response_format` 取值。"
+              }
+            }
+          }
+        },
+        "required": [],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "模型的接口约束。"
+          }
+        }
+      },
       "MessageRequest": {
         "additionalProperties": true,
-        "description": "Anthropic Messages API request (text only). The request is translated to an OpenAI chat completion internally: only the fields below (plus `temperature`, `top_p` and `stop_sequences`) are carried over; other fields are ignored.",
+        "description": "Anthropic Messages API request (text and images). The request is translated to an OpenAI chat completion internally: only the fields below (plus `temperature`, `top_p` and `stop_sequences`) are carried over; other fields are ignored.",
         "properties": {
           "max_tokens": {
             "description": "Maximum output tokens. Optional for the gateway (unlike Anthropic's API), but recommended: it lowers the pre-authorized amount.",
@@ -2030,47 +2238,128 @@
                     },
                     {
                       "items": {
-                        "additionalProperties": true,
-                        "description": "A text content block.",
-                        "properties": {
-                          "text": {
-                            "description": "The text.",
-                            "type": "string",
+                        "anyOf": [
+                          {
+                            "additionalProperties": true,
+                            "description": "A text content block.",
+                            "properties": {
+                              "text": {
+                                "description": "The text.",
+                                "type": "string",
+                                "x-i18n": {
+                                  "zh": {
+                                    "description": "文本内容。"
+                                  }
+                                }
+                              },
+                              "type": {
+                                "const": "text",
+                                "description": "Always `text`. Non-text blocks are ignored.",
+                                "type": "string",
+                                "x-i18n": {
+                                  "zh": {
+                                    "description": "固定为 `text`；非文本块会被忽略。"
+                                  }
+                                }
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "type": "object",
                             "x-i18n": {
                               "zh": {
-                                "description": "文本内容。"
+                                "description": "文本内容块。"
                               }
                             }
                           },
-                          "type": {
-                            "const": "text",
-                            "description": "Always `text`. Non-text blocks are ignored.",
-                            "type": "string",
+                          {
+                            "additionalProperties": true,
+                            "description": "An image content block.",
+                            "properties": {
+                              "source": {
+                                "additionalProperties": true,
+                                "description": "`{\"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"...\"}` or `{\"type\": \"url\", \"url\": \"https://...\"}`.",
+                                "properties": {
+                                  "data": {
+                                    "description": "Base64 image data (no `data:` prefix).",
+                                    "type": "string",
+                                    "x-i18n": {
+                                      "zh": {
+                                        "description": "base64 图片数据（不带 `data:` 前缀）。"
+                                      }
+                                    }
+                                  },
+                                  "media_type": {
+                                    "description": "MIME type for `base64`, e.g. `image/png`.",
+                                    "type": "string",
+                                    "x-i18n": {
+                                      "zh": {
+                                        "description": "`base64` 时的 MIME 类型，如 `image/png`。"
+                                      }
+                                    }
+                                  },
+                                  "type": {
+                                    "description": "`base64` or `url`.",
+                                    "type": "string",
+                                    "x-i18n": {
+                                      "zh": {
+                                        "description": "`base64` 或 `url`。"
+                                      }
+                                    }
+                                  },
+                                  "url": {
+                                    "description": "Image URL for `url`.",
+                                    "type": "string",
+                                    "x-i18n": {
+                                      "zh": {
+                                        "description": "`url` 时的图片地址。"
+                                      }
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ],
+                                "type": "object",
+                                "x-i18n": {
+                                  "zh": {
+                                    "description": "`{\"type\": \"base64\", \"media_type\": \"image/png\", \"data\": \"...\"}` 或 `{\"type\": \"url\", \"url\": \"https://...\"}`。"
+                                  }
+                                }
+                              },
+                              "type": {
+                                "const": "image",
+                                "description": "Always `image`.",
+                                "type": "string",
+                                "x-i18n": {
+                                  "zh": {
+                                    "description": "固定为 `image`。"
+                                  }
+                                }
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "source"
+                            ],
+                            "type": "object",
                             "x-i18n": {
                               "zh": {
-                                "description": "固定为 `text`；非文本块会被忽略。"
+                                "description": "图片内容块。"
                               }
                             }
                           }
-                        },
-                        "required": [
-                          "type",
-                          "text"
-                        ],
-                        "type": "object",
-                        "x-i18n": {
-                          "zh": {
-                            "description": "文本内容块。"
-                          }
-                        }
+                        ]
                       },
                       "type": "array"
                     }
                   ],
-                  "description": "A string or an array of `text` blocks; non-text blocks are ignored.",
+                  "description": "A string or an array of `text` and `image` blocks (images need a model with the `vision` capability); other block types are ignored.",
                   "x-i18n": {
                     "zh": {
-                      "description": "字符串或 `text` 块数组；非文本块会被忽略。"
+                      "description": "字符串，或 `text` 与 `image` 块组成的数组（图片需要具备 `vision` 能力的模型）；其他类型的块会被忽略。"
                     }
                   }
                 },
@@ -2170,7 +2459,7 @@
         "type": "object",
         "x-i18n": {
           "zh": {
-            "description": "Anthropic Messages API 请求（仅文本）。网关在内部把它转译为 OpenAI 对话补全：只保留下列字段（以及 `temperature`、`top_p`、`stop_sequences`），其他字段会被忽略。"
+            "description": "Anthropic Messages API 请求（文本与图片）。网关在内部把它转译为 OpenAI 对话补全：只保留下列字段（以及 `temperature`、`top_p`、`stop_sequences`），其他字段会被忽略。"
           }
         }
       },
@@ -3045,6 +3334,235 @@
           }
         }
       },
+      "RerankRequest": {
+        "additionalProperties": true,
+        "description": "Rerank request (Cohere / Jina / SiliconFlow style). Only `model` is rewritten; all other fields are passed through.",
+        "properties": {
+          "documents": {
+            "description": "Candidate documents (strings, or objects as supported by the model), 1 to 1000 items.",
+            "items": {},
+            "maxItems": 1000,
+            "minItems": 1,
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "候选文档（字符串，或模型支持的对象形式），1–1000 条。"
+              }
+            }
+          },
+          "model": {
+            "description": "ID of a `rerank`-type model.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`rerank` 类型的模型 ID。"
+              }
+            }
+          },
+          "query": {
+            "description": "The search query.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "查询语句。"
+              }
+            }
+          },
+          "return_documents": {
+            "description": "Whether each result includes the document text.",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "结果中是否附带文档原文。"
+              }
+            }
+          },
+          "top_n": {
+            "description": "Return only the top N results.",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "只返回前 N 条结果。"
+              }
+            }
+          }
+        },
+        "required": [
+          "model",
+          "query",
+          "documents"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "重排序请求（Cohere / Jina / SiliconFlow 风格）。只改写 `model`，其余字段原样透传。"
+          }
+        }
+      },
+      "RerankResponse": {
+        "additionalProperties": true,
+        "description": "Rerank results, sorted by `relevance_score` descending. The upstream response is passed through; `id` and `model` are rewritten.",
+        "properties": {
+          "id": {
+            "description": "The request ID.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "请求 ID。"
+              }
+            }
+          },
+          "meta": {
+            "additionalProperties": true,
+            "description": "Upstream metadata; `meta.billed_units.input_tokens` (or `meta.tokens.input_tokens`) is what gets billed.",
+            "properties": {},
+            "type": "object",
+            "x-i18n": {
+              "zh": {
+                "description": "上游元数据；按 `meta.billed_units.input_tokens`（或 `meta.tokens.input_tokens`）计费。"
+              }
+            }
+          },
+          "model": {
+            "description": "The model ID you requested.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "你请求的模型 ID。"
+              }
+            }
+          },
+          "results": {
+            "description": "Ranked results.",
+            "items": {
+              "additionalProperties": true,
+              "description": "One ranked document.",
+              "properties": {
+                "document": {
+                  "description": "The document, when `return_documents` is true.",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "`return_documents` 为 true 时附带的文档。"
+                    }
+                  }
+                },
+                "index": {
+                  "description": "Index into `documents`.",
+                  "type": "integer",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "在 `documents` 中的序号。"
+                    }
+                  }
+                },
+                "relevance_score": {
+                  "description": "Relevance score; higher is more relevant.",
+                  "type": "number",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "相关性分数，越高越相关。"
+                    }
+                  }
+                }
+              },
+              "type": "object",
+              "x-i18n": {
+                "zh": {
+                  "description": "一条排序结果。"
+                }
+              }
+            },
+            "type": "array",
+            "x-i18n": {
+              "zh": {
+                "description": "排序结果。"
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "results"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "重排序结果，按 `relevance_score` 降序。上游响应原样透传，改写 `id` 与 `model`。"
+          }
+        }
+      },
+      "SpeechRequest": {
+        "additionalProperties": true,
+        "description": "Speech synthesis request. Only `model` is rewritten (and `voice` may be prefixed, see below); all other fields are passed through.",
+        "properties": {
+          "input": {
+            "description": "Text to speak, at most 4096 characters. Billed per character.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "要合成的文本，最多 4096 个字符；按字符数计费。"
+              }
+            }
+          },
+          "model": {
+            "description": "ID of an `audio` model with the `tts` capability.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "具备 `tts` 能力的 `audio` 模型 ID。"
+              }
+            }
+          },
+          "response_format": {
+            "description": "Audio format, e.g. `mp3` (default), `wav`, `opus`, `pcm`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "音频格式，如 `mp3`（默认）、`wav`、`opus`、`pcm`。"
+              }
+            }
+          },
+          "speed": {
+            "description": "Speaking speed, e.g. `1.0`.",
+            "type": "number",
+            "x-i18n": {
+              "zh": {
+                "description": "语速，如 `1.0`。"
+              }
+            }
+          },
+          "stream": {
+            "description": "If `true`, audio bytes are streamed in chunks as they are generated (plain chunked binary, not SSE).",
+            "type": "boolean",
+            "x-i18n": {
+              "zh": {
+                "description": "为 `true` 时边生成边分块返回音频字节（普通分块二进制，不是 SSE）。"
+              }
+            }
+          },
+          "voice": {
+            "description": "Voice name. For CosyVoice models use a short name such as `alex`, `anna`, `bella`, `benjamin`, `charles`, `claire`, `david` or `diana`; the gateway adds the upstream model prefix.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "音色。CosyVoice 模型使用短音色名，如 `alex`、`anna`、`bella`、`benjamin`、`charles`、`claire`、`david`、`diana`，网关会自动补上上游模型前缀。"
+              }
+            }
+          }
+        },
+        "required": [
+          "model",
+          "input",
+          "voice"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "语音合成请求。只改写 `model`（`voice` 可能补前缀，见下）；其余字段原样透传。"
+          }
+        }
+      },
       "SpeedRanking": {
         "description": "Fastest models by output speed.",
         "properties": {
@@ -3231,6 +3749,114 @@
           }
         }
       },
+      "TranscriptionRequest": {
+        "additionalProperties": true,
+        "description": "Speech recognition request (`multipart/form-data`). `model` is rewritten; other form fields are passed through.",
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "Audio file: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav or webm; the whole request must stay under 20 MB.",
+            "format": "binary",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "音频文件：flac、m4a、mp3、mp4、mpeg、mpga、oga、ogg、wav 或 webm；整个请求不能超过 20 MB。"
+              }
+            }
+          },
+          "language": {
+            "description": "Optional language hint, e.g. `zh`, `en`.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "可选的语言提示，如 `zh`、`en`。"
+              }
+            }
+          },
+          "model": {
+            "description": "ID of an `audio` model with the `asr` capability.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "具备 `asr` 能力的 `audio` 模型 ID。"
+              }
+            }
+          },
+          "response_format": {
+            "description": "`json` (default), `text`, `srt`, `verbose_json` or `vtt`, if the model supports it.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "`json`（默认）、`text`、`srt`、`verbose_json` 或 `vtt`（取决于模型是否支持）。"
+              }
+            }
+          }
+        },
+        "required": [
+          "file",
+          "model"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "语音识别请求（`multipart/form-data`）。改写 `model`，其余表单字段原样透传。"
+          }
+        }
+      },
+      "TranscriptionResponse": {
+        "additionalProperties": true,
+        "description": "Transcription result, passed through from the upstream unchanged.",
+        "properties": {
+          "text": {
+            "description": "Recognized text.",
+            "type": "string",
+            "x-i18n": {
+              "zh": {
+                "description": "识别出的文本。"
+              }
+            }
+          },
+          "usage": {
+            "additionalProperties": true,
+            "description": "Audio duration reported by the upstream; billing uses `seconds`.",
+            "properties": {
+              "seconds": {
+                "description": "Audio duration in seconds.",
+                "type": "number",
+                "x-i18n": {
+                  "zh": {
+                    "description": "音频时长（秒）。"
+                  }
+                }
+              },
+              "type": {
+                "description": "`duration`.",
+                "type": "string",
+                "x-i18n": {
+                  "zh": {
+                    "description": "`duration`。"
+                  }
+                }
+              }
+            },
+            "type": "object",
+            "x-i18n": {
+              "zh": {
+                "description": "上游报告的音频时长，按 `seconds` 计费。"
+              }
+            }
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object",
+        "x-i18n": {
+          "zh": {
+            "description": "识别结果，原样透传上游响应。"
+          }
+        }
+      },
       "UsageResponse": {
         "description": "Wallet balance and cumulative usage of the key's account. All amounts are integer micro-CNY.",
         "properties": {
@@ -3267,12 +3893,39 @@
       "UsageTotals": {
         "description": "Cumulative usage totals.",
         "properties": {
+          "total_audio_ms": {
+            "description": "Total transcribed audio duration in milliseconds (`/v1/audio/transcriptions`).",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "累计语音识别音频时长，毫秒（`/v1/audio/transcriptions`）。"
+              }
+            }
+          },
           "total_charged_amount_micro": {
             "description": "Total amount charged, in micro-CNY.",
             "type": "integer",
             "x-i18n": {
               "zh": {
                 "description": "累计实扣金额，微元。"
+              }
+            }
+          },
+          "total_images": {
+            "description": "Total generated images (`/v1/images/generations`).",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "累计生成图片张数（`/v1/images/generations`）。"
+              }
+            }
+          },
+          "total_input_chars": {
+            "description": "Total speech-synthesis input characters (`/v1/audio/speech`).",
+            "type": "integer",
+            "x-i18n": {
+              "zh": {
+                "description": "累计语音合成输入字符数（`/v1/audio/speech`）。"
               }
             }
           },
@@ -3305,7 +3958,10 @@
           }
         },
         "required": [
+          "total_audio_ms",
           "total_charged_amount_micro",
+          "total_images",
+          "total_input_chars",
           "total_input_tokens",
           "total_output_tokens",
           "total_requests"
@@ -3433,8 +4089,8 @@
         "status": 400,
         "retryable": false,
         "description": {
-          "en": "The request is invalid: the body cannot be read (e.g. larger than 20 MB) or is not valid JSON, `model` is missing, the `since` query parameter is not RFC 3339, the `/v1/messages` body uses an unsupported feature, or the upstream provider rejected the request as a bad request. Not charged.",
-          "zh": "请求无效：请求体读取失败（如超过 20 MB）或不是合法 JSON、缺少 `model`、查询参数 `since` 不是 RFC 3339、`/v1/messages` 用了不支持的特性，或上游厂商判定请求参数有误。不计费。"
+          "en": "The request is invalid: the body is not valid JSON (or a malformed multipart body), `model` or another required field is missing, a field is out of range (e.g. too many `documents` or images, `input` too long), the `since` query parameter is not RFC 3339, the `/v1/messages` body uses an unsupported feature, or the upstream provider rejected the request as a bad request — in that case `message` carries the upstream's reason (`Upstream rejected the request: ...`). Not charged.",
+          "zh": "请求无效：请求体不是合法 JSON（或 multipart 格式错误）、缺少 `model` 等必填字段、字段超出范围（如 `documents` 或图片张数过多、`input` 过长）、查询参数 `since` 不是 RFC 3339、`/v1/messages` 用了不支持的特性，或上游厂商判定请求参数有误——此时 `message` 会带上上游给出的原因（`Upstream rejected the request: ...`）。不计费。"
         }
       },
       {
@@ -3451,8 +4107,8 @@
         "status": 404,
         "retryable": false,
         "description": {
-          "en": "The model does not exist, is not active, is not visible to your account tier, or (on `/v1/embeddings`) is not an embedding model.",
-          "zh": "模型不存在、未上线、对你的账户等级不可见，或（在 `/v1/embeddings` 上）不是 embedding 类型的模型。"
+          "en": "The model does not exist, is not active, is not visible to your account tier, or does not serve this endpoint (e.g. an embedding model on `/v1/chat/completions`, or a speech-recognition model on `/v1/audio/speech`; see the endpoint table in Models).",
+          "zh": "模型不存在、未上线、对你的账户等级不可见，或不支持当前接口（例如在 `/v1/chat/completions` 上用了 embedding 模型、在 `/v1/audio/speech` 上用了语音识别模型；见「模型」文档中的接口对照表）。"
         }
       },
       {
@@ -3460,8 +4116,8 @@
         "status": 503,
         "retryable": true,
         "description": {
-          "en": "No upstream channel can serve the request right now: all channels are unhealthy or cooling down, or none supports the requested capability (streaming, tools, JSON schema) or context length. Not charged.",
-          "zh": "当前没有可用的上游渠道：所有渠道都不健康或在冷却中，或没有渠道支持所需能力（流式、工具调用、JSON Schema）或上下文长度。不计费。"
+          "en": "No upstream channel can serve the request right now: all channels are unhealthy or cooling down, or none supports the requested capability (streaming, tools, JSON schema, image input) or context length. Not charged.",
+          "zh": "当前没有可用的上游渠道：所有渠道都不健康或在冷却中，或没有渠道支持所需能力（流式、工具调用、JSON Schema、图片输入）或上下文长度。不计费。"
         }
       },
       {
@@ -3492,6 +4148,15 @@
         }
       },
       {
+        "code": "request_too_large",
+        "status": 413,
+        "retryable": false,
+        "description": {
+          "en": "The request body is larger than 20 MB (base64 images and uploaded audio files count toward it). Compress or downscale images, pass images by URL, or split long audio. Not charged.",
+          "zh": "请求体超过 20 MB（base64 图片与上传的音频文件都计入）。请压缩或缩小图片、改用图片 URL，或把长音频切分后再传。不计费。"
+        }
+      },
+      {
         "code": "service_unavailable",
         "status": 503,
         "retryable": true,
@@ -3501,12 +4166,21 @@
         }
       },
       {
+        "code": "unsupported_media_type",
+        "status": 415,
+        "retryable": false,
+        "description": {
+          "en": "`/v1/audio/transcriptions` only accepts `multipart/form-data`, and the uploaded file must be flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav or webm (judged by the file name extension).",
+          "zh": "`/v1/audio/transcriptions` 只接受 `multipart/form-data`，且上传文件须为 flac、m4a、mp3、mp4、mpeg、mpga、oga、ogg、wav 或 webm（按文件扩展名判断）。"
+        }
+      },
+      {
         "code": "upstream_error",
         "status": 502,
         "retryable": true,
         "description": {
-          "en": "The upstream provider failed after automatic retries (connection error, 5xx, provider-side rate limit or key problem), or returned a response the gateway could not read. Not charged.",
-          "zh": "自动重试后上游仍然失败（连接错误、5xx、上游限流或上游 Key 问题），或上游响应无法读取/解析。不计费。"
+          "en": "The upstream provider failed after automatic retries (connection error, 5xx, provider-side rate limit or key problem), or returned a response the gateway could not read (e.g. an image request that produced no image). Not charged.",
+          "zh": "自动重试后上游仍然失败（连接错误、5xx、上游限流或上游 Key 问题），或上游响应无法读取/解析（如图像请求一张图都没生成）。不计费。"
         }
       }
     ]
@@ -3525,17 +4199,345 @@
   "paths": {
     "/v1/audio/speech": {
       "post": {
-        "description": "Reserved path that is not implemented yet. After API key authentication it always returns `503 not_implemented`.",
+        "description": "Converts text to speech and returns the audio file. `model` must be an `audio` model with the `tts` capability. The body is passed through (only `model` is rewritten; short `voice` names are prefixed with the upstream model name where the upstream requires it).\n\n**Response.** Binary audio with the upstream's `Content-Type` (e.g. `audio/mpeg`). With `stream: true` the audio is sent in chunks as it is generated — plain chunked binary, not SSE.\n\n**Billing.** Per input character (`input_char` meter, counted as Unicode characters of `input`). The amount is known up front, so it is also charged in full if you disconnect mid-stream.",
         "operationId": "createSpeech",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "model": "FunAudioLLM/CosyVoice2-0.5B",
+                "input": "今天天气很好，我们一起去公园散步吧。",
+                "voice": "alex",
+                "response_format": "mp3"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
+          "200": {
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "description": "The audio file (format per `response_format`).",
+                  "format": "binary",
+                  "type": "string",
+                  "x-i18n": {
+                    "zh": {
+                      "description": "音频文件（格式由 `response_format` 决定）。"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body is not valid JSON.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "content_filtered",
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Invalid API key.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_api_key"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未认证"
+              }
+            }
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Insufficient balance.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payment Required",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "insufficient_balance"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "余额不足"
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "This account has been suspended.",
+                    "type": "permission_error",
+                    "code": "account_suspended",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "account_suspended",
+              "model_not_allowed"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "无权限"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "The requested model does not exist or does not support this endpoint.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "model_not_found"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "concurrency_limit_exceeded",
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load model catalog.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Upstream provider failed after retries.",
+                    "type": "api_error",
+                    "code": "upstream_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "upstream_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "上游错误"
+              }
+            }
+          },
           "503": {
             "content": {
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The audio.speech relay pipeline is not yet implemented (Phase1 in progress). See docs roadmap.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
-                    "code": "not_implemented",
+                    "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
                   }
                 },
@@ -3551,7 +4553,7 @@
               }
             },
             "x-error-codes": [
-              "not_implemented"
+              "no_available_channel"
             ],
             "x-i18n": {
               "zh": {
@@ -3565,33 +4567,394 @@
             "apiKey": []
           }
         ],
-        "summary": "Generate speech (not implemented)",
+        "summary": "Generate speech",
         "tags": [
-          "Not implemented"
+          "Audio"
         ],
         "x-auth": "api_key",
+        "x-billable": true,
         "x-i18n": {
           "zh": {
-            "description": "预留路径，尚未实现。通过 API Key 鉴权后固定返回 `503 not_implemented`。",
-            "summary": "语音合成（未实现）"
+            "description": "把文本合成为语音并返回音频文件。`model` 必须是具备 `tts` 能力的 `audio` 模型。请求体原样透传（只改写 `model`；上游要求时，短音色名会自动补上上游模型前缀）。\n\n**响应。** 二进制音频，`Content-Type` 与上游一致（如 `audio/mpeg`）。`stream: true` 时边生成边分块返回——是普通的分块二进制，不是 SSE。\n\n**计费。** 按输入字符数计费（`input_char` 计量项，按 `input` 的 Unicode 字符计）。费用在请求时就确定，流式中途断开也按全额计费。",
+            "summary": "语音合成"
           }
         },
-        "x-status": "not_implemented"
+        "x-rate-limit": {
+          "en": "Per API key, when configured on the key: requests per minute (RPM) and concurrent requests. Not counted toward TPM.",
+          "zh": "按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）与并发请求数。不计入 TPM。"
+        }
       }
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Reserved path that is not implemented yet. After API key authentication it always returns `503 not_implemented`.",
+        "description": "Transcribes an uploaded audio file to text. Send `multipart/form-data` with `file` and `model` (an `audio` model with the `asr` capability); other form fields are passed through. The whole request must stay under 20 MB. The upstream response is returned unchanged (`text/plain` for `response_format` `text`/`srt`/`vtt`).\n\n**Billing.** By audio duration (`audio_second` meter), taken from the upstream's `usage.seconds` or `duration`; if the upstream reports none, WAV files are measured from the header and other formats are estimated from the file size. Models may also charge a per-request fee (`request` meter).",
         "operationId": "createTranscription",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "example": {
+                "model": "FunAudioLLM/SenseVoiceSmall",
+                "language": "zh"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "text": "今天天气很好，我们一起去公园散步吧。",
+                  "usage": {
+                    "type": "duration",
+                    "seconds": 3
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body is not valid JSON.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "content_filtered",
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Invalid API key.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_api_key"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未认证"
+              }
+            }
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Insufficient balance.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payment Required",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "insufficient_balance"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "余额不足"
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "This account has been suspended.",
+                    "type": "permission_error",
+                    "code": "account_suspended",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "account_suspended",
+              "model_not_allowed"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "无权限"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "The requested model does not exist or does not support this endpoint.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "model_not_found"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Content-Type must be multipart/form-data.",
+                    "type": "invalid_request_error",
+                    "code": "unsupported_media_type",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unsupported Media Type",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "unsupported_media_type"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "不支持的媒体类型"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "concurrency_limit_exceeded",
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load model catalog.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Upstream provider failed after retries.",
+                    "type": "api_error",
+                    "code": "upstream_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "upstream_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "上游错误"
+              }
+            }
+          },
           "503": {
             "content": {
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The audio.transcriptions relay pipeline is not yet implemented (Phase1 in progress). See docs roadmap.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
-                    "code": "not_implemented",
+                    "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
                   }
                 },
@@ -3607,7 +4970,7 @@
               }
             },
             "x-error-codes": [
-              "not_implemented"
+              "no_available_channel"
             ],
             "x-i18n": {
               "zh": {
@@ -3621,18 +4984,22 @@
             "apiKey": []
           }
         ],
-        "summary": "Transcribe audio (not implemented)",
+        "summary": "Transcribe audio",
         "tags": [
-          "Not implemented"
+          "Audio"
         ],
         "x-auth": "api_key",
+        "x-billable": true,
         "x-i18n": {
           "zh": {
-            "description": "预留路径，尚未实现。通过 API Key 鉴权后固定返回 `503 not_implemented`。",
-            "summary": "语音转写（未实现）"
+            "description": "把上传的音频文件识别为文本。以 `multipart/form-data` 发送 `file` 与 `model`（具备 `asr` 能力的 `audio` 模型），其余表单字段原样透传。整个请求不能超过 20 MB。上游响应原样返回（`response_format` 为 `text`/`srt`/`vtt` 时是 `text/plain`）。\n\n**计费。** 按音频时长计费（`audio_second` 计量项），取上游返回的 `usage.seconds` 或 `duration`；上游没有返回时，WAV 文件按文件头计算，其他格式按文件大小估算。模型也可能按次收取费用（`request` 计量项）。",
+            "summary": "语音识别"
           }
         },
-        "x-status": "not_implemented"
+        "x-rate-limit": {
+          "en": "Per API key, when configured on the key: requests per minute (RPM) and concurrent requests. Not counted toward TPM.",
+          "zh": "按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）与并发请求数。不计入 TPM。"
+        }
       }
     },
     "/v1/benchmarks": {
@@ -4284,7 +5651,7 @@
     },
     "/v1/chat/completions": {
       "post": {
-        "description": "OpenAI-compatible chat completion. The gateway checks `model`, the key's model allow-list, rate limits and balance, then forwards the body to an upstream channel. Only `model` is rewritten (to the channel's upstream model name); all other fields are passed through. In the response, `model` is the model ID you requested and `id` is the request ID (same as `X-Request-Id`).\n\n**Billing.** Before forwarding, an estimated cost is frozen in your wallet: input tokens are estimated from the body size (about 4 bytes per token), output tokens = min(`max_tokens`/`max_completion_tokens`, model max output, 8192). After the call the real cost is settled from the upstream `usage` and the rest is released. If the upstream returns no usage, a non-streaming call is billed at the estimate. Failed calls are not charged.\n\n**Failover.** If an upstream call fails before anything is sent to you, the gateway retries on another key or channel (up to 3 attempts within 90 s). Once a stream has started there is no retry.\n\n**Streaming.** With `stream: true` the response is `text/event-stream` carrying `chat.completion.chunk` events (`data: {...}`). The gateway always asks the upstream for usage (for billing), but forwards the usage-only chunk (empty `choices`) only if you set `stream_options.include_usage: true` yourself. The upstream `data: [DONE]` line is not forwarded: the stream ends when the connection closes. If you disconnect mid-stream before usage arrives, output is billed by estimating tokens from the bytes already forwarded to you (never more than the frozen estimate).\n\n**Routing.** Requests with `stream: true`, non-empty `tools`, or `response_format.type` of `json_schema`/`json_object` only go to channels with that capability, and the estimated input plus reserved output must fit the channel's context window; otherwise `503 no_available_channel`.",
+        "description": "OpenAI-compatible chat completion. The gateway checks `model`, the key's model allow-list, rate limits and balance, then forwards the body to an upstream channel. Only `model` is rewritten (to the channel's upstream model name); all other fields are passed through. In the response, `model` is the model ID you requested and `id` is the request ID (same as `X-Request-Id`).\n\n**Billing.** Before forwarding, an estimated cost is frozen in your wallet: input tokens are estimated from the text size of the body (about 4 bytes per token; each image counts as a fixed 1,500 tokens), output tokens = min(`max_tokens`/`max_completion_tokens`, model max output, 8192). After the call the real cost is settled from the upstream `usage` and the rest is released. If the upstream returns no usage, a non-streaming call is billed at the estimate. Failed calls are not charged.\n\n**Failover.** If an upstream call fails before anything is sent to you, the gateway retries on another key or channel (up to 3 attempts within 90 s). Once a stream has started there is no retry.\n\n**Streaming.** With `stream: true` the response is `text/event-stream` carrying `chat.completion.chunk` events (`data: {...}`). The gateway always asks the upstream for usage (for billing), but forwards the usage-only chunk (empty `choices`) only if you set `stream_options.include_usage: true` yourself. The upstream `data: [DONE]` line is not forwarded: the stream ends when the connection closes. If you disconnect mid-stream before usage arrives, output is billed by estimating tokens from the bytes already forwarded to you (never more than the frozen estimate).\n\n**Images.** Put `image_url` parts (an `https://` URL or a `data:image/...;base64,` URL) in `messages[].content` and use a model whose `capabilities` include `vision`. The whole body must stay under 20 MB (`413 request_too_large`).\n\n**Routing.** Requests with `stream: true`, non-empty `tools`, or `response_format.type` of `json_schema`/`json_object` only go to channels with that capability, and the estimated input plus reserved output must fit the channel's context window; otherwise `503 no_available_channel`. The model must be a `chat` model (`404 model_not_found` otherwise).",
         "operationId": "createChatCompletion",
         "requestBody": {
           "content": {
@@ -4495,7 +5862,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The requested model does not exist.",
+                    "message": "The requested model does not exist or does not support this endpoint.",
                     "type": "invalid_request_error",
                     "code": "model_not_found",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -4518,6 +5885,37 @@
             "x-i18n": {
               "zh": {
                 "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
               }
             }
           },
@@ -4592,7 +5990,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "Upstream provider failed after retries.",
                     "type": "api_error",
                     "code": "upstream_error",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -4623,7 +6021,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
                     "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -4663,7 +6061,7 @@
         "x-billable": true,
         "x-i18n": {
           "zh": {
-            "description": "OpenAI 兼容的对话补全。网关校验 `model`、Key 的模型白名单、限流与余额后，把请求体转发给上游渠道。只改写 `model`（改为渠道的上游模型名），其余字段原样透传。响应中 `model` 是你请求的模型 ID，`id` 是请求 ID（与 `X-Request-Id` 相同）。\n\n**计费。** 转发前先在钱包里冻结一笔预估费用：输入 token 按请求体大小估算（约 4 字节 1 个 token），输出 token = min(`max_tokens`/`max_completion_tokens`、模型最大输出、8192)。调用结束后按上游返回的 `usage` 结算实际费用并释放剩余冻结。上游没有返回 usage 时，非流式请求按预估值计费。失败的请求不计费。\n\n**故障转移。** 在向你写出任何内容之前上游失败时，网关会换 Key 或换渠道重试（90 秒内最多 3 次）。流式输出一旦开始就不再重试。\n\n**流式。** `stream: true` 时以 `text/event-stream` 返回 `chat.completion.chunk` 事件（`data: {...}`）。网关为计费总会向上游索取 usage，但只有你自己设置了 `stream_options.include_usage: true`，才会把那个只含 usage 的 chunk（`choices` 为空）转发给你。上游的 `data: [DONE]` 不会转发：连接关闭即表示流结束。若你在收到 usage 之前中途断开，输出按已转发给你的字节数估算计费（不超过冻结的预估值）。\n\n**路由。** `stream: true`、非空 `tools`、或 `response_format.type` 为 `json_schema`/`json_object` 的请求只会路由到具备相应能力的渠道，且预估输入加预留输出不能超过渠道的上下文窗口；否则返回 `503 no_available_channel`。",
+            "description": "OpenAI 兼容的对话补全。网关校验 `model`、Key 的模型白名单、限流与余额后，把请求体转发给上游渠道。只改写 `model`（改为渠道的上游模型名），其余字段原样透传。响应中 `model` 是你请求的模型 ID，`id` 是请求 ID（与 `X-Request-Id` 相同）。\n\n**计费。** 转发前先在钱包里冻结一笔预估费用：输入 token 按请求体中文本的大小估算（约 4 字节 1 个 token，每张图片按固定 1,500 token 计），输出 token = min(`max_tokens`/`max_completion_tokens`、模型最大输出、8192)。调用结束后按上游返回的 `usage` 结算实际费用并释放剩余冻结。上游没有返回 usage 时，非流式请求按预估值计费。失败的请求不计费。\n\n**故障转移。** 在向你写出任何内容之前上游失败时，网关会换 Key 或换渠道重试（90 秒内最多 3 次）。流式输出一旦开始就不再重试。\n\n**流式。** `stream: true` 时以 `text/event-stream` 返回 `chat.completion.chunk` 事件（`data: {...}`）。网关为计费总会向上游索取 usage，但只有你自己设置了 `stream_options.include_usage: true`，才会把那个只含 usage 的 chunk（`choices` 为空）转发给你。上游的 `data: [DONE]` 不会转发：连接关闭即表示流结束。若你在收到 usage 之前中途断开，输出按已转发给你的字节数估算计费（不超过冻结的预估值）。\n\n**图片。** 在 `messages[].content` 中放入 `image_url` 分段（`https://` 链接或 `data:image/...;base64,` 数据），并使用 `capabilities` 含 `vision` 的模型。整个请求体不能超过 20 MB（否则 `413 request_too_large`）。\n\n**路由。** `stream: true`、非空 `tools`、或 `response_format.type` 为 `json_schema`/`json_object` 的请求只会路由到具备相应能力的渠道，且预估输入加预留输出不能超过渠道的上下文窗口；否则返回 `503 no_available_channel`。模型必须是 `chat` 类型（否则 `404 model_not_found`）。",
             "summary": "创建对话补全"
           }
         },
@@ -4919,7 +6317,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The requested model does not exist.",
+                    "message": "The requested model does not exist or does not support this endpoint.",
                     "type": "invalid_request_error",
                     "code": "model_not_found",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -4942,6 +6340,37 @@
             "x-i18n": {
               "zh": {
                 "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
               }
             }
           },
@@ -5016,7 +6445,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "Upstream provider failed after retries.",
                     "type": "api_error",
                     "code": "upstream_error",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -5047,7 +6476,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
                     "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -5099,17 +6528,348 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Reserved path that is not implemented yet. After API key authentication it always returns `503 not_implemented`.",
+        "description": "Generates images from a text prompt. `model` must be an `image`-type model. The body is passed through (only `model` is rewritten), so OpenAI fields and upstream-native fields both work. The response is normalized to the OpenAI shape (`data[].url`); upstreams that only return `images[]` get a `data` copy, and other upstream fields are kept.\n\n**Billing.** Per generated image (`image` meter). The pre-authorized amount is `n` (or `batch_size`, default 1, max 4) × the image price; the final charge counts the images actually returned. If no image is returned the call fails with `502 upstream_error` and is not charged.\n\n**URLs are temporary.** Download images promptly; upstream URLs expire (SiliconFlow: 1 hour). Generation usually takes 5-60 s; set a client timeout of at least 120 s.",
         "operationId": "createImage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "model": "Kwai-Kolors/Kolors",
+                "prompt": "一只戴着红色围巾的橘猫，水彩风格",
+                "n": 1,
+                "size": "1024x1024"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/ImageGenerationRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ",
+                  "model": "Kwai-Kolors/Kolors",
+                  "created": 1759305600,
+                  "data": [
+                    {
+                      "url": "https://example-cdn.siliconflow.cn/temporary/abc123.png"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ImageGenerationResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body is not valid JSON.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "content_filtered",
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Invalid API key.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_api_key"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未认证"
+              }
+            }
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Insufficient balance.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payment Required",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "insufficient_balance"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "余额不足"
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "This account has been suspended.",
+                    "type": "permission_error",
+                    "code": "account_suspended",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "account_suspended",
+              "model_not_allowed"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "无权限"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "The requested model does not exist or does not support this endpoint.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "model_not_found"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "concurrency_limit_exceeded",
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load model catalog.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Upstream provider failed after retries.",
+                    "type": "api_error",
+                    "code": "upstream_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "upstream_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "上游错误"
+              }
+            }
+          },
           "503": {
             "content": {
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The images.generations relay pipeline is not yet implemented (Phase1 in progress). See docs roadmap.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
-                    "code": "not_implemented",
+                    "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
                   }
                 },
@@ -5125,7 +6885,7 @@
               }
             },
             "x-error-codes": [
-              "not_implemented"
+              "no_available_channel"
             ],
             "x-i18n": {
               "zh": {
@@ -5139,23 +6899,27 @@
             "apiKey": []
           }
         ],
-        "summary": "Generate images (not implemented)",
+        "summary": "Generate images",
         "tags": [
-          "Not implemented"
+          "Images"
         ],
         "x-auth": "api_key",
+        "x-billable": true,
         "x-i18n": {
           "zh": {
-            "description": "预留路径，尚未实现。通过 API Key 鉴权后固定返回 `503 not_implemented`。",
-            "summary": "图像生成（未实现）"
+            "description": "根据文本描述生成图像。`model` 必须是 `image` 类型的模型。请求体原样透传（只改写 `model`），OpenAI 字段与上游原生字段都可以使用。响应统一为 OpenAI 形状（`data[].url`）：只返回 `images[]` 的上游会补一份 `data`，其他上游字段保留。\n\n**计费。** 按生成的张数计费（`image` 计量项）。预扣金额 = `n`（或 `batch_size`，默认 1，最多 4）× 单张价格；最终按实际返回的张数结算。一张都没有生成时返回 `502 upstream_error`，不计费。\n\n**链接是临时的。** 请及时下载图片，上游链接会过期（SiliconFlow 为 1 小时）。生成通常需要 5–60 秒，客户端超时建议不少于 120 秒。",
+            "summary": "生成图像"
           }
         },
-        "x-status": "not_implemented"
+        "x-rate-limit": {
+          "en": "Per API key, when configured on the key: requests per minute (RPM) and concurrent requests. Not counted toward TPM.",
+          "zh": "按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）与并发请求数。不计入 TPM。"
+        }
       }
     },
     "/v1/messages": {
       "post": {
-        "description": "Anthropic Messages API–compatible entry point. The request is translated to an OpenAI chat completion internally and goes through exactly the same authentication, rate limiting, routing, failover and billing as `/v1/chat/completions`; any chat model can be used.\n\n- Authenticate with `Authorization: Bearer <key>`; the `x-api-key` header is not accepted.\n- Text only: `system` and each message's `content` may be a string or an array of `text` blocks; other block types are ignored.\n- The response is a `message` with a single `text` block; `id` is the request ID.\n- Errors use the gateway's OpenAI-style format (see `Error`), not Anthropic's `{\"type\": \"error\"}` format.",
+        "description": "Anthropic Messages API–compatible entry point. The request is translated to an OpenAI chat completion internally and goes through exactly the same authentication, rate limiting, routing, failover and billing as `/v1/chat/completions`; any chat model can be used.\n\n- Authenticate with `Authorization: Bearer <key>`; the `x-api-key` header is not accepted.\n- `system` may be a string or an array of `text` blocks; each message's `content` may be a string or an array of `text` and `image` blocks (`source.type` `base64` or `url`; needs a `vision` model). Other block types are ignored.\n- The response is a `message` with a single `text` block; `id` is the request ID.\n- Errors use the gateway's OpenAI-style format (see `Error`), not Anthropic's `{\"type\": \"error\"}` format.",
         "operationId": "createMessage",
         "requestBody": {
           "content": {
@@ -5348,7 +7112,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "The requested model does not exist.",
+                    "message": "The requested model does not exist or does not support this endpoint.",
                     "type": "invalid_request_error",
                     "code": "model_not_found",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -5371,6 +7135,37 @@
             "x-i18n": {
               "zh": {
                 "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
               }
             }
           },
@@ -5445,7 +7240,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "Upstream provider failed after retries.",
                     "type": "api_error",
                     "code": "upstream_error",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -5476,7 +7271,7 @@
               "application/json": {
                 "example": {
                   "error": {
-                    "message": "Upstream request failed.",
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
                     "type": "api_error",
                     "code": "no_available_channel",
                     "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
@@ -5516,7 +7311,7 @@
         "x-billable": true,
         "x-i18n": {
           "zh": {
-            "description": "兼容 Anthropic Messages API 的入口。请求在内部转译为 OpenAI 对话补全，鉴权、限流、路由、故障转移和计费与 `/v1/chat/completions` 完全一致；可使用任何对话模型。\n\n- 用 `Authorization: Bearer <key>` 鉴权，不支持 `x-api-key` 头。\n- 仅支持文本：`system` 与每条消息的 `content` 可以是字符串或 `text` 块数组，其他类型的块会被忽略。\n- 响应是只含一个 `text` 块的 `message`，`id` 为请求 ID。\n- 错误沿用网关的 OpenAI 风格格式（见 `Error`），不是 Anthropic 的 `{\"type\": \"error\"}` 格式。",
+            "description": "兼容 Anthropic Messages API 的入口。请求在内部转译为 OpenAI 对话补全，鉴权、限流、路由、故障转移和计费与 `/v1/chat/completions` 完全一致；可使用任何对话模型。\n\n- 用 `Authorization: Bearer <key>` 鉴权，不支持 `x-api-key` 头。\n- `system` 可以是字符串或 `text` 块数组；每条消息的 `content` 可以是字符串，或 `text` 与 `image` 块组成的数组（`source.type` 为 `base64` 或 `url`，需要具备 `vision` 能力的模型）。其他类型的块会被忽略。\n- 响应是只含一个 `text` 块的 `message`，`id` 为请求 ID。\n- 错误沿用网关的 OpenAI 风格格式（见 `Error`），不是 Anthropic 的 `{\"type\": \"error\"}` 格式。",
             "summary": "创建消息（Anthropic 兼容）"
           }
         },
@@ -7459,6 +9254,410 @@
         }
       }
     },
+    "/v1/rerank": {
+      "post": {
+        "description": "Scores `documents` by relevance to `query` and returns them sorted, as used in the second stage of RAG retrieval. `model` must be a `rerank`-type model. Same authentication, rate limiting, pre-authorization, failover and settlement as `/v1/embeddings`. Billed by input tokens (`input` meter): the upstream's `meta.billed_units.input_tokens`, falling back to `meta.tokens.input_tokens` or `usage.total_tokens`, and to an estimate from the body size if none is returned.",
+        "operationId": "createRerank",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "model": "BAAI/bge-reranker-v2-m3",
+                "query": "苹果公司发布了什么新手机？",
+                "documents": [
+                  "今天北京天气晴朗。",
+                  "Apple 在秋季发布会上推出了新款 iPhone。",
+                  "苹果富含维生素。"
+                ],
+                "top_n": 2
+              },
+              "schema": {
+                "$ref": "#/components/schemas/RerankRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ",
+                  "model": "BAAI/bge-reranker-v2-m3",
+                  "results": [
+                    {
+                      "index": 1,
+                      "relevance_score": 0.9871
+                    },
+                    {
+                      "index": 2,
+                      "relevance_score": 0.0213
+                    }
+                  ],
+                  "meta": {
+                    "billed_units": {
+                      "input_tokens": 46
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/RerankResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-i18n": {
+              "zh": {
+                "description": "成功"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body is not valid JSON.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "content_filtered",
+              "invalid_request"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求无效"
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Invalid API key.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "invalid_api_key"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未认证"
+              }
+            }
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Insufficient balance.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_balance",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Payment Required",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "insufficient_balance"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "余额不足"
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "This account has been suspended.",
+                    "type": "permission_error",
+                    "code": "account_suspended",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "account_suspended",
+              "model_not_allowed"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "无权限"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "The requested model does not exist or does not support this endpoint.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "model_not_found"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "未找到"
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Request body exceeds the 20 MB limit.",
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "request_too_large"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求体过大"
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Too many requests.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/Retry-After"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "concurrency_limit_exceeded",
+              "rate_limit_exceeded"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "请求过多"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Failed to load model catalog.",
+                    "type": "api_error",
+                    "code": "internal_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务器内部错误"
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "Upstream provider failed after retries.",
+                    "type": "api_error",
+                    "code": "upstream_error",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "upstream_error"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "上游错误"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "message": "No upstream channel can serve this request right now (unsupported capability or context length, or all channels unhealthy).",
+                    "type": "api_error",
+                    "code": "no_available_channel",
+                    "request_id": "01K6E7T0Q0V5N3M8P2R4S6W9YZ"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              }
+            },
+            "x-error-codes": [
+              "no_available_channel"
+            ],
+            "x-i18n": {
+              "zh": {
+                "description": "服务不可用"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Rerank documents",
+        "tags": [
+          "Rerank"
+        ],
+        "x-auth": "api_key",
+        "x-billable": true,
+        "x-i18n": {
+          "zh": {
+            "description": "按与 `query` 的相关性给 `documents` 打分并排序返回，常用于 RAG 检索的第二阶段。`model` 必须是 `rerank` 类型的模型。鉴权、限流、预扣、故障转移和结算与 `/v1/embeddings` 相同。按输入 token 计费（`input` 计量项）：取上游的 `meta.billed_units.input_tokens`，其次 `meta.tokens.input_tokens` 或 `usage.total_tokens`，都没有时按请求体大小估算。",
+            "summary": "文档重排序"
+          }
+        },
+        "x-rate-limit": {
+          "en": "Per API key, when configured on the key: requests per minute (RPM), tokens per minute (TPM; counts the estimated input tokens plus the reserved output tokens) and concurrent requests. Unset limits are unlimited.",
+          "zh": "按 API Key 生效（在 Key 上配置时）：每分钟请求数（RPM）、每分钟 token 数（TPM，按预估输入 token 加预留输出 token 计）、并发请求数。未配置即不限制。"
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "description": "Wallet balance and cumulative usage of the account that owns this API key (account-wide, not per key). Amounts are integer micro-CNY (1,000,000 = ¥1). Usage counts successful requests only; pass `since` to count from a point in time. The wallet is always the current balance.",
@@ -7495,6 +9694,9 @@
                     "total_requests": 12,
                     "total_input_tokens": 3400,
                     "total_output_tokens": 1800,
+                    "total_images": 2,
+                    "total_input_chars": 120,
+                    "total_audio_ms": 3000,
                     "total_charged_amount_micro": 10500
                   }
                 },
@@ -7717,6 +9919,33 @@
       "x-i18n": {
         "zh": {
           "description": "Anthropic Messages API 兼容接口。"
+        }
+      }
+    },
+    {
+      "description": "Document reranking.",
+      "name": "Rerank",
+      "x-i18n": {
+        "zh": {
+          "description": "文档重排序。"
+        }
+      }
+    },
+    {
+      "description": "Image generation.",
+      "name": "Images",
+      "x-i18n": {
+        "zh": {
+          "description": "图像生成。"
+        }
+      }
+    },
+    {
+      "description": "Speech synthesis and speech recognition.",
+      "name": "Audio",
+      "x-i18n": {
+        "zh": {
+          "description": "语音合成与语音识别。"
         }
       }
     },

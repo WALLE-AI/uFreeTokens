@@ -31,7 +31,7 @@ order: 20
 | --- | --- | --- | --- |
 | `model` | string | 是 | 模型 ID，如 `deepseek-ai/DeepSeek-V4-Flash`，见[模型列表](/docs/zh/models) |
 | `max_tokens` | integer | 建议填写 | 最大输出 token 数，同时决定预扣上限。Anthropic 协议要求必填；网关不强制，省略时按模型最大输出长度（受平台预扣上限约束）预扣 |
-| `messages` | array | 是 | 对话消息，`role` 为 `user` 或 `assistant`；`content` 可以是字符串，或由 `{"type": "text", "text": "..."}` 组成的数组 |
+| `messages` | array | 是 | 对话消息，`role` 为 `user` 或 `assistant`；`content` 可以是字符串，或由 `text` 块与 `image` 块组成的数组（见[图片输入](#图片输入)） |
 | `system` | string 或 array | 否 | 系统提示词；字符串，或文本块数组 |
 | `temperature` | number | 否 | 原样传给上游 |
 | `top_p` | number | 否 | 原样传给上游 |
@@ -39,9 +39,20 @@ order: 20
 
 转换规则需要注意：
 
-- `content` 数组中只有 `type` 为 `text` 的块会被保留并拼接成一段文本；图片等非文本块会被**静默忽略**。
+- `content` 数组中的 `text` 块与 `image` 块会被保留；其他类型的块（如 `document`、`tool_result`）会被**静默忽略**。只有文本时拼接成一段字符串，带图片时转成 OpenAI 的多段内容。
 - 上表以外的字段（如 `top_k`、`metadata`）不会传给上游。
 - 请求体中带 `tools` 字段会直接返回 `400 invalid_request`。
+
+## 图片输入
+
+在 `content` 数组中放入 `image` 块，`source` 支持两种形式，需要使用 `capabilities` 含 `vision` 的模型：
+
+```json
+{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo..."}}
+{"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}}
+```
+
+`data` 不带 `data:image/png;base64,` 前缀。大小限制与计费方式见[图片理解](/docs/zh/vision)。
 
 ## 响应
 

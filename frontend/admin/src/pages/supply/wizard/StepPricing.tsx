@@ -6,7 +6,7 @@ import { Button, Input, Select, useToast } from '../../../components/ui';
 import { useAsync } from '../../../hooks/useAsync';
 import { cn } from '../../../lib/cn';
 import { fmtPrice } from '../common';
-import { computeRow, fxToCNY, resolvedMultiplier, round4, type RowConfig } from './state';
+import { computeRow, fxToCNY, KIND_INFO, resolvedMultiplier, round4, type ModelKind, type RowConfig } from './state';
 import { StepFooter, type StepProps } from './ui';
 
 // ④ 定价：成本（USD / CNY / 其他币种）→ 折合 CNY（× 汇率 × 成本倍率）→ 加价率 → 售价 CNY → 毛利率
@@ -131,6 +131,7 @@ export function StepPricing({ state, update, goto }: StepProps) {
       </div>
 
       <p className="text-[11px] text-gray-400">
+        对话模型按百万 token（输入 / 输出）定价；嵌入、重排序按百万输入 token，图像按张，语音合成按百万字符（SiliconFlow 等按 UTF-8 字节计价的上游，中文成本约为字节单价 × 3），语音识别按秒。
         成本价以 {currency} 发布到渠道{currency === 'CNY' ? '' : '，运行时按汇率折算成人民币'}，再乘成本倍率；售价以人民币发布，每个模型只有一个生效售价（运行时不区分 tier）。
         {currency !== 'USD' && ' 参考价来自 OpenRouter / LiteLLM（USD），已按汇率换算，国内厂商请按官网人民币价格核对。'}
       </p>
@@ -140,18 +141,21 @@ export function StepPricing({ state, update, goto }: StepProps) {
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
               <th className="px-3 py-2.5 text-left">模型</th>
+              <th className="px-3 py-2.5 text-left">类型 / 计价单位</th>
               <th className="px-3 py-2.5 text-left">family / 上下文 / 最大输出</th>
-              <th className="px-3 py-2.5 text-right">成本 {currency}/1M（in / out）</th>
+              <th className="px-3 py-2.5 text-right">成本 {currency}（in / out 或单价）</th>
               <th className="px-3 py-2.5 text-right">折合 CNY</th>
               <th className="px-3 py-2.5 text-right">加价率</th>
-              <th className="px-3 py-2.5 text-right">售价 CNY/1M（in / out）</th>
+              <th className="px-3 py-2.5 text-right">售价 CNY（in / out 或单价）</th>
               <th className="px-3 py-2.5 text-right">毛利率</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {computed.map(({ id, row, p }) => {
               const neg = !row.keepSell && p.margin !== null && p.margin < 0;
-              const needCost = p.missingRef && (!row.costIn || !row.costOut);
+              // twoPrices：对话模型按 token 入/出两个价格；其他种类只有一个计量项单价
+              const twoPrices = (row.kind ?? 'chat') === 'chat';
+              const needCost = twoPrices ? p.missingRef && (!row.costIn || !row.costOut) : !row.costIn;
               return (
                 <tr key={id} className={cn(neg ? 'bg-rose-50/60' : needCost ? 'bg-amber-50/50' : undefined)}>
                   <td className="px-3 py-2 align-top min-w-56">
@@ -172,6 +176,27 @@ export function StepPricing({ state, update, goto }: StepProps) {
                       </div>
                     )}
                   </td>
+                  <td className="px-3 py-2 align-top min-w-40">
+                    <Select
+                      className="py-1 w-28"
+                      value={row.kind ?? 'chat'}
+                      onChange={(e) => setRow(id, { kind: e.target.value as ModelKind, sellIn: null, sellOut: null })}
+                      options={(Object.keys(KIND_INFO) as ModelKind[]).map((k) => ({ value: k, label: KIND_INFO[k].label }))}
+                    />
+                    <div className="text-[11px] text-gray-400 mt-1">/ {KIND_INFO[row.kind ?? 'chat'].unitLabel}</div>
+                    {(row.kind ?? 'chat') === 'chat' && (
+                      <label className="flex items-center gap-1.5 mt-1 text-[11px] text-gray-600" title="导入为 vision 能力：可以在对话中输入图片">
+                        <input type="checkbox" checked={row.vision} onChange={(e) => setRow(id, { vision: e.target.checked })} />
+                        可输入图片
+                      </label>
+                    )}
+                    {row.kind === 'tts' && (
+                      <label className="flex items-center gap-1.5 mt-1 text-[11px] text-gray-600" title="渠道参数 $voice_prefix_upstream_model：用户传短音色名（如 alex）时补成「上游模型名:alex」，SiliconFlow 需要">
+                        <input type="checkbox" checked={row.voicePrefix} onChange={(e) => setRow(id, { voicePrefix: e.target.checked })} />
+                        音色补模型前缀
+                      </label>
+                    )}
+                  </td>
                   <td className="px-3 py-2 align-top">
                     <div className="flex gap-1.5">
                       <Input className="py-1 w-24" value={row.family} onChange={(e) => setRow(id, { family: e.target.value })} placeholder="family" />
@@ -182,11 +207,11 @@ export function StepPricing({ state, update, goto }: StepProps) {
                   <td className="px-3 py-2 align-top">
                     <div className="flex gap-1.5 justify-end">
                       <PriceInput value={row.costIn} onChange={(v) => setRow(id, { costIn: v })} warn={needCost && !row.costIn} />
-                      <PriceInput value={row.costOut} onChange={(v) => setRow(id, { costOut: v })} warn={needCost && !row.costOut} />
+                      {twoPrices && <PriceInput value={row.costOut} onChange={(v) => setRow(id, { costOut: v })} warn={needCost && !row.costOut} />}
                     </div>
                   </td>
                   <td className="px-3 py-2 align-top text-right font-mono text-gray-500 whitespace-nowrap pt-3">
-                    {fmtPrice(p.costInCNY)} / {fmtPrice(p.costOutCNY)}
+                    {twoPrices ? `${fmtPrice(p.costInCNY)} / ${fmtPrice(p.costOutCNY)}` : fmtPrice(p.costInCNY)}
                   </td>
                   <td className="px-3 py-2 align-top">
                     <div className="flex items-center justify-end gap-1">
@@ -206,7 +231,9 @@ export function StepPricing({ state, update, goto }: StepProps) {
                     ) : (
                       <div className="flex gap-1.5 justify-end items-center">
                         <PriceInput value={row.sellIn ?? (p.sellIn === null ? '' : String(p.sellIn))} manual={row.sellIn !== null} onChange={(v) => setRow(id, { sellIn: v })} />
-                        <PriceInput value={row.sellOut ?? (p.sellOut === null ? '' : String(p.sellOut))} manual={row.sellOut !== null} onChange={(v) => setRow(id, { sellOut: v })} />
+                        {twoPrices && (
+                          <PriceInput value={row.sellOut ?? (p.sellOut === null ? '' : String(p.sellOut))} manual={row.sellOut !== null} onChange={(v) => setRow(id, { sellOut: v })} />
+                        )}
                         {(row.sellIn !== null || row.sellOut !== null) && (
                           <button
                             type="button"
