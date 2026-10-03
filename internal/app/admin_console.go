@@ -757,7 +757,16 @@ func (h *adminHandlers) getTodoCounts(w http.ResponseWriter, r *http.Request) {
 		todoCache.val, todoCache.at = val, time.Now()
 		todoCache.Unlock()
 	}
-	httpx.WriteJSON(w, http.StatusOK, val)
+	out := *val
+	// 智能体提案按调用者权限计数（不进共享缓存）：只数“我有权限处理的”待审提案。
+	if h.agent.Enabled() && can(r, adminauth.PermAgentUse) {
+		if n, err := h.agent.Store.CountPending(r.Context(), permsOf(actor(r))); err == nil {
+			out.AgentPendingApprovals = n
+		} else {
+			h.log.Warn("count agent proposals failed", "error", err)
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // isAdminNotFound / isAdminConflict 集中列出 admin 包新增的哨兵错误，供 writeAdminError 使用。

@@ -117,6 +117,16 @@ export const router = createBrowserRouter([
           { path: 'analytics', handle: crumb('用量分析'), lazy: page(() => import('./pages/observe/AnalyticsPage')) },
           { path: 'audit', handle: crumb('审计日志'), lazy: page(() => import('./pages/audit/AuditPage')) },
           { path: 'admin-users', handle: crumb('管理员与角色'), lazy: page(() => import('./pages/system/AdminUsersPage')) },
+          {
+            path: 'agent',
+            handle: crumb('运营助手'),
+            children: [
+              { index: true, lazy: page(() => import('./pages/agent/AgentPage')) },
+              { path: 'inbox', handle: crumb('提案收件箱'), lazy: page(() => import('./pages/agent/InboxPage')) },
+              { path: 'jobs', handle: crumb('智能作业'), lazy: page(() => import('./pages/agent/JobsPage')) },
+              { path: ':sessionId', handle: crumb((p) => `会话 #${p.sessionId}`), lazy: page(() => import('./pages/agent/AgentPage')) },
+            ],
+          },
           { path: '*', handle: crumb('页面不存在'), Component: NotFoundPage },
         ],
       },

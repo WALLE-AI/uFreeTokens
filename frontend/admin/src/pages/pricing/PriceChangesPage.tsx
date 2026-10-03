@@ -25,6 +25,11 @@ import {
 import { useAsync } from '../../hooks/useAsync';
 import { isTypingTarget } from '../../hooks/useHotkeys';
 import { useQueryParams } from '../../hooks/useQueryState';
+import { AgentActionButton, AgentOpinionCard, AgentSuggestionBadge } from '../agent/components/AgentEmbeds';
+import { useAgentSuggestions } from '../../agent/useAgentSuggestions';
+import { useAgentContext } from '../../agent/useAgentContext';
+import { useAgentMutated } from '../../agent/agentEvents';
+import type { AgentProposal } from '../../api/agent';
 import { refreshTodoCounts } from '../../hooks/useTodoCounts';
 import { cn } from '../../lib/cn';
 import { formatRelative } from '../../lib/time';
@@ -124,6 +129,20 @@ export default function PriceChangesPage() {
   }, [selectedId]);
 
   const current = detail.data ?? null;
+  // 智能体：行内建议、详情意见卡、Dock 上下文；审批执行后自动刷新（设计 §19.3）。
+  const suggestions = useAgentSuggestions('price_change_request', items.map((c) => c.id));
+  useAgentContext(current ? { type: 'price_change_request', id: String(current.id), label: `调价 #${current.id}` } : null);
+  useAgentMutated('price_change_request', () => {
+    setListTick((t) => t + 1);
+    setDetailTick((t) => t + 1);
+  });
+  const opinion = current ? suggestions.byId.get(String(current.id)) : undefined;
+  // “采纳”只预填审批理由，最终仍由运营点击原有的批准/驳回按钮（A/R 快捷键不变）。
+  const adoptOpinion = (p: AgentProposal) => {
+    setReason(p.rationale || p.summary);
+    setReasonError(null);
+    reasonRef.current?.focus();
+  };
   const actionable = !!current && (current.status === 'pending' || current.status === 'blocked') && current.id === selectedId;
 
   const nextIdAfter = (id: number): number | null => {
@@ -275,6 +294,7 @@ export default function PriceChangesPage() {
               <kbd className="font-mono">J</kbd>/<kbd className="font-mono">K</kbd> 切换 · <kbd className="font-mono">A</kbd> 批准 ·{' '}
               <kbd className="font-mono">R</kbd> 驳回
             </span>
+            <AgentActionButton playbook="price_triage" label="✦ 预审待审批" />
             <Button icon={<RotateCw className="w-3.5 h-3.5" />} onClick={() => setListTick((t) => t + 1)} loading={list.refreshing}>
               刷新
             </Button>
@@ -351,6 +371,7 @@ export default function PriceChangesPage() {
                   fading={c.id === fadingId}
                   showCheckbox={tab !== 'history'}
                   checked={checked.has(c.id)}
+                  suggestion={<AgentSuggestionBadge proposal={suggestions.byId.get(String(c.id))} onDone={() => setListTick((t) => t + 1)} />}
                   onCheck={(v) =>
                     setChecked((prev) => {
                       const next = new Set(prev);
@@ -376,6 +397,19 @@ export default function PriceChangesPage() {
                 </DataState>
               )}
             </div>
+            {opinion && current && (
+              <div className="px-5 pb-4">
+                <AgentOpinionCard
+                  proposal={opinion}
+                  adoptLabel={opinion.tool === 'reject_price_change' ? '采纳：填入驳回原因' : '采纳：填入审批理由'}
+                  onAdopt={actionable ? adoptOpinion : undefined}
+                  onDone={() => {
+                    setListTick((t) => t + 1);
+                    setDetailTick((t) => t + 1);
+                  }}
+                />
+              </div>
+            )}
             {actionable && current && (
               <div className="border-t border-gray-100 p-4 bg-gray-50/60 rounded-b-xl space-y-3">
                 <Field label="审批理由" hint="批准时可选；驳回时必填（R 聚焦此处）" error={reasonError}>
@@ -513,8 +547,10 @@ function ListItem({
   checked,
   onCheck,
   onClick,
+  suggestion,
 }: {
   c: ChangeRequestSummary;
+  suggestion?: React.ReactNode;
   selected: boolean;
   fading: boolean;
   showCheckbox: boolean;
@@ -544,6 +580,7 @@ function ListItem({
         <span className="text-xs font-medium text-gray-900 truncate flex-1" title={c.virtual_model_name}>
           {c.virtual_model_name}
         </span>
+        {suggestion}
         <RatioText ratio={c.max_change_ratio} className="text-xs" />
       </div>
       <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400 pl-0.5">

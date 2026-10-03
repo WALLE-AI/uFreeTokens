@@ -40,9 +40,12 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
+	agentjobs "github.com/WALLE-AI/uFreeTokens/internal/agent/jobs"
+	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/benchsync"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
+	"github.com/WALLE-AI/uFreeTokens/internal/fxsync"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
 	"github.com/WALLE-AI/uFreeTokens/internal/llm"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
@@ -174,6 +177,20 @@ func run() error {
 		return map[string]any{"expired": n, "runs_purged": purged}, err
 	})
 
+	// 运营智能体后台作业（实施方案 M3-B04）：agent.jobs_enabled=false 时不注册。身份固定为只读服务主体
+	// agent-bot；这里构造的管理路由只用于只读工具调度，不监听端口，写操作只发生在 cmd/admin 的审批请求中。
+	if cfg.Agent.JobsEnabled {
+		runner, err := newAgentJobRunner(cfg, pg, walletSvc, logger)
+		if err != nil {
+			return fmt.Errorf("build agent jobs: %w", err)
+		}
+		jobs.runWithTimeout("agent_jobs_tick", agentJobsInterval, agentJobsTickTimeout, runner.Tick)
+		jobs.run("agent_sessions_retention", retentionInterval, func(ctx context.Context) (map[string]any, error) {
+			n, err := agentjobs.PurgeSessions(ctx, pg, agentSessionRetention)
+			return map[string]any{"purged": n}, err
+		})
+	}
+
 	if days := retentionDays(logger); days > 0 {
 		jobs.run("request_logs_retention", retentionInterval, func(ctx context.Context) (map[string]any, error) {
 			return dropExpiredPartitions(ctx, logger, pg, days)
@@ -185,6 +202,31 @@ func run() error {
 	wg.Wait()
 	logger.Info("worker shut down cleanly")
 	return nil
+}
+
+const (
+	agentJobsInterval     = time.Minute
+	agentJobsTickTimeout  = 30 * time.Minute
+	agentSessionRetention = 180 * 24 * time.Hour
+)
+
+// newAgentJobRunner 组装后台智能作业：与 cmd/admin 同一套路由工具与剧本，模型取 agent.batch_model。
+func newAgentJobRunner(cfg *config.Config, pg *pgxpool.Pool, walletSvc *wallet.Service, logger *slog.Logger) (*agentjobs.Runner, error) {
+	adminSvc := admin.New(pg, walletSvc, nil, nil)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.UTC
+	}
+	env := datasync.NewEnv(datasync.EnvOptions{Timeout: 45 * time.Second})
+	deps := app.AdminDeps{Logger: logger, Admin: adminSvc, PriceSync: pricesync.NewEngine(pg, adminSvc), Offers: offers.NewStore(pg), StatsTZ: loc, DataSyncEnv: env}
+	svc, err := app.NewAgentService(app.AgentSetup{Config: *cfg, Pool: pg, Deps: deps, Fetch: env, Logger: logger, Location: loc, Batch: true})
+	if err != nil {
+		return nil, err
+	}
+	if !svc.Enabled() {
+		logger.Warn("agent jobs enabled but the agent is not usable; ticks will be skipped", "missing", svc.Missing)
+	}
+	return &agentjobs.Runner{Store: &agentjobs.Store{Pool: pg}, Agent: svc, Logger: logger, MonthlyTokenCap: cfg.Agent.MonthlyTokenCap}, nil
 }
 
 // jobRunner 启动周期任务，并把每次执行记进 job_runs（开始、结束、成败、摘要），
@@ -266,7 +308,7 @@ func (j *jobRunner) runWithTimeout(name string, interval, timeout time.Duration,
 //   - 优惠文案抽取用的 LLM 来自配置段 datasync.llm_*（与 cmd/admin 共用；环境变量
 //     UFT_DATASYNC_LLM_BASE_URL / _MODEL，密钥 UFT_DATASYNC_LLM_API_KEY）；
 //   - UFT_DATASYNC_AA_API_KEY 等：评测来源 config 里 auth_header_env 引用的密钥；
-//   - UFT_WORKER_METRICS_ADDR：非空时在该地址暴露 /metrics（uft_datasync_* 指标）。
+//   - UFT_WORKER_METRICS_ADDR：非空时在该地址暴露 /metrics（uft_datasync_* 与 agent_* 指标）。
 func newDataSyncScheduler(pg *pgxpool.Pool, walletSvc *wallet.Service, llmCfg config.DataSyncConfig, logger *slog.Logger) *datasync.Scheduler {
 	// 采集只用到建基准 / 写榜单 / 发布成本价，不涉及上游密钥，所以不需要 secretbox 与 pepper。
 	adminSvc := admin.New(pg, walletSvc, nil, nil)
@@ -279,13 +321,16 @@ func newDataSyncScheduler(pg *pgxpool.Pool, walletSvc *wallet.Service, llmCfg co
 	}
 	registry["offer_page"] = offers.PageJob{Store: offerStore, LLM: offers.NewLLM(llmClient)}
 	registry["tabular"] = &benchsync.Job{Pool: pg, Publisher: adminSvc}
+	registry["fx_rate"] = &fxsync.Job{Admin: adminSvc}
+	registry["self_eval"] = &benchsync.SelfEvalJob{Job: benchsync.Job{Pool: pg, Publisher: adminSvc}}
 
 	env := datasync.NewEnv(datasync.EnvOptions{AllowPrivateNetworks: os.Getenv("UFT_DATASYNC_ALLOW_PRIVATE") == "true"})
 	reg := prometheus.NewRegistry()
 	metrics := datasync.NewMetrics(reg)
 	if addr := os.Getenv("UFT_WORKER_METRICS_ADDR"); addr != "" {
 		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		// 默认注册表含 agent_* 指标（internal/observability/agent.go）。
+		mux.Handle("/metrics", promhttp.HandlerFor(prometheus.Gatherers{reg, prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 		srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

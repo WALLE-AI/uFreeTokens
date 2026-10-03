@@ -35,6 +35,10 @@ const (
 	PermObserveRead        Permission = "observe:read"
 	PermAuditRead          Permission = "audit:read"
 	PermAdminUserManage    Permission = "admin_user:manage"
+	// 运营智能体（Harness）：agent:use 能发起对话与处理提案（写操作仍按各自路由的权限校验），
+	// agent:admin 能管理后台智能作业。
+	PermAgentUse   Permission = "agent:use"
+	PermAgentAdmin Permission = "agent:admin"
 )
 
 // AllPermissions 列出全部权限点，供 /meta、前端展示和测试使用。
@@ -43,6 +47,7 @@ var AllPermissions = []Permission{
 	PermCatalogRead, PermCatalogWrite, PermProviderKeyWrite,
 	PermPricingRead, PermPricingWrite, PermPriceChangeApprove,
 	PermObserveRead, PermAuditRead, PermAdminUserManage,
+	PermAgentUse, PermAgentAdmin,
 }
 
 // SystemAdminID 是 admin_users 里保留的 system 身份（迁移 00016 插入）：历史

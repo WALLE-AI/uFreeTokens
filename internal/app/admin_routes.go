@@ -122,6 +122,8 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{post, "/pricing/preview", adminauth.PermPricingRead, h.pricingPreview},
 		{post, "/pricesync/reference-price-lookup", adminauth.PermPricingRead, h.referencePriceLookup},
 		{get, "/price-sources", adminauth.PermPricingRead, h.listPriceSources},
+		// 试运行会发起出站请求（但不写库），按写数据源的权限收口。
+		{post, "/price-sources/dry-run", adminauth.PermPricingWrite, h.dryRunPriceSource},
 		{get, "/price-sources/{priceSourceID}", adminauth.PermPricingRead, h.getPriceSource},
 		{post, "/price-sources", adminauth.PermPricingWrite, h.createPriceSource},
 		{patch, "/price-sources/{priceSourceID}", adminauth.PermPricingWrite, h.updatePriceSource},
@@ -145,6 +147,7 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{post, "/upstream-offers/{offerID}/status", adminauth.PermPricingWrite, h.setUpstreamOfferStatus},
 		{post, "/upstream-offers/{offerID}/adopt", adminauth.PermPricingWrite, h.adoptUpstreamOffer},
 		{get, "/pricesync/price-comparison", adminauth.PermPricingRead, h.priceComparison},
+		{post, "/offer-pages/extract-preview", adminauth.PermPricingWrite, h.extractOfferPreview},
 		{get, "/model-aliases", adminauth.PermCatalogRead, h.listModelAliases},
 		{get, "/model-aliases/namespaces", adminauth.PermCatalogRead, h.listModelAliasNamespaces},
 		{put, "/model-aliases", adminauth.PermCatalogWrite, h.setModelAlias},
@@ -156,6 +159,21 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		{get, "/request-logs/{requestID}", adminauth.PermObserveRead, h.getRequestLog},
 		{get, "/audit-logs", adminauth.PermAuditRead, h.listAuditLogs},
 		{get, "/todo-counts", permAuthenticated, h.getTodoCounts},
+
+		// --- 运营智能体（Harness，《运营后台 Agent 模块（Harness 智能体）技术架构设计方案》§5） ---
+		// 智能体执行的每个工具仍按其绑定路由的权限校验；审批人必须拥有提案绑定路由的权限（handler 内校验）。
+		{get, "/agent/meta", adminauth.PermAgentUse, h.agentMeta},
+		{get, "/agent/sessions", adminauth.PermAgentUse, h.listAgentSessions},
+		{post, "/agent/sessions", adminauth.PermAgentUse, h.createAgentSession},
+		{get, "/agent/sessions/{sessionID}", adminauth.PermAgentUse, h.getAgentSession},
+		{patch, "/agent/sessions/{sessionID}", adminauth.PermAgentUse, h.updateAgentSession},
+		{post, "/agent/sessions/{sessionID}/messages", adminauth.PermAgentUse, h.sendAgentMessage},
+		{post, "/agent/sessions/{sessionID}/cancel", adminauth.PermAgentUse, h.cancelAgentSession},
+		{post, "/agent/sessions/{sessionID}/tool-calls/{callID}/decision", adminauth.PermAgentUse, h.decideAgentToolCall},
+		{get, "/agent/proposals", adminauth.PermAgentUse, h.listAgentProposals},
+		{get, "/agent/jobs", adminauth.PermAgentAdmin, h.listAgentJobs},
+		{patch, "/agent/jobs/{jobID}", adminauth.PermAgentAdmin, h.updateAgentJob},
+		{post, "/agent/jobs/{jobID}/run", adminauth.PermAgentAdmin, h.runAgentJob},
 	}
 }
 

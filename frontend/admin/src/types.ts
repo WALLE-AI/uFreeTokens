@@ -38,6 +38,9 @@ export interface AuditLogEntry {
   after: unknown;
   ip: string;
   created_at: ISODateTime;
+  // 经由运营智能体执行（审批后以审批人身份调用）时关联的会话与工具调用
+  agent_session_id?: number | null;
+  agent_tool_call_id?: string | null;
 }
 
 // admin.TodoCounts
@@ -52,6 +55,8 @@ export interface TodoCounts {
   offers_new: number;
   aliases_suggested: number;
   data_sources_failing: number;
+  // 当前管理员有权限处理的智能体待审提案数（按请求计算）
+  agent_pending_approvals?: number;
 }
 
 export type AdminEnv = 'production' | 'staging' | 'dev';
@@ -957,7 +962,9 @@ export type Permission =
   | 'price_change:approve'
   | 'observe:read'
   | 'audit:read'
-  | 'admin_user:manage';
+  | 'admin_user:manage'
+  | 'agent:use'
+  | 'agent:admin';
 
 // GET /me（app.meResponse）
 export interface AdminMe {

@@ -28,6 +28,9 @@ export const ACTION_LABELS: Record<string, string> = {
   'price_source.create': '创建数据源',
   'price_source.update': '修改数据源',
   'price_source.run': '立即运行数据源',
+  'agent.decision': '审批智能体提案',
+  'agent_job.update': '修改智能作业',
+  'agent_job.run': '立即运行智能作业',
   'upstream_offer.status': '处理优惠情报',
   'upstream_offer.adopt': '采用优惠情报',
   'model_alias.set': '设置榜单模型映射',
@@ -81,6 +84,8 @@ export const TARGET_LABELS: Record<string, string> = {
   benchmark: '基准测试',
   benchmark_run: '基准测试 run',
   public_app_rule: '公开应用榜规则',
+  agent_tool_call: '智能体提案',
+  agent_job: '智能作业',
 };
 
 export function actionLabel(action: string): string {
@@ -89,7 +94,7 @@ export function actionLabel(action: string): string {
 
 export function targetLabel(targetType: string, targetId: string): string {
   // fx_rate 的 id 是币种对，model_alias 的 id 是 "命名空间:原始模型名"，都不是数字
-  const plain = targetType === 'fx_rate' || targetType === 'model_alias';
+  const plain = targetType === 'fx_rate' || targetType === 'model_alias' || targetType === 'agent_tool_call';
   return `${TARGET_LABELS[targetType] ?? targetType} ${plain ? targetId : `#${targetId}`}`;
 }
 

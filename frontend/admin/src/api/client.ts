@@ -43,6 +43,21 @@ export function buildURL(path: string, query?: Record<string, QueryValue>): stri
   return `${ADMIN_API_BASE}${path}${s ? `?${s}` : ''}`;
 }
 
+// buildHeaders 构造请求头：注入会话令牌（request 与 SSE 流式请求 streamSSE 共用）。
+export function buildHeaders(opts: { json?: boolean; token?: string; accept?: string } = {}): Record<string, string> {
+  const token = opts.token ?? authStore.get().token;
+  const headers: Record<string, string> = {};
+  if (opts.json) headers['Content-Type'] = 'application/json';
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (opts.accept) headers['Accept'] = opts.accept;
+  return headers;
+}
+
+// handleUnauthorized：会话失效（401）时清空登录态回到登录页。
+export function handleUnauthorized() {
+  redirectToLogin();
+}
+
 function redirectToLogin() {
   authStore.clear();
   const { pathname, search } = window.location;
@@ -70,9 +85,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     else signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers = buildHeaders({ json: body !== undefined, token: token ?? undefined });
   if (method === 'PATCH' && etags.has(path)) headers['If-Match'] = etags.get(path)!;
   if (idempotencyKey && method === 'POST') headers['Idempotency-Key'] = idempotencyKey;
 

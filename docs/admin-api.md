@@ -81,6 +81,30 @@
   - 基准：`/benchmarks`（定义，PATCH 走 If-Match）、`POST /benchmarks/{id}/runs`（一次录入或批量导入整批结果，全部成功或全部回滚；`publish: true` 时立即发布）、`POST /benchmark-runs/{id}/publish`（同基准此前发布的 run 自动取消发布，保留为历史）、`DELETE /benchmark-runs/{id}`（只有从未发布过的 run 能删，否则 409）。公开接口只展示 `status=published` 的基准的最新已发布 run。
   - 账户的 `exclude_from_public_stats`（创建、`PATCH /accounts/{id}`）：内部测试、压测、评测账户的流量不计入公开排行榜；用户也可在个人中心自行关闭（`PUT /console/settings/public-stats`）。
   - 应用榜治理：`GET /public-apps?days=` 列出声明过的应用（不受隐私阈值限制）；`/public-app-rules` 按 `app_key` 屏蔽（`block`）、合并（`merge` + `merge_into`）或改名（`rename` + `display_name`），网关读榜时实时生效（公开缓存 5 分钟）。
+- **运营智能体（Harness）**（《运营后台 Agent 模块（Harness 智能体）技术架构设计方案》§5）：
+  - 开关与配置：配置段 `agent.*`（`enabled`、`jobs_enabled`、`llm_base_url` / `llm_model` / `llm_api_key_env`（留空回落 `datasync.llm_*`）、`batch_model`、`max_turns`、`max_tool_calls`、`max_tokens`、`run_timeout`、`fetch_allow_domains`、`monthly_token_cap`），环境变量 `UFT_AGENT_*`。未启用或 LLM 未配置时 `GET /agent/meta` 返回 `enabled=false`（前端隐藏全部入口），其余 `/agent/*` 返回 503 `agent_disabled`。
+  - 权限：`agent:use` 使用智能体（operator / pricing 角色默认授予），`agent:admin` 管理后台作业。智能体执行的每个工具仍按其绑定路由的权限校验，工具集按当前管理员的权限过滤；应急令牌身份不能使用智能体（403 `break_glass_forbidden`）。
+  - 写操作一律生成提案：`POST /agent/sessions/{id}/tool-calls/{callID}/decision`，body `{"decision":"approve|reject","note":"","args":null}`。审批人必须拥有提案绑定路由的权限（否则 403）；通过后**以审批人身份**进程内调用原路由执行（`Idempotency-Key: agent:{callID}`，有 ETag 的 PATCH 带 `If-Match`），审计日志带 `agent_session_id` / `agent_tool_call_id`，另记一条 `agent.decision`。重复审批返回 409 `already_decided`；对象在审批期间被修改（412/409）时提案标为 `stale`，交互会话中智能体会重新读取后再提案。`args` 为“编辑后通过”的新参数，服务端重新做必填项与证据校验，不能改变操作对象。
+  - 审批默认返回 JSON（交互会话的后续运行在后台继续）；`?stream=1` 或 `Accept: text/event-stream` 时以 SSE 返回并在同一连接里继续运行，最后附一个 `decision` 事件。
+  - 证据：从外部网页得出事实的提案须带 `evidence: [{url, quote}]`，`url` 必须是本会话 `fetch_page` 抓取过的页面，`quote` 必须逐字（空白归一化）出现在正文中；确认优惠有效（`set_offer_status` + `confirmed`）必须带证据。校验失败的提案不入库，退回给模型重写。
+  - 提案收件箱：`GET /agent/proposals?status=pending&target_type=&target_ids=1,2,3&mine=1`（列表页一次请求取回所有行的建议；`mine=1` 默认只返回我有权限处理的）；`GET /todo-counts` 的 `agent_pending_approvals` 是我可处理的待审提案数。目标对象已被人工处理的提案自动标为 `superseded`。
+  - 后台作业（`agent:admin`）：`GET /agent/jobs`、`PATCH /agent/jobs/{id}`（启停 / 调度 / 每日 Token 预算 / 单次对象数 / 模型；重新启用清除熔断）、`POST /agent/jobs/{id}/run`（worker 下一次 tick 执行）。作业以只读服务主体 `agent-bot` 运行，只产生提案；最近 50 条已处理提案拒绝率 > 40%（至少 10 条）自动熔断停用。
+  - 数据源试运行 / 优惠抽取预览（不写库，`pricing:write`）：`POST /price-sources/dry-run` `{fetcher, url, config, sample_size}` 返回 `count` / `sample` / `warnings`（解析失败放在 `error`）；`POST /offer-pages/extract-preview` `{url, provider_code, keywords?}` 返回抽取结果与是否通过证据校验。
+- **智能体 SSE 事件协议**：`POST /agent/sessions/{id}/messages`（body `{"content":"…"}`）与流式审批的响应为 `text/event-stream`，每个事件一行 `event:` + 一行 `data:`（JSON），每 15 秒一条 `: ping` 注释保活。客户端断开不影响后端运行（运行 ctx 与请求分离，受 `agent.run_timeout` 约束），重连后 `GET /agent/sessions/{id}` 拉全量（`status=running` 时轮询，一期不做断点续流）。同一会话同时只允许一个运行（409 `session_busy`）。
+
+  | event | data |
+  |---|---|
+  | `run_started` | `{"run_id","session_id"}` |
+  | `text_delta` | `{"text"}` 模型输出增量（推理段已过滤） |
+  | `tool_call` | `{"id","tool","args","risk"}` |
+  | `tool_result` | `{"id","status","http_status","summary","duration_ms"}`；审批执行后还带 `target_type` / `target_id` / `decided_by` |
+  | `approval_required` | `{"id","proposal_id","tool","args","summary","before","after","permission","rationale","confidence","evidence","target_type","target_id"}` |
+  | `usage` | `{"tokens_in","tokens_out","turns"}`（本次运行累计） |
+  | `run_finished` | `{"status":"completed|awaiting_approval|stopped|failed","reason","tokens_in","tokens_out","turns","pending","duration_ms"}`；`reason` 如 `max_turns` / `token_budget` / `max_tool_calls` / `timeout` / `cancelled` / `llm_unavailable` |
+  | `error` | `{"code","message"}` |
+  | `decision` | 流式审批的最终结果（同 JSON 审批响应） |
+
+  部署：Nginx 对 `/admin-api/agent/` 需 `proxy_buffering off; proxy_read_timeout 600s;`（见 `frontend/admin/deploy-nginx.example.conf`）；cmd/admin 的 90 秒 `WriteTimeout` 由 SSE 接口按请求解除。可选 `UFT_ADMIN_METRICS_ADDR` 暴露 `agent_*` 指标。
 - **已废弃**：下面两种用法仍可用，但响应带 `Deprecation: true` 头，请改用新接口：
   - `GET /virtual-models?name=` 改用 `GET /virtual-models/lookup?name=`
   - `GET /channels?virtual_model_id=&provider_account_id=&upstream_model=` 改用 `GET /channels/lookup`
@@ -111,6 +135,18 @@
 | GET | /admin-users | `admin_user:manage` |
 | POST | /admin-users | `admin_user:manage` |
 | PATCH | /admin-users/{adminUserID} | `admin_user:manage` |
+| GET | /agent/jobs | `agent:admin` |
+| PATCH | /agent/jobs/{jobID} | `agent:admin` |
+| POST | /agent/jobs/{jobID}/run | `agent:admin` |
+| GET | /agent/meta | `agent:use` |
+| GET | /agent/proposals | `agent:use` |
+| GET | /agent/sessions | `agent:use` |
+| POST | /agent/sessions | `agent:use` |
+| GET | /agent/sessions/{sessionID} | `agent:use` |
+| PATCH | /agent/sessions/{sessionID} | `agent:use` |
+| POST | /agent/sessions/{sessionID}/cancel | `agent:use` |
+| POST | /agent/sessions/{sessionID}/messages | `agent:use` |
+| POST | /agent/sessions/{sessionID}/tool-calls/{callID}/decision | `agent:use` |
 | GET | /api-keys | `account:read` |
 | PATCH | /api-keys/{apiKeyID} | `account:write` |
 | POST | /api-keys/{apiKeyID}/revoke | `account:write` |
@@ -148,6 +184,7 @@
 | GET | /model-aliases | `catalog:read` |
 | PUT | /model-aliases | `catalog:write` |
 | GET | /model-aliases/namespaces | `catalog:read` |
+| POST | /offer-pages/extract-preview | `pricing:write` |
 | GET | /pending-model-listings | `pricing:read` |
 | POST | /pending-model-listings/batch-dismiss | `pricing:write` |
 | POST | /pending-model-listings/{listingID}/dismiss | `pricing:write` |
@@ -159,6 +196,7 @@
 | POST | /price-change-requests/{changeRequestID}/reject | `price_change:approve` |
 | GET | /price-sources | `pricing:read` |
 | POST | /price-sources | `pricing:write` |
+| POST | /price-sources/dry-run | `pricing:write` |
 | GET | /price-sources/{priceSourceID} | `pricing:read` |
 | PATCH | /price-sources/{priceSourceID} | `pricing:write` |
 | POST | /price-sources/{priceSourceID}/run | `pricing:write` |

@@ -4,6 +4,7 @@ import { navGroups } from '../../nav';
 import { cn } from '../../lib/cn';
 import { ADMIN_ENV, ENV_BADGE_CLASS, ENV_DOT_CLASS, ENV_LABEL } from '../../lib/env';
 import { useAuth } from '../../api/auth';
+import { useAgentEnabled } from '../../agent/agentStore';
 import { CountBadge } from '../ui';
 import type { TodoCounts } from '../../types';
 
@@ -11,10 +12,11 @@ import type { TodoCounts } from '../../types';
 // （w-56，选中 bg-purple-100/70 text-purple-700，分组标签 text-[11px] uppercase）。
 export function AdminSidebar({ counts, onNavigate }: { counts: TodoCounts | null; onNavigate?: () => void }) {
   const { me } = useAuth();
+  const agentEnabled = useAgentEnabled();
   return (
     <div className="w-56 h-full border-r border-gray-200 bg-white flex flex-col">
       <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-4 text-[13px]">
-        {navGroups(me).map(({ group, items }) => (
+        {navGroups(me, agentEnabled).map(({ group, items }) => (
           <div key={group ?? 'root'}>
             {group && <div className="px-2.5 mb-1 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">{group}</div>}
             <ul className="space-y-0.5">

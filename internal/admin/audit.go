@@ -25,6 +25,9 @@ type AuditLogInput struct {
 	IP         string // 调用方 IP；空字符串存 NULL
 	UserAgent  string
 	RequestID  string
+	// AgentSessionID / AgentToolCallID 非零时表示经由运营智能体执行（审批后以审批人身份调用）。
+	AgentSessionID  int64
+	AgentToolCallID string
 }
 
 type AuditLogEntry struct {
@@ -38,6 +41,9 @@ type AuditLogEntry struct {
 	After      json.RawMessage `json:"after"`
 	IP         string          `json:"ip"`
 	CreatedAt  time.Time       `json:"created_at"`
+	// 经由智能体执行时关联的会话与工具调用（否则为 null）。
+	AgentSessionID  *int64  `json:"agent_session_id"`
+	AgentToolCallID *string `json:"agent_tool_call_id"`
 }
 
 // RecordAudit 写一条审计记录。ctx 里有环境事务（Service.RunInTx）时审计写在
@@ -62,12 +68,18 @@ func (s *Service) RecordAudit(ctx context.Context, in AuditLogInput) (int64, err
 	if in.SessionID != 0 {
 		sessionID = &in.SessionID
 	}
+	var agentSessionID *int64
+	if in.AgentSessionID != 0 {
+		agentSessionID = &in.AgentSessionID
+	}
 
 	var id int64
 	if err := s.db(ctx).QueryRow(ctx,
-		`INSERT INTO admin_audit_logs (actor_id, actor_name, action, target_type, target_id, before, after, ip, session_id, user_agent, request_id)
-		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, '')::inet, $9, NULLIF($10, ''), NULLIF($11, '')) RETURNING id`,
+		`INSERT INTO admin_audit_logs (actor_id, actor_name, action, target_type, target_id, before, after, ip, session_id, user_agent, request_id,
+		                               agent_session_id, agent_tool_call_id)
+		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, NULLIF($8, '')::inet, $9, NULLIF($10, ''), NULLIF($11, ''), $12, NULLIF($13, '')) RETURNING id`,
 		in.ActorID, in.ActorName, in.Action, in.TargetType, in.TargetID, before, after, in.IP, sessionID, ua, in.RequestID,
+		agentSessionID, in.AgentToolCallID,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("admin: insert admin_audit_log: %w", err)
 	}
@@ -116,7 +128,8 @@ func (s *Service) ListAuditLogs(ctx context.Context, in ListAuditLogsInput) ([]A
 		}
 	}
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT id, actor_id, COALESCE(actor_name, ''), action, target_type, target_id, before, after, COALESCE(host(ip), ''), created_at
+		`SELECT id, actor_id, COALESCE(actor_name, ''), action, target_type, target_id, before, after, COALESCE(host(ip), ''), created_at,
+		        agent_session_id, agent_tool_call_id
 		 FROM admin_audit_logs
 		 WHERE ($1 = '' OR target_type = $1) AND ($2 = '' OR target_id = $2)
 		   AND ($3 = 0 OR actor_id = $3) AND ($4 = '' OR actor_name = $4)
@@ -135,7 +148,8 @@ func (s *Service) ListAuditLogs(ctx context.Context, in ListAuditLogsInput) ([]A
 	out := make([]AuditLogEntry, 0, limit)
 	for rows.Next() {
 		var e AuditLogEntry
-		if err := rows.Scan(&e.ID, &e.ActorID, &e.ActorName, &e.Action, &e.TargetType, &e.TargetID, &e.Before, &e.After, &e.IP, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ActorID, &e.ActorName, &e.Action, &e.TargetType, &e.TargetID, &e.Before, &e.After, &e.IP, &e.CreatedAt,
+			&e.AgentSessionID, &e.AgentToolCallID); err != nil {
 			return nil, "", fmt.Errorf("admin: scan admin_audit_log: %w", err)
 		}
 		out = append(out, e)

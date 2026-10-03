@@ -2,6 +2,9 @@ import type { LucideIcon } from 'lucide-react';
 import {
   AppWindow,
   ArrowLeftRight,
+  Bot,
+  Inbox,
+  Timer,
   BarChart3,
   Coins,
   Database,
@@ -32,6 +35,8 @@ export interface NavItem {
   perm?: Permission;
   // 侧栏待办徽标取值
   badge?: (c: TodoCounts) => { count: number; alert: boolean } | null;
+  // 'agent'：只有智能体启用（/agent/meta.enabled）时才显示
+  requires?: 'agent';
 }
 
 // 侧栏、命令面板、快捷键共用同一份导航定义（UI_DESIGN.md §1.1）。
@@ -63,6 +68,19 @@ export const NAV_ITEMS: NavItem[] = [
     perm: 'pricing:read',
     badge: (c) => ({ count: c.offers_new ?? 0, alert: false }),
   },
+
+  // 智能体（位于"待办"之后：提案本质上也是待办，设计 §19.4）
+  { path: '/agent', label: '运营助手', icon: Bot, group: '智能体', gotoKey: 'i', perm: 'agent:use', requires: 'agent' },
+  {
+    path: '/agent/inbox',
+    label: '提案收件箱',
+    icon: Inbox,
+    group: '智能体',
+    perm: 'agent:use',
+    requires: 'agent',
+    badge: (c) => ({ count: c.agent_pending_approvals ?? 0, alert: false }),
+  },
+  { path: '/agent/jobs', label: '智能作业', icon: Timer, group: '智能体', perm: 'agent:admin', requires: 'agent' },
 
   { path: '/providers', label: '供应商', icon: Database, group: '供给', perm: 'catalog:read' },
   { path: '/channels', label: '渠道', icon: ArrowLeftRight, group: '供给', perm: 'catalog:read' },
@@ -99,14 +117,14 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/admin-users', label: '管理员与角色', icon: ShieldCheck, group: '系统', perm: 'admin_user:manage' },
 ];
 
-// visibleNavItems 过滤掉当前管理员没有权限的菜单。
-export function visibleNavItems(me: AdminMe | null): NavItem[] {
-  return NAV_ITEMS.filter((i) => can(me, i.perm));
+// visibleNavItems 过滤掉当前管理员没有权限的菜单；智能体未启用时隐藏智能体分组。
+export function visibleNavItems(me: AdminMe | null, agentEnabled = false): NavItem[] {
+  return NAV_ITEMS.filter((i) => can(me, i.perm) && (i.requires !== 'agent' || agentEnabled));
 }
 
-export function navGroups(me: AdminMe | null): Array<{ group: string | null; items: NavItem[] }> {
+export function navGroups(me: AdminMe | null, agentEnabled = false): Array<{ group: string | null; items: NavItem[] }> {
   const out: Array<{ group: string | null; items: NavItem[] }> = [];
-  for (const item of visibleNavItems(me)) {
+  for (const item of visibleNavItems(me, agentEnabled)) {
     const last = out[out.length - 1];
     if (last && last.group === item.group) last.items.push(item);
     else out.push({ group: item.group, items: [item] });

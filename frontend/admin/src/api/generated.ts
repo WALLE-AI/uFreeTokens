@@ -125,6 +125,61 @@ export interface AdoptOfferResponse {
   promotion_id: number;
 }
 
+export interface AgentMessageRequest {
+  content: string;
+}
+
+export interface AgentMetaResponse {
+  enabled: boolean;
+  jobs_enabled: boolean;
+  model: string;
+  missing: string[] | null;
+  max_turns: number;
+  max_tool_calls: number;
+  max_tokens: number;
+  tools: AgentToolInfo[] | null;
+  playbooks: AgentPlaybookInfo[] | null;
+}
+
+export interface AgentPlaybookInfo {
+  name: string;
+  title: string;
+  description: string;
+  target_type: string;
+  starter: string;
+  allowed_tools: string[] | null;
+  usable: boolean;
+}
+
+export interface AgentProposalsResponse {
+  data: Proposal[] | null;
+  next_cursor: string;
+}
+
+export interface AgentSSEEvent {
+  event: string;
+  data: unknown;
+}
+
+export interface AgentSessionDetail {
+  session: Session;
+  messages: Message[] | null;
+  tool_calls: ToolCallView[] | null;
+  read_only: boolean;
+}
+
+export interface AgentToolInfo {
+  name: string;
+  description: string;
+  risk: string;
+  permission: string;
+}
+
+export interface AgentUpdateSessionRequest {
+  title: string | null;
+  archived: boolean | null;
+}
+
 export interface ApiError {
   code: string;
   message: string;
@@ -145,6 +200,8 @@ export interface AuditLogEntry {
   after: unknown;
   ip: string;
   created_at: string;
+  agent_session_id: number | null;
+  agent_tool_call_id: string | null;
 }
 
 export interface Auth {
@@ -642,6 +699,12 @@ export interface CreatePublicAppRuleInput {
   note: string;
 }
 
+export interface CreateSessionInput {
+  title: string;
+  playbook: string;
+  context_ref: unknown;
+}
+
 export interface CreateVirtualModelInput {
   name: string;
   family: string;
@@ -697,6 +760,11 @@ export interface CursorPage_RequestLogItem {
   next_cursor: string;
 }
 
+export interface CursorPage_Session {
+  data: Session[] | null;
+  next_cursor: string;
+}
+
 export interface DataSourceRun {
   id: number;
   source_id: number;
@@ -713,6 +781,24 @@ export interface DecideChangeRequestBody {
   decided_by: number;
   reason: string;
   confirm_blocked: boolean;
+}
+
+export interface DecideInput {
+  decision: string;
+  note: string;
+  args: unknown;
+}
+
+export interface DecideResult {
+  tool_call_id: string;
+  status: string;
+  http_status: number;
+  summary: string;
+  result: unknown;
+  target_type: string;
+  target_id: string;
+  resumed: boolean;
+  outcome?: Outcome | null;
 }
 
 export interface Dialect {
@@ -741,6 +827,27 @@ export interface DialectVersion {
 
 export interface DismissListingRequest {
   reason: string;
+}
+
+export interface DryRunInput {
+  fetcher: string;
+  url: string;
+  config: Record<string, unknown> | null;
+  sample_size: number;
+}
+
+export interface DryRunResult {
+  fetcher: string;
+  count: number;
+  sample: DryRunRow[] | null;
+  warnings: string[] | null;
+  error?: string;
+}
+
+export interface DryRunRow {
+  upstream_model: string;
+  currency: string;
+  prices: Record<string, string> | null;
 }
 
 export interface Endpoint {
@@ -895,6 +1002,33 @@ export interface IngestResultDTO {
   applied_book_id: number | null;
 }
 
+export interface Job {
+  id: number;
+  code: string;
+  name: string;
+  playbook: string;
+  enabled: boolean;
+  schedule: string;
+  trigger_query: string | null;
+  cursor: unknown;
+  model: string | null;
+  daily_token_budget: number;
+  max_items_per_run: number;
+  next_run_at: string | null;
+  run_requested: boolean;
+  failure_count: number;
+  last_run_at: string | null;
+  last_status: string;
+  last_error: string;
+  last_session_id: number | null;
+  paused_reason: string;
+  updated_at: string;
+  tokens_today: number;
+  pending_count: number;
+  rejected_ratio: number | null;
+  decided_in_ratio: number;
+}
+
 export interface LedgerEntry {
   id: number;
   type: string;
@@ -929,6 +1063,10 @@ export interface ListData_DataSourceRun {
 
 export interface ListData_FXRateInfo {
   data: FXRateInfo[] | null;
+}
+
+export interface ListData_Job {
+  data: Job[] | null;
 }
 
 export interface ListData_PriceBookInfo {
@@ -1011,6 +1149,15 @@ export interface MeResponse {
   permissions: string[] | null;
   break_glass: boolean;
   totp_enabled: boolean;
+}
+
+export interface Message {
+  seq: number;
+  role: string;
+  content: string;
+  tool_calls?: ToolCall[] | null;
+  tool_call_id?: string;
+  compacted?: boolean;
 }
 
 export interface MetaCodecsResponse {
@@ -1143,6 +1290,15 @@ export interface Offer {
   listing_status: string | null;
 }
 
+export interface Outcome {
+  status: string;
+  reason?: string;
+  usage: Usage;
+  turns: number;
+  pending: number;
+  proposals: number;
+}
+
 export interface Page_APIKeyListItem {
   data: APIKeyListItem[] | null;
   total: number;
@@ -1254,10 +1410,37 @@ export interface PreviewComponent {
   margin_ratio: string | null;
 }
 
+export interface PreviewInput {
+  url: string;
+  provider_code: string;
+  keywords: string[] | null;
+  max_chars: number;
+}
+
+export interface PreviewItem {
+  upstream_model: string | null;
+  offer_type: string;
+  discount_ratio: number | null;
+  starts_at: string | null;
+  ends_at: string | null;
+  conditions: string;
+  quota: Record<string, unknown> | null;
+  evidence: string;
+  accepted: boolean;
+}
+
 export interface PreviewPrice {
   meter: string;
   unit: string;
   price: string;
+}
+
+export interface PreviewResult {
+  url: string;
+  text_chars: number;
+  items: PreviewItem[] | null;
+  accepted: number;
+  dropped: number;
 }
 
 export interface PriceBookIDResponse {
@@ -1402,6 +1585,33 @@ export interface PricingPreviewResultItem {
   margin_ratio: string | null;
   negative_margin: boolean;
   components?: PreviewComponent[] | null;
+}
+
+export interface Proposal {
+  id: number;
+  tool_call_id: string;
+  session_id: number;
+  session_title: string;
+  session_mode: string;
+  job_id: number | null;
+  playbook: string;
+  tool: string;
+  target_type: string;
+  target_id: string;
+  summary: string;
+  rationale: string;
+  evidence: unknown;
+  confidence: number | null;
+  required_perm: string;
+  status: string;
+  args: unknown;
+  before: unknown;
+  after: unknown;
+  result: unknown;
+  decided_by: number | null;
+  decided_by_name: string;
+  decided_at: string | null;
+  created_at: string;
 }
 
 export interface Provider {
@@ -1655,6 +1865,26 @@ export interface Role {
   permissions: string[] | null;
 }
 
+export interface Session {
+  id: number;
+  admin_user_id: number;
+  admin_name: string;
+  title: string;
+  playbook: string | null;
+  context_ref: unknown;
+  mode: string;
+  status: string;
+  status_reason: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  turns: number;
+  archived: boolean;
+  job_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SetCostPriceRequest {
   currency: string;
   components: PriceComponentInput[] | null;
@@ -1748,6 +1978,41 @@ export interface TodoCounts {
   offers_new: number;
   aliases_suggested: number;
   data_sources_failing: number;
+  agent_pending_approvals: number;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ToolCallView {
+  id: string;
+  session_id: number;
+  run_id: string;
+  tool: string;
+  risk: string;
+  args: unknown;
+  status: string;
+  summary: string;
+  required_perm: string;
+  before?: unknown;
+  after?: unknown;
+  http_status?: number;
+  result?: unknown;
+  duration_ms?: number;
+  decided_by: number | null;
+  decided_by_name: string;
+  decided_at: string | null;
+  decision_note: string;
+  created_at: string;
+  proposal_id: number | null;
+  rationale: string;
+  evidence: unknown;
+  confidence: number | null;
+  target_type: string;
+  target_id: string;
 }
 
 export interface TotpCodeRequest {
@@ -1829,6 +2094,14 @@ export interface UpdateChannelInput {
   force: boolean;
 }
 
+export interface UpdateInput {
+  enabled: boolean | null;
+  schedule: string | null;
+  model: string | null;
+  daily_token_budget: number | null;
+  max_items_per_run: number | null;
+}
+
 export interface UpdateMemberRequest {
   role: string;
 }
@@ -1882,6 +2155,11 @@ export interface UpdateVirtualModelInput {
 export interface UpstreamModel {
   id: string;
   owned_by: string;
+}
+
+export interface Usage {
+  tokens_in: number;
+  tokens_out: number;
 }
 
 export interface UsageGroup {

@@ -186,6 +186,9 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
+// Unwrap 让 http.ResponseController 能拿到底层 ResponseWriter（SSE 接口用它解除写超时）。
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // AccessLog 记录每次请求的方法、路径、状态码、耗时；request_id 由 RequestID 中间件注入。
 // 注意：不记录请求体/响应体（可能含用户 prompt），只记录元数据。
 func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {

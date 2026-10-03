@@ -7,6 +7,7 @@ import { useAsync } from '../../hooks/useAsync';
 import { cn } from '../../lib/cn';
 import { formatInt } from '../../lib/money';
 import { formatDateTime } from '../../lib/time';
+import { AgentActionButton } from '../agent/components/AgentEmbeds';
 import type { AttemptTraceEntry, RequestLogDetail } from '../../types';
 
 // 调用日志详情（UI_DESIGN.md §5.6 抽屉）：计费明细、重试轨迹、性能、客户端信息与跨链接。
@@ -44,6 +45,13 @@ function DetailBody({ d }: { d: RequestLogDetail }) {
         {d.error_code && <span className="font-mono text-rose-700">{d.error_code}</span>}
         {d.usage_source !== 'upstream' && <StatusBadge kind="usage_source" value={d.usage_source} />}
         <span className="ml-auto text-[11px] text-gray-400">{formatDateTime(d.created_at)}</span>
+        {d.status !== 'success' && (
+          <AgentActionButton
+            size="sm"
+            label="✦ 解释这次失败"
+            message={`请解释这次调用为什么失败，并给出排查建议：日志 ${d.request_id}（先用 get_request_log 读取详情）。`}
+          />
+        )}
       </div>
 
       <section>

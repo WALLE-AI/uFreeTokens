@@ -124,3 +124,27 @@ func TestLoad_DataSyncLLM(t *testing.T) {
 		t.Errorf("DataSync = %+v, want %+v", cfg.DataSync, want)
 	}
 }
+
+func TestLoad_AgentDefaultsAndFallback(t *testing.T) {
+	t.Setenv("UFT_DATASYNC_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+	t.Setenv("UFT_DATASYNC_LLM_MODEL", "deepseek/deepseek-chat")
+	t.Setenv("UFT_AGENT_LLM_MODEL", "claude-sonnet-5")
+	t.Setenv("UFT_AGENT_ENABLED", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	a := cfg.Agent
+	if !a.Enabled || a.JobsEnabled {
+		t.Errorf("Enabled/JobsEnabled = %v/%v, want true/false", a.Enabled, a.JobsEnabled)
+	}
+	if a.MaxTurns != 20 || a.MaxToolCalls != 40 || a.MaxTokens != 200000 || a.RunTimeout != 10*time.Minute {
+		t.Errorf("budget defaults = %+v", a)
+	}
+	// 只覆盖了模型：地址与密钥变量名回落到 datasync.*。
+	want := DataSyncConfig{LLMBaseURL: "http://127.0.0.1:8080/v1", LLMModel: "claude-sonnet-5", LLMAPIKeyEnv: "UFT_DATASYNC_LLM_API_KEY"}
+	if got := cfg.LLMSettings(); got != want {
+		t.Errorf("LLMSettings = %+v, want %+v", got, want)
+	}
+}

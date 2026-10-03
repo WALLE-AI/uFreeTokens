@@ -3,6 +3,7 @@ import { NAV_ITEMS } from '../../nav';
 
 const GENERAL: Array<[string, string]> = [
   ['⌘K / Ctrl+K', '命令面板：跳转页面、按 ID 定位对象、常用操作'],
+  ['⌘J / Ctrl+J', '打开 / 收起智能体侧边坞'],
   ['/', '聚焦当前页搜索框'],
   ['?', '显示本帮助'],
   ['Esc', '关闭抽屉 / 弹窗 / 菜单'],
@@ -22,7 +23,7 @@ export function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => 
         {[
           ['通用', GENERAL],
           ['页面跳转', gotos],
-          ['调价审批', INBOX],
+          ['调价审批 / 提案收件箱', [...INBOX, ['E', '提案收件箱：编辑参数'] as [string, string]]],
         ].map(([title, rows]) => (
           <div key={title as string}>
             <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1.5">{title as string}</div>

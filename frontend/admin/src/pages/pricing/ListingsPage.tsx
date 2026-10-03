@@ -6,6 +6,9 @@ import { batchDismissListings, listPendingListings } from '../../api/pricing';
 import { Button, ConfirmDialog, DataState, Field, PageHeader, Pills, StatusBadge, Textarea, useToast } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
+import { AgentActionButton, AgentSuggestionBadge } from '../agent/components/AgentEmbeds';
+import { useAgentSuggestions } from '../../agent/useAgentSuggestions';
+import { useAgentMutated } from '../../agent/agentEvents';
 import { refreshTodoCounts } from '../../hooks/useTodoCounts';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/time';
@@ -51,6 +54,8 @@ export default function ListingsPage() {
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   useEffect(() => setSelected(new Set()), [status]);
+  const suggestions = useAgentSuggestions('pending_listing', items.map((l) => l.id));
+  useAgentMutated('pending_listing', () => setTick((t) => t + 1));
 
   const [publishing, setPublishing] = useState<PendingListing | null>(null);
   // ?id=：从优惠雷达"去上架"跳过来时直接打开该候选的上架表单（只打开一次，关掉后清掉参数）
@@ -117,9 +122,20 @@ export default function ListingsPage() {
         title="待上架模型"
         description="价格同步发现的、上游已有但平台还没有渠道的模型。补齐元数据并定价后一键上架，或忽略。"
         actions={
-          <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
-            刷新
-          </Button>
+          <>
+            {status === 'pending' && selected.size > 0 ? (
+              <AgentActionButton
+                playbook="listing_triage"
+                label={`✦ 预审所选 ${selected.size} 项`}
+                context={items.filter((l) => selected.has(l.id)).map((l) => ({ type: 'pending_listing', id: String(l.id), label: `待上架 #${l.id} ${l.upstream_model}` }))}
+              />
+            ) : (
+              <AgentActionButton playbook="listing_triage" label="✦ 预审全部" />
+            )}
+            <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
+              刷新
+            </Button>
+          </>
         }
       />
 
@@ -158,8 +174,11 @@ export default function ListingsPage() {
       >
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {items.map((l) => (
+            <div key={l.id} className="space-y-1">
+              {suggestions.byId.has(String(l.id)) && (
+                <AgentSuggestionBadge proposal={suggestions.byId.get(String(l.id))} onDone={() => setTick((t) => t + 1)} />
+              )}
             <ListingCard
-              key={l.id}
               l={l}
               checked={selected.has(l.id)}
               onCheck={(v) =>
@@ -173,6 +192,7 @@ export default function ListingsPage() {
               onPublish={() => setPublishing(l)}
               onDismiss={() => openDismiss([l])}
             />
+            </div>
           ))}
         </div>
       </DataState>

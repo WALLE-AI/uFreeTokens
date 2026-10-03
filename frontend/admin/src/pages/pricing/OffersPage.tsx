@@ -28,6 +28,9 @@ import {
 import { Can } from '../../components/ui/Can';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
+import { AgentActionButton, AgentSuggestionBadge } from '../agent/components/AgentEmbeds';
+import { useAgentSuggestions } from '../../agent/useAgentSuggestions';
+import { useAgentMutated } from '../../agent/agentEvents';
 import { refreshTodoCounts } from '../../hooks/useTodoCounts';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatFromNow, formatRelative } from '../../lib/time';
@@ -115,6 +118,8 @@ export default function OffersPage() {
   );
   const items = list.data?.data ?? [];
 
+  const suggestions = useAgentSuggestions('upstream_offer', items.map((o) => o.id));
+  useAgentMutated('upstream_offer', () => setTick((t) => t + 1));
   const [busyId, setBusyId] = useState<number | null>(null);
   const [adopting, setAdopting] = useState<Offer | null>(null);
   const reload = () => {
@@ -160,9 +165,12 @@ export default function OffersPage() {
         title="优惠雷达"
         description="数据源观测到的上游免费模型、折扣、错峰价与限时活动。情报不会自动生效：核对证据后确认，再按需采用为促销。"
         actions={
-          <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
-            刷新
-          </Button>
+          <>
+            <AgentActionButton playbook="offer_triage" label="✦ 分拣新优惠" />
+            <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
+              刷新
+            </Button>
+          </>
         }
       />
 
@@ -212,14 +220,16 @@ export default function OffersPage() {
       >
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {items.map((o) => (
+            <div key={o.id} className="space-y-1">
+              {suggestions.byId.has(String(o.id)) && <AgentSuggestionBadge proposal={suggestions.byId.get(String(o.id))} onDone={reload} />}
             <OfferCard
-              key={o.id}
               o={o}
               busy={busyId === o.id}
               onStatus={(s) => void changeStatus(o, s)}
               onAdopt={() => setAdopting(o)}
               onOpen={() => setParams({ id: String(o.id) }, { keepPage: true })}
             />
+            </div>
           ))}
         </div>
         {list.data && list.data.total > PAGE_SIZE && (

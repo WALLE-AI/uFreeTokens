@@ -28,6 +28,47 @@ type Config struct {
 	Public   PublicConfig   `koanf:"public"`
 	Relay    RelayConfig    `koanf:"relay"`
 	DataSync DataSyncConfig `koanf:"datasync"`
+	Agent    AgentConfig    `koanf:"agent"`
+}
+
+// AgentConfig 是运营后台智能体（Harness，见《运营后台 Agent 模块（Harness 智能体）实施方案》）的
+// 配置段。环境变量 UFT_AGENT_*。llm_* 三项留空时回落到 datasync.llm_*（见 LLMSettings）。
+type AgentConfig struct {
+	// Enabled 是总开关：false 时 /agent/* 返回 503 agent_disabled，前端不渲染任何智能体入口。
+	Enabled bool `koanf:"enabled"`
+	// JobsEnabled 控制 cmd/worker 是否运行后台智能作业（agent_jobs_tick）。
+	JobsEnabled  bool   `koanf:"jobs_enabled"`
+	LLMBaseURL   string `koanf:"llm_base_url"`
+	LLMModel     string `koanf:"llm_model"`
+	LLMAPIKeyEnv string `koanf:"llm_api_key_env"`
+	// BatchModel 是后台作业默认使用的（更便宜的）模型；空 = 与 LLMModel 相同。
+	BatchModel string `koanf:"batch_model"`
+	// 单次运行的预算上限（设计 §3.5）。
+	MaxTurns     int           `koanf:"max_turns"`
+	MaxToolCalls int           `koanf:"max_tool_calls"`
+	MaxTokens    int           `koanf:"max_tokens"`
+	RunTimeout   time.Duration `koanf:"run_timeout"`
+	// FetchAllowDomains 是 fetch_page 研究工具在已登记供应商官网之外额外允许的域名，逗号分隔
+	// （同 gateway.cors_origins：环境变量不会自动拆成 slice，拆分交给使用方）。
+	FetchAllowDomains string `koanf:"fetch_allow_domains"`
+	// MonthlyTokenCap 是全部后台作业的月度 Token 上限；0 = 不限。
+	MonthlyTokenCap int64 `koanf:"monthly_token_cap"`
+}
+
+// LLMSettings 返回智能体实际使用的 LLM 配置：agent.llm_* 中留空的项回落到 datasync.llm_*。
+// 返回值复用 DataSyncConfig 的形状，便于直接交给 llm.FromConfig。
+func (c *Config) LLMSettings() DataSyncConfig {
+	out := DataSyncConfig{LLMBaseURL: c.Agent.LLMBaseURL, LLMModel: c.Agent.LLMModel, LLMAPIKeyEnv: c.Agent.LLMAPIKeyEnv}
+	if out.LLMBaseURL == "" {
+		out.LLMBaseURL = c.DataSync.LLMBaseURL
+	}
+	if out.LLMModel == "" {
+		out.LLMModel = c.DataSync.LLMModel
+	}
+	if out.LLMAPIKeyEnv == "" {
+		out.LLMAPIKeyEnv = c.DataSync.LLMAPIKeyEnv
+	}
+	return out
 }
 
 // DataSyncConfig 是后台辅助任务共用的 LLM（OpenAI 兼容，通常就是本平台网关）：worker 的
@@ -168,6 +209,18 @@ func defaults() *koanf.Koanf {
 		"datasync.llm_base_url":         "",
 		"datasync.llm_model":            "",
 		"datasync.llm_api_key_env":      "UFT_DATASYNC_LLM_API_KEY",
+		"agent.enabled":                 false,
+		"agent.jobs_enabled":            false,
+		"agent.llm_base_url":            "",
+		"agent.llm_model":               "",
+		"agent.llm_api_key_env":         "",
+		"agent.batch_model":             "",
+		"agent.max_turns":               20,
+		"agent.max_tool_calls":          40,
+		"agent.max_tokens":              200000,
+		"agent.run_timeout":             "10m",
+		"agent.fetch_allow_domains":     "",
+		"agent.monthly_token_cap":       0,
 	}, "."), nil)
 	return k
 }

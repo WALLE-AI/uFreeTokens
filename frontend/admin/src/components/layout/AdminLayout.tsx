@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { Database, Gift, KeyRound, Layers, ScrollText, Users, Wallet, ArrowLeftRight, Search } from 'lucide-react';
+import { Database, Gift, KeyRound, Layers, ScrollText, Users, Wallet, ArrowLeftRight, Search, Sparkles } from 'lucide-react';
 import { AdminHeader } from './AdminHeader';
 import { AdminSidebar } from './AdminSidebar';
 import { ShortcutHelp } from './ShortcutHelp';
@@ -9,10 +9,22 @@ import { visibleNavItems } from '../../nav';
 import { useAuth } from '../../api/auth';
 import { useGlobalHotkeys } from '../../hooks/useHotkeys';
 import { useTodoCounts } from '../../hooks/useTodoCounts';
+import { AgentProvider, useAgent } from '../../agent/AgentProvider';
+import { useAgentEnabled } from '../../agent/agentStore';
+import { AgentDock } from '../../pages/agent/AgentDock';
 
-// AdminLayout：Header + Sidebar + <Outlet/>，结构对齐 web App.tsx
+// AdminLayout：Header + Sidebar + <Outlet/>（+ 右侧智能体 Dock），结构对齐 web App.tsx
 // （min-h-screen flex flex-col；主区 flex-1 overflow-y-auto h-[calc(100vh-3rem)]）。
+// AgentProvider 包在最外层：Dock 与 SSE 连接在 <Outlet/> 之外，切换路由不中断（设计 §19.2）。
 export function AdminLayout() {
+  return (
+    <AgentProvider>
+      <AdminShell />
+    </AgentProvider>
+  );
+}
+
+function AdminShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const counts = useTodoCounts();
@@ -39,10 +51,27 @@ export function AdminLayout() {
   }, []);
 
   const { me: authMe } = useAuth();
+  const agentEnabled = useAgentEnabled();
+  const agent = useAgent();
+  const toggleDock = agent.toggleDock;
+  const startAgent = agent.start;
+
+  // ⌘J / Ctrl+J 开关智能体 Dock（与 ⌘K 一样在输入框聚焦时也生效）
+  useEffect(() => {
+    if (!agentEnabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        toggleDock();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [agentEnabled, toggleDock]);
 
   useGlobalHotkeys({
     onGoto: (key) => {
-      const item = visibleNavItems(authMe).find((i) => i.gotoKey === key);
+      const item = visibleNavItems(authMe, agentEnabled).find((i) => i.gotoKey === key);
       if (item) navigate(item.path);
     },
     onFocusSearch: () => {
@@ -55,7 +84,7 @@ export function AdminLayout() {
 
   const commands = useMemo<Command[]>(
     () => [
-      ...visibleNavItems(authMe).map((i) => {
+      ...visibleNavItems(authMe, agentEnabled).map((i) => {
         const Icon = i.icon;
         return {
           id: `page:${i.path}`,
@@ -92,18 +121,23 @@ export function AdminLayout() {
         run: () => navigate('/accounts'),
       },
     ],
-    [navigate],
+    [navigate, authMe, agentEnabled],
   );
 
   const dynamicCommands = useCallback(
     (q: string): Command[] => {
       const enc = encodeURIComponent(q);
+      // 输入不匹配任何跳转时也能“问智能体”：执行即打开 Dock 新建会话（设计 §19.2）。
+      const ask: Command[] = agentEnabled
+        ? [{ id: `agent:${q}`, group: '智能体', label: `✦ 问智能体：${q}`, icon: <Sparkles className="w-3.5 h-3.5" />, run: () => void startAgent({ message: q }) }]
+        : [];
       if (/^\d+$/.test(q)) {
         return [
           { id: `acct:${q}`, group: '跳转到对象', label: `账户 #${q}`, icon: <Users className="w-3.5 h-3.5" />, run: () => navigate(`/accounts/${q}`) },
           { id: `key:${q}`, group: '跳转到对象', label: `API Key #${q}`, icon: <KeyRound className="w-3.5 h-3.5" />, run: () => navigate(`/api-keys?q=${q}`) },
           { id: `chan:${q}`, group: '跳转到对象', label: `渠道 #${q}`, icon: <ArrowLeftRight className="w-3.5 h-3.5" />, run: () => navigate(`/channels/${q}`) },
           { id: `model:${q}`, group: '跳转到对象', label: `虚拟模型 #${q}`, icon: <Layers className="w-3.5 h-3.5" />, run: () => navigate(`/models/${q}`) },
+          ...ask,
         ];
       }
       return [
@@ -111,9 +145,10 @@ export function AdminLayout() {
         { id: `sa:${q}`, group: '搜索', label: `在账户中搜索 “${q}”`, icon: <Users className="w-3.5 h-3.5" />, run: () => navigate(`/accounts?q=${enc}`) },
         { id: `sp:${q}`, group: '搜索', label: `在供应商中搜索 “${q}”`, icon: <Search className="w-3.5 h-3.5" />, run: () => navigate(`/providers?q=${enc}`) },
         { id: `sr:${q}`, group: '搜索', label: `按 request_id 查调用日志 “${q}”`, icon: <ScrollText className="w-3.5 h-3.5" />, run: () => navigate(`/logs?request_id=${enc}`) },
+        ...ask,
       ];
     },
-    [navigate],
+    [navigate, agentEnabled, startAgent],
   );
 
   return (
@@ -122,6 +157,11 @@ export function AdminLayout() {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenShortcuts={() => setHelpOpen(true)}
         onOpenMobileNav={() => setMobileNavOpen(true)}
+        agent={
+          agentEnabled
+            ? { open: agent.dockOpen, running: agent.phase === 'streaming', pending: counts?.agent_pending_approvals ?? 0, onToggle: toggleDock }
+            : undefined
+        }
       />
       <div className="flex flex-1">
         <aside className="hidden md:block sticky top-12 h-[calc(100vh-3rem)]">
@@ -134,6 +174,7 @@ export function AdminLayout() {
             </Suspense>
           </div>
         </main>
+        <AgentDock />
       </div>
 
       {mobileNavOpen && (

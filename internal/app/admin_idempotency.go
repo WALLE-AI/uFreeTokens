@@ -101,3 +101,6 @@ func (c *capturingWriter) Write(b []byte) (int, error) {
 	}
 	return c.ResponseWriter.Write(b)
 }
+
+// Unwrap 让 http.ResponseController 能拿到底层 ResponseWriter。
+func (c *capturingWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }

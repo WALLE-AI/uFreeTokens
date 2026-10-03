@@ -600,6 +600,8 @@ type TodoCounts struct {
 	OffersNew          int `json:"offers_new"`
 	AliasesSuggested   int `json:"aliases_suggested"`
 	DataSourcesFailing int `json:"data_sources_failing"`
+	// AgentPendingApprovals 是调用者有权限处理的智能体待审提案数（按请求计算，不进共享缓存）。
+	AgentPendingApprovals int `json:"agent_pending_approvals"`
 }
 
 // GetTodoCounts 给侧栏徽标和工作台待办条用。前三项是走索引的轻量计数；

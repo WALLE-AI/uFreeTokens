@@ -58,6 +58,21 @@ datasync:
   llm_model: ""                             # 例：deepseek/deepseek-chat
   llm_api_key_env: UFT_DATASYNC_LLM_API_KEY # 密钥只放环境变量，这里写变量名
 
+# 运营后台智能体（Harness）。llm_* 留空时回落到 datasync.llm_*；需要具备 tool calling 能力的模型。
+agent:
+  enabled: false                # 总开关；false 时 /agent/* 返回 503，前端隐藏全部智能体入口
+  jobs_enabled: false           # cmd/worker 是否运行后台智能作业
+  llm_base_url: ""              # 例：http://127.0.0.1:8080/v1
+  llm_model: ""                 # 例：claude-sonnet-5
+  llm_api_key_env: ""           # 例：UFT_AGENT_LLM_API_KEY
+  batch_model: ""               # 后台作业用的更便宜的模型；空 = 同 llm_model
+  max_turns: 20                 # 单次运行最大轮数
+  max_tool_calls: 40            # 单次运行最大工具调用数
+  max_tokens: 200000            # 单次运行 Token 上限（输入+输出）
+  run_timeout: 10m              # 单次运行时长上限
+  fetch_allow_domains: ""       # fetch_page 额外允许的域名，逗号分隔
+  monthly_token_cap: 0          # 后台作业月度 Token 上限；0 = 不限
+
 # 数据面转发开关（Gateway 多模态接口补全与缺陷修复技术实施方案）
 relay:
   enforce_vision: false         # true 时带图片的对话请求只路由到具备 vision 能力的渠道

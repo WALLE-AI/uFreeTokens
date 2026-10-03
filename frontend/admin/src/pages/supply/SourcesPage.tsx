@@ -22,6 +22,7 @@ import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import type { FXRate, SourceDomain } from '../../types';
 import { CreateSourceModal, PriceSourcesTable, isFailing } from './sources';
+import { AgentActionButton } from '../agent/components/AgentEmbeds';
 import { Can } from '../../components/ui/Can';
 
 const DOMAIN_TABS: Array<{ value: SourceDomain | 'all'; label: string }> = [
@@ -65,6 +66,7 @@ export default function SourcesPage() {
       <PageHeader
         title="数据源 & 汇率"
         description="数据源决定价格、优惠情报、评测榜单从哪里来、多久抓一次、可信度多高；汇率用于把非人民币成本价折算成人民币来计算毛利"
+        actions={<AgentActionButton playbook="source_diagnosis" label="✦ 诊断失败的数据源" />}
       />
 
       <section className="mb-10">

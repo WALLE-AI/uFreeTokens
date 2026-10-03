@@ -27,8 +27,10 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/jobs"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
 	"github.com/WALLE-AI/uFreeTokens/internal/llm"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/offers"
@@ -145,11 +147,45 @@ func run() error {
 	}
 	requireIfMatch := os.Getenv("UFT_ADMIN_REQUIRE_IF_MATCH") == "true"
 
-	router := app.NewAdminRouter(app.AdminDeps{
+	// 出站抓取环境（禁内网、按主机限速）：数据源试运行、优惠抽取预览与智能体 fetch_page 共用。
+	dsEnv := datasync.NewEnv(datasync.EnvOptions{Timeout: 45 * time.Second})
+	var offerLLM offers.LLM
+	if c, _ := llm.FromConfig(cfg.DataSync); c != nil {
+		offerLLM = offers.NewLLM(c)
+	}
+	deps := app.AdminDeps{
 		Logger: logger, Admin: adminSvc, PriceSync: priceSyncEngine, Offers: offers.NewStore(pg), Auth: authSvc,
 		AdminToken: adminToken, TrustedProxies: trustedProxies, TestWebDir: testWebDir,
 		Redis: rdb, StatsTZ: statsTZ, RequireIfMatch: requireIfMatch, PublicMinAccounts: cfg.Public.RankingsMinAccounts,
+		DataSyncEnv: dsEnv, OfferLLM: offerLLM,
+	}
+	// 运营智能体（Harness）：未启用或 LLM 未配置时 /agent/meta 返回 enabled=false，其余 /agent/* 返回 503。
+	agentSvc, err := app.NewAgentService(app.AgentSetup{
+		Config: *cfg, Pool: pg, Admin: adminSvc, Deps: deps, Fetch: dsEnv, Logger: logger, Location: statsTZ,
 	})
+	if err != nil {
+		return fmt.Errorf("build agent: %w", err)
+	}
+	if agentSvc.Enabled() {
+		logger.Info("operations agent enabled", "model", agentSvc.Cfg.Model, "tools", len(agentSvc.Tools))
+	} else {
+		logger.Info("operations agent disabled", "missing", agentSvc.Missing)
+	}
+	deps.Agent, deps.AgentInfo = agentSvc, app.AgentInfo{JobsEnabled: cfg.Agent.JobsEnabled}
+	deps.AgentJobs = &jobs.Store{Pool: pg}
+	router := app.NewAdminRouter(deps)
+
+	// UFT_ADMIN_METRICS_ADDR 非空时在该地址暴露 /metrics（agent_* 指标）。
+	if maddr := os.Getenv("UFT_ADMIN_METRICS_ADDR"); maddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", observability.Handler())
+		go func() {
+			msrv := &http.Server{Addr: maddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+			if err := msrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("admin metrics server failed", "error", err)
+			}
+		}()
+	}
 
 	addr := ":8081"
 	srv := &http.Server{
@@ -157,7 +193,8 @@ func run() error {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		// 参考价格查询、上游模型发现会同步请求外部服务，留足余量。
+		// 参考价格查询、上游模型发现会同步请求外部服务，留足余量。智能体的 SSE 接口按请求解除写超时
+		// （http.ResponseController.SetWriteDeadline）。
 		WriteTimeout:   90 * time.Second,
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 64 << 10,

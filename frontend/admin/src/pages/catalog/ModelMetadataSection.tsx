@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Info, Loader2, Sparkles, Wand2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Info, Loader2, Play, Scale, Sparkles, Wand2 } from 'lucide-react';
 import { getVirtualModelMetadataSuggestion, setVirtualModelMetadata } from '../../api/catalog';
 import { ApiError, errorMessage } from '../../api/errors';
 import { Button, Field, Input, Textarea, useToast } from '../../components/ui';
 import type { DesignArenaKey, MetadataSuggestion, ModelScores, ScoreKey, VirtualModelDetail } from '../../types';
-import { TagInput, formatContext, formatPrice } from './shared';
+import { TagInput } from './shared';
+import { getProviderIconPath } from '../../data/providerIcons';
 import { Can } from '../../components/ui/Can';
 import { useEnums } from '../../hooks/useEnums';
+import { AgentActionButton } from '../agent/components/AgentEmbeds';
+import { useAgentMutated } from '../../agent/agentEvents';
 import { SCORE_KEY_LABELS } from './benchmarkShared';
 
 // 展示元数据编辑（UI_DESIGN.md §5.4 第 5 点）：左侧表单，右侧实时预览 web 模型库卡片。
@@ -181,6 +184,9 @@ function toScores(draft: Draft, passthrough: Record<string, number>): ModelScore
 }
 
 export function ModelMetadataSection({ model, onSaved }: { model: VirtualModelDetail; onSaved: () => void }) {
+  useAgentMutated('virtual_model', (d) => {
+    if (d.target_id === String(model.id)) onSaved();
+  });
   const toast = useToast();
   const [draft, setDraft] = useState<Draft>(() => fromDetail(model));
   const [saving, setSaving] = useState(false);
@@ -297,11 +303,19 @@ export function ModelMetadataSection({ model, onSaved }: { model: VirtualModelDe
         )}
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] text-gray-400">自动填充只补空字段，不改评分；评分由评测榜单发布时写入。</span>
-          <Can perm="catalog:write">
-            <Button size="sm" icon={<Wand2 className="w-3.5 h-3.5" />} loading={suggesting} onClick={autofill}>
-              自动填充
-            </Button>
-          </Can>
+          <div className="flex items-center gap-2">
+            <AgentActionButton
+              size="sm"
+              playbook="metadata_enrich"
+              label="✦ 补全元数据"
+              context={[{ type: 'virtual_model', id: String(model.id), label: `模型 #${model.id} ${model.name}` }]}
+            />
+            <Can perm="catalog:write">
+              <Button size="sm" icon={<Wand2 className="w-3.5 h-3.5" />} loading={suggesting} onClick={autofill}>
+                自动填充
+              </Button>
+            </Can>
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="展示名称" hint={filledHint('display_name', '模型库卡片标题；留空则显示模型 ID')}>
@@ -435,58 +449,145 @@ export function ModelMetadataSection({ model, onSaved }: { model: VirtualModelDe
         <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">模型库卡片预览</div>
         <CatalogCardPreview model={model} draft={draft} />
         <p className="text-[11px] text-gray-400 mt-2">预览用当前生效售价；web 模型库约 60 秒缓存后更新。</p>
+        {model.status === 'deprecated' && (
+          <p className="text-[11px] text-amber-700 mt-1">该模型已废弃：web 模型库默认隐藏，用户勾选「Show deprecated」后才可见。</p>
+        )}
       </div>
     </div>
   );
 }
 
-// 本地轻量版 web ModelGridCard（frontend/web/src/components/ModelGridCard.tsx 的样式）
+// 以下几个函数逐一对应 frontend/web/src/data/models.ts 的 modelFromCatalog 推导规则
+// （厂商、上下文、模态、价格文案），改动 web 侧时要同步这里，否则预览和线上卡片对不上。
+const WEB_METER_LABELS: Record<string, string> = {
+  input: '输入',
+  output: '输出',
+  input_cache_read: '缓存命中输入',
+  input_cache_write: '缓存写入',
+  output_reasoning: '推理输出',
+  image: '图像生成',
+  input_char: '语音合成',
+  audio_second: '语音识别',
+  request: '按次',
+};
+const WEB_UNIT_SUFFIX: Record<string, string> = {
+  per_1m_tokens: '百万 Token',
+  per_image: '张',
+  per_1m_chars: '百万字符',
+  per_second: '秒',
+  per_request: '次',
+};
+
+function webContextDisplay(tokens: number): string | null {
+  if (tokens <= 0) return null;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M 上下文`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K 上下文`;
+  return `${tokens} 上下文`;
+}
+
+function webModalities(model: VirtualModelDetail): string[] {
+  switch (model.type) {
+    case 'image':
+      return ['text', 'image'];
+    case 'audio':
+      return model.capabilities.includes('asr') ? ['audio'] : ['text', 'audio'];
+    case 'chat':
+      return model.capabilities.includes('vision') ? ['text', 'image'] : ['text'];
+    default:
+      return ['text'];
+  }
+}
+
+// 公开目录 sell_price 透传当前售价版本的全部分项；没有分项版本时退回 PriceBrief 的 input/output
+function webPriceLines(model: VirtualModelDetail): string[] {
+  const book = model.sell_price_book;
+  const comps = book?.components.length
+    ? book.components.map((c) => ({ meter: c.meter as string, unit: c.unit as string, price: Number(c.unit_price) }))
+    : model.sell_price
+      ? [
+          ...(model.sell_price.input != null ? [{ meter: 'input', unit: 'per_1m_tokens', price: Number(model.sell_price.input) }] : []),
+          ...(model.sell_price.output != null ? [{ meter: 'output', unit: 'per_1m_tokens', price: Number(model.sell_price.output) }] : []),
+        ]
+      : [];
+  if (comps.length === 0) return [];
+  const symbol = (book?.currency ?? model.sell_price?.currency) === 'USD' ? '$' : '¥';
+  const input = comps.find((c) => c.meter === 'input' && c.unit === 'per_1m_tokens');
+  const output = comps.find((c) => c.meter === 'output' && c.unit === 'per_1m_tokens');
+  if (!input && !output) {
+    const c = comps[0];
+    return [`${symbol}${c.price} / ${WEB_UNIT_SUFFIX[c.unit] ?? c.unit}（${WEB_METER_LABELS[c.meter] ?? c.meter}）`];
+  }
+  const lines = [`${symbol}${input?.price ?? 0} / 百万 Input Token`];
+  if (output) lines.push(`${symbol}${output.price} / 百万 Output Token`);
+  return lines;
+}
+
+function WebProviderIcon({ provider }: { provider: string }) {
+  const src = getProviderIconPath(provider);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (src && failed !== src) {
+    return (
+      <span className="w-5 h-5 rounded shrink-0 bg-white border border-gray-100 flex items-center justify-center p-[2px] overflow-hidden">
+        <img src={src} alt={provider} className="w-full h-full object-contain" loading="lazy" onError={() => setFailed(src)} />
+      </span>
+    );
+  }
+  return <div className="w-5 h-5 rounded text-[10px] shrink-0 flex items-center justify-center font-bold shadow-xs bg-gray-700 text-white">▲</div>;
+}
+
+// 模型库卡片预览：结构与样式照搬 frontend/web/src/components/ModelGridCard.tsx（交互按钮仅作展示）
 function CatalogCardPreview({ model, draft }: { model: VirtualModelDetail; draft: Draft }) {
-  const provider = draft.provider_display.trim() || model.family;
+  const slash = model.name.indexOf('/');
+  const provider = slash > 0 ? model.name.slice(0, slash) : model.name;
+  const providerDisplay = draft.provider_display.trim() || provider;
   const title = draft.display_name.trim() || model.name;
-  const initial = provider.slice(0, 1).toUpperCase();
-  const sp = model.sell_price;
+  const context = webContextDisplay(model.context_window);
+  const priceLines = webPriceLines(model);
   return (
     <div className="max-w-64 flex flex-col rounded-xl border border-gray-200 bg-white p-3.5 hover:border-purple-300 hover:shadow-md transition-all">
-      <div className="flex items-center gap-1.5">
-        <span className="w-5 h-5 rounded bg-purple-600 text-white text-[10px] font-semibold flex items-center justify-center">{initial}</span>
-        <span className="text-[11px] text-gray-400 truncate">{provider}</span>
+      <div className="flex items-center gap-1.5 pr-5">
+        <WebProviderIcon provider={provider} />
+        <span className="text-[11px] text-gray-400 truncate">{providerDisplay}</span>
       </div>
-      <h3 className="mt-1.5 font-bold text-gray-900 text-xs leading-snug line-clamp-2">{title}</h3>
-      {model.status === 'deprecated' && (
-        <div className="mt-1.5">
-          <span className="px-1.5 py-0.5 text-[10px] rounded border font-medium leading-none bg-amber-50 text-amber-700 border-amber-200">已废弃</span>
-        </div>
-      )}
-      <p className="mt-1.5 text-gray-500 text-xxs leading-relaxed line-clamp-3 min-h-10">{draft.description.trim() || <span className="italic text-gray-300">（暂无介绍）</span>}</p>
+      <h3 title={title} className="mt-1.5 font-bold text-gray-900 text-xs leading-snug line-clamp-2">
+        {title}
+      </h3>
+      <p className="mt-1.5 text-gray-500 text-xxs leading-relaxed line-clamp-3 flex-1">
+        {draft.description.trim() || <span className="italic text-gray-300">（暂无介绍）</span>}
+      </p>
       <div className="flex flex-wrap items-center gap-1.5 mt-2.5 text-xxs text-gray-400">
-        <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded font-medium">{formatContext(model.context_window)}</span>
-        {draft.tags.slice(0, 3).map((t) => (
-          <span key={t} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded uppercase tracking-wider text-[9px]">
-            {t}
+        {context && <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded font-medium">{context}</span>}
+        {webModalities(model).map((m) => (
+          <span key={m} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded uppercase tracking-wider text-[9px]">
+            {m}
           </span>
         ))}
       </div>
-      {INDEX_FIELDS.some(({ key }) => draft.scores[key].trim() !== '') && (
-        <div className="flex flex-wrap gap-1 mt-2">
-          {INDEX_FIELDS.filter(({ key }) => draft.scores[key].trim() !== '').map(({ key, label }) => (
-            <span key={key} className="px-1.5 py-0.5 text-[10px] rounded border bg-purple-50 text-purple-700 border-purple-200 font-mono">
-              {label} {draft.scores[key]}
-            </span>
-          ))}
-        </div>
-      )}
       <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-700 font-semibold space-y-0.5">
-        {sp ? (
-          <>
-            <div className="truncate">输入 ¥{formatPrice(sp.input)} / 百万 Token</div>
-            <div className="truncate">输出 ¥{formatPrice(sp.output)} / 百万 Token</div>
-          </>
+        {priceLines.length > 0 ? (
+          priceLines.map((l) => (
+            <div key={l} className="truncate">
+              {l}
+            </div>
+          ))
         ) : (
-          <div className="text-amber-700 font-normal">未设置售价</div>
+          <div className="text-amber-700 font-normal">未设置售价（web 显示 ¥0 / 百万 Input Token）</div>
         )}
       </div>
-      <div className="mt-1.5 text-[10px] text-gray-400 font-mono truncate">{model.name}</div>
+      <div className="mt-1.5 flex items-center gap-1 text-[10px] text-gray-400 self-start">
+        <Copy className="w-2.5 h-2.5" />
+        <span className="truncate max-w-[10rem]">{model.name}</span>
+      </div>
+      <div className="flex items-center gap-1.5 mt-2.5">
+        <span className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[11px] text-gray-600 border border-gray-200 bg-white">
+          <Scale className="w-3 h-3" />
+          <span>对比</span>
+        </span>
+        <span className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[11px] bg-purple-50 text-purple-700 border border-purple-200 font-medium">
+          <Play className="w-3 h-3 fill-purple-600" />
+          <span>测试</span>
+        </span>
+      </div>
     </div>
   );
 }

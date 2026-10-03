@@ -14,7 +14,11 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/jobs"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/pgstore"
 	"github.com/WALLE-AI/uFreeTokens/internal/offers"
+	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
 )
 
 // 运营后台的 OpenAPI 3.1 文档与前端 TypeScript 类型，都从同一份描述生成：
@@ -79,9 +83,10 @@ type referencePriceLookupResponse struct {
 }
 
 type routeSchema struct {
-	req    any // nil = 无请求体
-	resp   any // nil = 无响应体（204）或未登记
-	status int // 成功状态码，0 = 200
+	req    any  // nil = 无请求体
+	resp   any  // nil = 无响应体（204）或未登记
+	status int  // 成功状态码，0 = 200
+	sse    bool // 响应为 text/event-stream（resp 描述单个事件）
 }
 
 // routeSchemas 按 "METHOD pattern" 登记请求/响应类型；TestAdminOpenAPI_EveryRouteDocumented
@@ -202,6 +207,22 @@ var routeSchemas = map[string]routeSchema{
 	"GET /request-logs/{requestID}":                              {resp: admin.RequestLogDetail{}},
 	"GET /audit-logs":                                            {resp: cursorPage[admin.AuditLogEntry]{}},
 	"GET /todo-counts":                                           {resp: admin.TodoCounts{}},
+
+	"POST /price-sources/dry-run":       {req: priceSourceDryRunRequest{}, resp: pricesync.DryRunResult{}},
+	"POST /offer-pages/extract-preview": {req: offerExtractPreviewRequest{}, resp: offers.PreviewResult{}},
+
+	"GET /agent/meta":                                               {resp: agentMetaResponse{}},
+	"GET /agent/sessions":                                           {resp: cursorPage[pgstore.Session]{}},
+	"POST /agent/sessions":                                          {req: agent.CreateSessionInput{}, resp: pgstore.Session{}, status: http.StatusCreated},
+	"GET /agent/sessions/{sessionID}":                               {resp: agentSessionDetail{}},
+	"PATCH /agent/sessions/{sessionID}":                             {req: agentUpdateSessionRequest{}, resp: pgstore.Session{}},
+	"POST /agent/sessions/{sessionID}/messages":                     {req: agentMessageRequest{}, resp: agentSSEEvent{}, sse: true},
+	"POST /agent/sessions/{sessionID}/cancel":                       {resp: statusResponse{}},
+	"POST /agent/sessions/{sessionID}/tool-calls/{callID}/decision": {req: agent.DecideInput{}, resp: agent.DecideResult{}},
+	"GET /agent/proposals":                                          {resp: agentProposalsResponse{}},
+	"GET /agent/jobs":                                               {resp: listData[jobs.Job]{}},
+	"PATCH /agent/jobs/{jobID}":                                     {req: jobs.UpdateInput{}, resp: jobs.Job{}},
+	"POST /agent/jobs/{jobID}/run":                                  {resp: jobs.Job{}, status: http.StatusAccepted},
 }
 
 // ---------- 反射 → JSON Schema ----------
@@ -356,7 +377,7 @@ func buildOpenAPI() (map[string]any, *schemaGen, error) {
 		var params []any
 		for _, m := range pathParam.FindAllStringSubmatch(rt.Pattern, -1) {
 			ptype := "integer"
-			if m[1] == "requestID" {
+			if m[1] == "requestID" || m[1] == "callID" {
 				ptype = "string"
 			}
 			params = append(params, map[string]any{"name": m[1], "in": "path", "required": true, "schema": map[string]any{"type": ptype}})
@@ -374,7 +395,11 @@ func buildOpenAPI() (map[string]any, *schemaGen, error) {
 		}
 		resp := map[string]any{"description": http.StatusText(status)}
 		if rs.resp != nil {
-			resp["content"] = map[string]any{"application/json": map[string]any{"schema": g.schema(reflect.TypeOf(rs.resp))}}
+			ct := "application/json"
+			if rs.sse {
+				ct = "text/event-stream"
+			}
+			resp["content"] = map[string]any{ct: map[string]any{"schema": g.schema(reflect.TypeOf(rs.resp))}}
 		}
 		op["responses"] = map[string]any{
 			fmt.Sprint(status): resp,
@@ -502,4 +527,66 @@ func tsType(t reflect.Type) string {
 		return schemaName(t)
 	}
 	return "unknown"
+}
+
+// ---------- 智能体工具参数 Schema ----------
+
+// RouteRequestSchema 返回某个管理路由请求体的 JSON Schema，供智能体工具声明参数
+// （internal/agent/tools/routes）：与 OpenAPI 同一份反射结果，但 $ref 内联、可空类型折叠为
+// 非空、去掉 required（必填项由工具声明，业务校验仍在接口里）。路由无请求体返回 ok=false。
+func RouteRequestSchema(method, pattern string) (map[string]any, bool) {
+	rs, ok := routeSchemas[method+" "+pattern]
+	if !ok || rs.req == nil {
+		return nil, false
+	}
+	g := &schemaGen{defs: map[string]any{}, types: map[string]reflect.Type{}}
+	s := g.schema(reflect.TypeOf(rs.req))
+	out, _ := inlineSchema(s, g.defs, 0).(map[string]any)
+	return out, out != nil
+}
+
+func inlineSchema(v any, defs map[string]any, depth int) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	if ref, ok := m["$ref"].(string); ok {
+		if depth > 6 {
+			return map[string]any{"type": "object"}
+		}
+		return inlineSchema(defs[strings.TrimPrefix(ref, "#/components/schemas/")], defs, depth+1)
+	}
+	if alts, ok := m["anyOf"].([]any); ok && len(alts) == 2 {
+		if n, ok := alts[1].(map[string]any); ok && n["type"] == "null" {
+			return inlineSchema(alts[0], defs, depth)
+		}
+	}
+	out := make(map[string]any, len(m))
+	for k, val := range m {
+		switch k {
+		case "required":
+			continue
+		case "properties":
+			props := map[string]any{}
+			for pk, pv := range val.(map[string]any) {
+				props[pk] = inlineSchema(pv, defs, depth)
+			}
+			out[k] = props
+		case "items", "additionalProperties":
+			out[k] = inlineSchema(val, defs, depth)
+		default:
+			out[k] = val
+		}
+	}
+	return out
+}
+
+// RoutePermission 返回路由表中某个路由要求的权限点；路由不存在返回 ok=false。
+func RoutePermission(method, pattern string) (adminauth.Permission, bool) {
+	for _, rt := range AdminRouteTable() {
+		if rt.Method == method && rt.Pattern == pattern {
+			return rt.Permission, true
+		}
+	}
+	return "", false
 }

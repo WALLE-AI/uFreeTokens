@@ -22,6 +22,9 @@ import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import { formatCompact, formatInt } from '../../lib/money';
 import { formatDateTime, formatRelative } from '../../lib/time';
+import { AgentActionButton, AgentSuggestionBadge } from '../agent/components/AgentEmbeds';
+import { useAgentSuggestions } from '../../agent/useAgentSuggestions';
+import { useAgentMutated } from '../../agent/agentEvents';
 import type { PublicAppCandidate, PublicAppRule, PublicAppRuleAction } from '../../types';
 
 // 公开"热门应用"榜治理（技术方案 §8.2）：X-Title / HTTP-Referer 是调用方自报的，
@@ -74,6 +77,8 @@ export default function PublicAppsPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   const candidates = apps.data?.data ?? [];
+  const suggestions = useAgentSuggestions('public_app', candidates.map((a) => a.app_key));
+  useAgentMutated('public_app', reloadAll);
   const minAccounts = apps.data?.min_distinct_accounts ?? DEFAULT_MIN_ACCOUNTS;
 
   const removeRule = async () => {
@@ -119,6 +124,7 @@ export default function PublicAppsPage() {
         ),
     },
     { key: 'rule', header: '当前规则', render: (a) => (a.rule ? <RuleSummary rule={a.rule} /> : <span className="text-gray-300">—</span>) },
+    { key: 'agent', header: '智能体建议', render: (a) => <AgentSuggestionBadge proposal={suggestions.byId.get(a.app_key)} onDone={reloadAll} /> },
   ];
 
   const candidateActions: RowAction<PublicAppCandidate>[] = [
@@ -145,7 +151,11 @@ export default function PublicAppsPage() {
 
   return (
     <div>
-      <PageHeader title="公开应用榜" description="治理公开「热门应用」排行：应用名与网址由调用方自报（X-Title / HTTP-Referer），可屏蔽冒名应用、合并别名、覆盖展示名" />
+      <PageHeader
+        title="公开应用榜"
+        description="治理公开「热门应用」排行：应用名与网址由调用方自报（X-Title / HTTP-Referer），可屏蔽冒名应用、合并别名、覆盖展示名"
+        actions={<AgentActionButton playbook="public_app_governance" label="✦ 治理检查" />}
+      />
 
       <div className="bg-blue-50/60 border border-blue-100 rounded-xl p-3 text-xs text-gray-700 mb-6 flex items-start gap-2">
         <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />

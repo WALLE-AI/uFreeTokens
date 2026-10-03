@@ -242,6 +242,16 @@ function AuditRow({ e }: { e: AuditLogEntry }) {
         ) : (
           <span className="text-gray-600 truncate">{targetLabel(e.target_type, e.target_id)}</span>
         )}
+        {e.agent_session_id ? (
+          <Link
+            to={`/agent/${e.agent_session_id}`}
+            onClick={(ev) => ev.stopPropagation()}
+            title="该操作由运营智能体提案、经人工审批后以审批人身份执行"
+            className="shrink-0 px-1.5 py-0.5 rounded border border-purple-200 bg-purple-50 text-purple-700 text-[10px] hover:border-purple-300"
+          >
+            ✦ 经由智能体
+          </Link>
+        ) : null}
         <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-300">{e.action}</span>
         {e.ip && <span className="shrink-0 font-mono text-[10px] text-gray-300 hidden md:inline">{e.ip}</span>}
       </div>

@@ -609,6 +609,219 @@
         ],
         "type": "object"
       },
+      "AgentMessageRequest": {
+        "properties": {
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "AgentMetaResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "jobs_enabled": {
+            "type": "boolean"
+          },
+          "max_tokens": {
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "type": "integer"
+          },
+          "max_turns": {
+            "type": "integer"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          },
+          "playbooks": {
+            "items": {
+              "$ref": "#/components/schemas/AgentPlaybookInfo"
+            },
+            "type": "array"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/AgentToolInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "jobs_enabled",
+          "max_tokens",
+          "max_tool_calls",
+          "max_turns",
+          "missing",
+          "model",
+          "playbooks",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "AgentPlaybookInfo": {
+        "properties": {
+          "allowed_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "starter": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "usable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "description",
+          "name",
+          "starter",
+          "target_type",
+          "title",
+          "usable"
+        ],
+        "type": "object"
+      },
+      "AgentProposalsResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Proposal"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "AgentSSEEvent": {
+        "properties": {
+          "data": {},
+          "event": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "event"
+        ],
+        "type": "object"
+      },
+      "AgentSessionDetail": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "session": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCallView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages",
+          "read_only",
+          "session",
+          "tool_calls"
+        ],
+        "type": "object"
+      },
+      "AgentToolInfo": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "name",
+          "permission",
+          "risk"
+        ],
+        "type": "object"
+      },
+      "AgentUpdateSessionRequest": {
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "archived",
+          "title"
+        ],
+        "type": "object"
+      },
       "ApiError": {
         "properties": {
           "code": {
@@ -647,6 +860,26 @@
             "type": "string"
           },
           "after": {},
+          "agent_session_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "before": {},
           "created_at": {
             "format": "date-time",
@@ -670,6 +903,8 @@
           "actor_id",
           "actor_name",
           "after",
+          "agent_session_id",
+          "agent_tool_call_id",
           "before",
           "created_at",
           "id",
@@ -3357,6 +3592,23 @@
         ],
         "type": "object"
       },
+      "CreateSessionInput": {
+        "properties": {
+          "context_ref": {},
+          "playbook": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context_ref",
+          "playbook",
+          "title"
+        ],
+        "type": "object"
+      },
       "CreateVirtualModelInput": {
         "properties": {
           "capabilities": {
@@ -3604,6 +3856,24 @@
         ],
         "type": "object"
       },
+      "CursorPage_Session": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "DataSourceRun": {
         "properties": {
           "detail": {},
@@ -3691,6 +3961,70 @@
           "confirm_blocked",
           "decided_by",
           "reason"
+        ],
+        "type": "object"
+      },
+      "DecideInput": {
+        "properties": {
+          "args": {},
+          "decision": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "args",
+          "decision",
+          "note"
+        ],
+        "type": "object"
+      },
+      "DecideResult": {
+        "properties": {
+          "http_status": {
+            "type": "integer"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {},
+          "resumed": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "http_status",
+          "result",
+          "resumed",
+          "status",
+          "summary",
+          "target_id",
+          "target_type",
+          "tool_call_id"
         ],
         "type": "object"
       },
@@ -3787,6 +4121,84 @@
         },
         "required": [
           "reason"
+        ],
+        "type": "object"
+      },
+      "DryRunInput": {
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "fetcher": {
+            "type": "string"
+          },
+          "sample_size": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "config",
+          "fetcher",
+          "sample_size",
+          "url"
+        ],
+        "type": "object"
+      },
+      "DryRunResult": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "fetcher": {
+            "type": "string"
+          },
+          "sample": {
+            "items": {
+              "$ref": "#/components/schemas/DryRunRow"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "fetcher",
+          "sample",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "DryRunRow": {
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "prices": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "upstream_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "prices",
+          "upstream_model"
         ],
         "type": "object"
       },
@@ -4583,6 +4995,152 @@
         ],
         "type": "object"
       },
+      "Job": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "cursor": {},
+          "daily_token_budget": {
+            "type": "integer"
+          },
+          "decided_in_ratio": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "failure_count": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_session_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_status": {
+            "type": "string"
+          },
+          "max_items_per_run": {
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paused_reason": {
+            "type": "string"
+          },
+          "pending_count": {
+            "type": "integer"
+          },
+          "playbook": {
+            "type": "string"
+          },
+          "rejected_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_requested": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "tokens_today": {
+            "type": "integer"
+          },
+          "trigger_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "cursor",
+          "daily_token_budget",
+          "decided_in_ratio",
+          "enabled",
+          "failure_count",
+          "id",
+          "last_error",
+          "last_run_at",
+          "last_session_id",
+          "last_status",
+          "max_items_per_run",
+          "model",
+          "name",
+          "next_run_at",
+          "paused_reason",
+          "pending_count",
+          "playbook",
+          "rejected_ratio",
+          "run_requested",
+          "schedule",
+          "tokens_today",
+          "trigger_query",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "LedgerEntry": {
         "properties": {
           "amount_micro": {
@@ -4709,6 +5267,20 @@
           "data": {
             "items": {
               "$ref": "#/components/schemas/FXRateInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ListData_Job": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Job"
             },
             "type": "array"
           }
@@ -5067,6 +5639,37 @@
           "permissions",
           "roles",
           "totp_enabled"
+        ],
+        "type": "object"
+      },
+      "Message": {
+        "properties": {
+          "compacted": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "content",
+          "role",
+          "seq"
         ],
         "type": "object"
       },
@@ -5854,6 +6457,36 @@
         ],
         "type": "object"
       },
+      "Outcome": {
+        "properties": {
+          "pending": {
+            "type": "integer"
+          },
+          "proposals": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "pending",
+          "proposals",
+          "status",
+          "turns",
+          "usage"
+        ],
+        "type": "object"
+      },
       "Page_APIKeyListItem": {
         "properties": {
           "data": {
@@ -6343,6 +6976,104 @@
         ],
         "type": "object"
       },
+      "PreviewInput": {
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_chars": {
+            "type": "integer"
+          },
+          "provider_code": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keywords",
+          "max_chars",
+          "provider_code",
+          "url"
+        ],
+        "type": "object"
+      },
+      "PreviewItem": {
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "conditions": {
+            "type": "string"
+          },
+          "discount_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "offer_type": {
+            "type": "string"
+          },
+          "quota": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstream_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "accepted",
+          "conditions",
+          "discount_ratio",
+          "ends_at",
+          "evidence",
+          "offer_type",
+          "quota",
+          "starts_at",
+          "upstream_model"
+        ],
+        "type": "object"
+      },
       "PreviewPrice": {
         "properties": {
           "meter": {
@@ -6360,6 +7091,36 @@
           "meter",
           "price",
           "unit"
+        ],
+        "type": "object"
+      },
+      "PreviewResult": {
+        "properties": {
+          "accepted": {
+            "type": "integer"
+          },
+          "dropped": {
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewItem"
+            },
+            "type": "array"
+          },
+          "text_chars": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted",
+          "dropped",
+          "items",
+          "text_chars",
+          "url"
         ],
         "type": "object"
       },
@@ -7215,6 +7976,129 @@
           "negative_margin",
           "sell_input",
           "sell_output"
+        ],
+        "type": "object"
+      },
+      "Proposal": {
+        "properties": {
+          "after": {},
+          "args": {},
+          "before": {},
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by_name": {
+            "type": "string"
+          },
+          "evidence": {},
+          "id": {
+            "type": "integer"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "playbook": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "required_perm": {
+            "type": "string"
+          },
+          "result": {},
+          "session_id": {
+            "type": "integer"
+          },
+          "session_mode": {
+            "type": "string"
+          },
+          "session_title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "args",
+          "before",
+          "confidence",
+          "created_at",
+          "decided_at",
+          "decided_by",
+          "decided_by_name",
+          "evidence",
+          "id",
+          "job_id",
+          "playbook",
+          "rationale",
+          "required_perm",
+          "result",
+          "session_id",
+          "session_mode",
+          "session_title",
+          "status",
+          "summary",
+          "target_id",
+          "target_type",
+          "tool",
+          "tool_call_id"
         ],
         "type": "object"
       },
@@ -8582,6 +9466,95 @@
         ],
         "type": "object"
       },
+      "Session": {
+        "properties": {
+          "admin_name": {
+            "type": "string"
+          },
+          "admin_user_id": {
+            "type": "integer"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "context_ref": {},
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tokens_in": {
+            "type": "integer"
+          },
+          "tokens_out": {
+            "type": "integer"
+          },
+          "turns": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "admin_name",
+          "admin_user_id",
+          "archived",
+          "context_ref",
+          "created_at",
+          "id",
+          "job_id",
+          "mode",
+          "model",
+          "playbook",
+          "status",
+          "status_reason",
+          "title",
+          "tokens_in",
+          "tokens_out",
+          "turns",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "SetCostPriceRequest": {
         "properties": {
           "components": {
@@ -8905,6 +9878,9 @@
       },
       "TodoCounts": {
         "properties": {
+          "agent_pending_approvals": {
+            "type": "integer"
+          },
           "aliases_suggested": {
             "type": "integer"
           },
@@ -8934,6 +9910,7 @@
           }
         },
         "required": [
+          "agent_pending_approvals",
           "aliases_suggested",
           "channels_missing_cost",
           "channels_negative_margin",
@@ -8943,6 +9920,147 @@
           "offers_new",
           "price_changes_blocked",
           "price_changes_pending"
+        ],
+        "type": "object"
+      },
+      "ToolCall": {
+        "properties": {
+          "arguments": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments",
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ToolCallView": {
+        "properties": {
+          "after": {},
+          "args": {},
+          "before": {},
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by_name": {
+            "type": "string"
+          },
+          "decision_note": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "evidence": {},
+          "http_status": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "required_perm": {
+            "type": "string"
+          },
+          "result": {},
+          "risk": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "args",
+          "confidence",
+          "created_at",
+          "decided_at",
+          "decided_by",
+          "decided_by_name",
+          "decision_note",
+          "evidence",
+          "id",
+          "proposal_id",
+          "rationale",
+          "required_perm",
+          "risk",
+          "run_id",
+          "session_id",
+          "status",
+          "summary",
+          "target_id",
+          "target_type",
+          "tool"
         ],
         "type": "object"
       },
@@ -9501,6 +10619,68 @@
         ],
         "type": "object"
       },
+      "UpdateInput": {
+        "properties": {
+          "daily_token_budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_items_per_run": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "daily_token_budget",
+          "enabled",
+          "max_items_per_run",
+          "model",
+          "schedule"
+        ],
+        "type": "object"
+      },
       "UpdateMemberRequest": {
         "properties": {
           "role": {
@@ -9911,6 +11091,21 @@
         "required": [
           "id",
           "owned_by"
+        ],
+        "type": "object"
+      },
+      "Usage": {
+        "properties": {
+          "tokens_in": {
+            "type": "integer"
+          },
+          "tokens_out": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokens_in",
+          "tokens_out"
         ],
         "type": "object"
       },
@@ -11250,6 +12445,466 @@
         "x-permission": "admin_user:manage"
       }
     },
+    "/agent/jobs": {
+      "get": {
+        "operationId": "getAgentJobs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListData_Job"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:admin"
+      }
+    },
+    "/agent/jobs/{jobID}": {
+      "patch": {
+        "operationId": "patchAgentJobsJobID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:admin"
+      }
+    },
+    "/agent/jobs/{jobID}/run": {
+      "post": {
+        "operationId": "postAgentJobsJobIDRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:admin"
+      }
+    },
+    "/agent/meta": {
+      "get": {
+        "operationId": "getAgentMeta",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMetaResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/proposals": {
+      "get": {
+        "operationId": "getAgentProposals",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProposalsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/sessions": {
+      "get": {
+        "operationId": "getAgentSessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_Session"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      },
+      "post": {
+        "operationId": "postAgentSessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/sessions/{sessionID}": {
+      "get": {
+        "operationId": "getAgentSessionsSessionID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      },
+      "patch": {
+        "operationId": "patchAgentSessionsSessionID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdateSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/sessions/{sessionID}/cancel": {
+      "post": {
+        "operationId": "postAgentSessionsSessionIDCancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/sessions/{sessionID}/messages": {
+      "post": {
+        "operationId": "postAgentSessionsSessionIDMessages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSSEEvent"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/sessions/{sessionID}/tool-calls/{callID}/decision": {
+      "post": {
+        "operationId": "postAgentSessionsSessionIDToolCallsCallIDDecision",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "callID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecideResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
     "/api-keys": {
       "get": {
         "operationId": "getApiKeys",
@@ -12536,6 +14191,44 @@
         "x-permission": "catalog:read"
       }
     },
+    "/offer-pages/extract-preview": {
+      "post": {
+        "operationId": "postOfferPagesExtractPreview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:write"
+      }
+    },
     "/pending-model-listings": {
       "get": {
         "operationId": "getPendingModelListings",
@@ -12947,6 +14640,44 @@
               }
             },
             "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "pricing:write"
+      }
+    },
+    "/price-sources/dry-run": {
+      "post": {
+        "operationId": "postPriceSourcesDryRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DryRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DryRunResult"
+                }
+              }
+            },
+            "description": "OK"
           },
           "default": {
             "content": {

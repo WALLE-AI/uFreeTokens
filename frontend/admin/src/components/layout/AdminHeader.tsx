@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { Link, useMatches, useNavigate, type UIMatch } from 'react-router';
-import { ChevronDown, ChevronRight, Keyboard, LogOut, Menu, Search, ShieldCheck } from 'lucide-react';
+import { ChevronDown, ChevronRight, Keyboard, LogOut, Menu, Search, ShieldCheck, Sparkles } from 'lucide-react';
 import { authStore, useAuth } from '../../api/auth';
 import { logout } from '../../api/session';
 import { SecurityModal } from './SecurityModal';
@@ -46,11 +46,32 @@ export interface AdminHeaderProps {
   onOpenPalette: () => void;
   onOpenShortcuts: () => void;
   onOpenMobileNav: () => void;
+  // 智能体按钮（未启用时不传，不渲染）：状态点 灰=空闲 / 紫色脉动=运行中 / 琥珀=有等待我审批的提案
+  agent?: { open: boolean; running: boolean; pending: number; onToggle: () => void };
+}
+
+function AgentButton({ agent, isMac }: { agent: NonNullable<AdminHeaderProps['agent']>; isMac: boolean }) {
+  const dot = agent.running ? 'bg-purple-500 animate-pulse' : agent.pending > 0 ? 'bg-amber-500' : 'bg-gray-300';
+  return (
+    <button
+      type="button"
+      onClick={agent.onToggle}
+      title={`智能体（${isMac ? '⌘J' : 'Ctrl+J'}）`}
+      className={cn(
+        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border cursor-pointer',
+        agent.open ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+      )}
+    >
+      <Sparkles className="w-3.5 h-3.5" />
+      <span className="hidden md:inline">智能体</span>
+      <span className={cn('w-1.5 h-1.5 rounded-full', dot)} />
+    </button>
+  );
 }
 
 // AdminHeader：对齐 web Header.tsx（h-12 sticky top-0 z-40 border-b）。左侧是面包屑
 // 而不是顶部 tab（导航已在侧栏）；生产环境额外加 2px 红色顶边（§11.9）。
-export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }: AdminHeaderProps) {
+export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav, agent }: AdminHeaderProps) {
   const { actorName, me } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -97,6 +118,7 @@ export function AdminHeader({ onOpenPalette, onOpenShortcuts, onOpenMobileNav }:
         <button type="button" onClick={onOpenPalette} className="sm:hidden p-1 text-gray-500 cursor-pointer" aria-label="搜索">
           <Search className="w-4 h-4" />
         </button>
+        {agent && <AgentButton agent={agent} isMac={isMac} />}
 
         <div ref={menuRef} className="relative">
           <button

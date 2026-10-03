@@ -17,6 +17,10 @@ import (
 
 	"github.com/WALLE-AI/uFreeTokens/internal/admin"
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/jobs"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/kernel"
+	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
 	"github.com/WALLE-AI/uFreeTokens/internal/httpx"
 	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
@@ -52,6 +56,22 @@ type AdminDeps struct {
 	// GET /public-apps 原样返回给后台页面做提示；0 = 默认 3。
 	PublicMinAccounts int
 	TestWebDir        string // 非空时在根路径同源提供 test_web/admin.html（手工联调用，见 staticweb.go）；空字符串（默认）不开启
+	// Agent 是运营智能体（Harness）；nil 或未启用时 /agent/*（除 /agent/meta）返回 503 agent_disabled。
+	Agent *agent.Service
+	// AgentInfo 是 /agent/meta 展示的配置摘要。
+	AgentInfo AgentInfo
+	// AgentJobs 是后台智能作业表（/agent/jobs）；nil 时作业接口返回 503。
+	AgentJobs *jobs.Store
+	// DataSyncEnv 是出站抓取环境（禁内网、限速），供 /price-sources/dry-run 与 /offer-pages/extract-preview；
+	// nil 时这两个接口返回 503。
+	DataSyncEnv *datasync.Env
+	// OfferLLM 是优惠抽取用的 LLM（/offer-pages/extract-preview）；nil 时该接口返回 503 llm_not_configured。
+	OfferLLM offers.LLM
+}
+
+// AgentInfo 是智能体配置摘要（GET /agent/meta）。
+type AgentInfo struct {
+	JobsEnabled bool
 }
 
 // NewAdminRouter 组装控制面路由：账户/API Key/Provider/渠道/虚拟模型/价格管理
@@ -75,15 +95,7 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	// 这个路由完全一样。
 	r.Get("/", serveStaticHTML(d.TestWebDir, "admin.html"))
 
-	h := &adminHandlers{
-		svc: d.Admin, log: d.Logger, pricesync: d.PriceSync, offers: d.Offers, auth: d.Auth,
-		legacyToken: d.AdminToken, trustedProxies: d.TrustedProxies, refURLs: d.ReferencePriceURLs.withDefaults(),
-		requireIfMatch: d.RequireIfMatch, defaultTZ: d.StatsTZ, redis: d.Redis,
-		publicMinAccounts: d.PublicMinAccounts,
-	}
-	if h.publicMinAccounts <= 0 {
-		h.publicMinAccounts = 3
-	}
+	h := newAdminHandlers(d)
 	r.Post("/auth/login", h.login)
 
 	r.Group(func(r chi.Router) {
@@ -93,6 +105,49 @@ func NewAdminRouter(d AdminDeps) http.Handler {
 	})
 
 	return r
+}
+
+func newAdminHandlers(d AdminDeps) *adminHandlers {
+	h := &adminHandlers{
+		svc: d.Admin, log: d.Logger, pricesync: d.PriceSync, offers: d.Offers, auth: d.Auth,
+		legacyToken: d.AdminToken, trustedProxies: d.TrustedProxies, refURLs: d.ReferencePriceURLs.withDefaults(),
+		requireIfMatch: d.RequireIfMatch, defaultTZ: d.StatsTZ, redis: d.Redis,
+		publicMinAccounts: d.PublicMinAccounts, agent: d.Agent, agentInfo: d.AgentInfo, agentJobs: d.AgentJobs,
+		dsEnv: d.DataSyncEnv, offerLLM: d.OfferLLM,
+	}
+	if h.publicMinAccounts <= 0 {
+		h.publicMinAccounts = 3
+	}
+	if h.log == nil {
+		h.log = slog.Default()
+	}
+	return h
+}
+
+// NewAdminToolHandler 构造供智能体进程内调度的内部路由（设计 §3.3，实施方案 M1-B05）：与 NewAdminRouter
+// 同一张路由表、同样的权限校验与幂等中间件，但不含令牌鉴权——调用身份由调度方（routes.Dispatcher）
+// 放进 ctx，缺失时一律 401。它不监听端口，cmd/admin 与 cmd/worker 都用它驱动智能体的路由工具。
+func NewAdminToolHandler(d AdminDeps) http.Handler {
+	h := newAdminHandlers(d)
+	r := chi.NewRouter()
+	r.Use(httpx.RequestID)
+	r.Use(httpx.Recover(h.log))
+	r.Use(httpx.MaxBodyBytes(maxAdminBodyBytes))
+	r.Use(requirePrincipal)
+	r.Use(h.idempotency)
+	h.registerRoutes(r)
+	return r
+}
+
+// requirePrincipal 拒绝没有身份的请求（内部路由的兜底：身份只能由调度方放入）。
+func requirePrincipal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := adminauth.FromContext(r.Context()); p == nil {
+			httpx.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Missing admin identity.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // maxAdminBodyBytes 是管理接口请求体上限；批量导入等大请求也远小于这个值。
@@ -112,6 +167,11 @@ type adminHandlers struct {
 	redis          *redis.Client
 	// publicMinAccounts 见 AdminDeps.PublicMinAccounts。
 	publicMinAccounts int
+	agent             *agent.Service
+	agentInfo         AgentInfo
+	agentJobs         *jobs.Store
+	dsEnv             *datasync.Env
+	offerLLM          offers.LLM
 }
 
 // requirePriceSync 是价格同步相关接口共用的前置检查：PriceSync 未装配时统一
@@ -240,12 +300,17 @@ func actor(r *http.Request) *adminauth.Principal {
 // auditInput 由已认证身份和请求上下文构造审计记录。
 func (h *adminHandlers) auditInput(r *http.Request, action, targetType, targetID string, before, after any) admin.AuditLogInput {
 	p := actor(r)
-	return admin.AuditLogInput{
+	in := admin.AuditLogInput{
 		ActorID: p.AdminID, ActorName: p.Name, SessionID: p.SessionID,
 		Action: action, TargetType: targetType, TargetID: targetID,
 		Before: before, After: after, IP: h.clientIP(r), UserAgent: r.UserAgent(),
 		RequestID: httpx.RequestIDFromContext(r.Context()),
 	}
+	// 经由智能体执行的写操作：关联到会话与工具调用（设计 §3.3，审计页可反查到对话）。
+	if ref, ok := kernel.CallFrom(r.Context()); ok {
+		in.AgentSessionID, in.AgentToolCallID = ref.SessionID, ref.ToolCallID
+	}
+	return in
 }
 
 // auditEntry 描述一次写操作的审计内容。

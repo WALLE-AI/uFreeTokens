@@ -29,6 +29,9 @@ import { refreshTodoCounts } from '../../hooks/useTodoCounts';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/time';
 import type { ModelAlias, SetModelAliasResult } from '../../types';
+import { AgentActionButton, AgentSuggestionBadge } from '../agent/components/AgentEmbeds';
+import { useAgentSuggestions } from '../../agent/useAgentSuggestions';
+import { useAgentMutated } from '../../agent/agentEvents';
 
 // 榜单模型映射工作台（外部数据采集技术方案 §4.4）：外部评测榜单里的模型名 → 平台虚拟模型。
 // 精确 / 归一化匹配自动生效（auto）；模糊匹配只给出建议（suggested），需要人工确认后才关联成绩；
@@ -77,6 +80,8 @@ export default function ModelAliasesPage() {
     [status, params.namespace, params.q, page, tick],
   );
   const rows = list.data?.data ?? [];
+  const suggestions = useAgentSuggestions('model_alias', rows.map((a) => `${a.namespace}:${a.external_label}`));
+  useAgentMutated('model_alias', () => setTick((t) => t + 1));
 
   const [selected, setSelected] = useState<Set<string | number>>(new Set());
   useEffect(() => setSelected(new Set()), [status, params.namespace, params.q, page, tick]);
@@ -148,6 +153,11 @@ export default function ModelAliasesPage() {
     },
     { key: 'variant', header: '档位', render: (a) => (a.variant ? <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[10px]">{a.variant}</span> : <span className="text-gray-300">—</span>) },
     { key: 'status', header: '状态', render: (a) => <StatusBadge kind="model_alias" value={a.status} /> },
+    {
+      key: 'agent',
+      header: '智能体建议',
+      render: (a) => <AgentSuggestionBadge proposal={suggestions.byId.get(`${a.namespace}:${a.external_label}`)} onDone={() => setTick((t) => t + 1)} />,
+    },
     {
       key: 'virtual_model',
       header: '虚拟模型',
@@ -226,9 +236,12 @@ export default function ModelAliasesPage() {
         title="榜单模型映射"
         description="外部评测榜单里的模型名与平台虚拟模型的对应关系。模糊匹配只给出建议，确认后才会把成绩关联到模型并投影进评分；确认的映射对之后的所有导入生效。"
         actions={
-          <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
-            刷新
-          </Button>
+          <>
+            <AgentActionButton playbook="alias_matching" label="✦ 处理待确认映射" />
+            <Button icon={<RotateCw className="w-3.5 h-3.5" />} loading={list.refreshing} onClick={() => setTick((t) => t + 1)}>
+              刷新
+            </Button>
+          </>
         }
       />
 

@@ -1,6 +1,6 @@
 import { useMemo, useState, type ComponentType } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Activity, AlertTriangle, ArrowRight, BadgeDollarSign, CircleCheck, Link2, PackagePlus, PartyPopper, Radar, Scale, TicketX } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BadgeDollarSign, CircleCheck, Link2, PackagePlus, PartyPopper, Radar, Scale, Sparkles, TicketX } from 'lucide-react';
 import { listAuditLogs } from '../api/audit';
 import { getStatsOverview, getUsage } from '../api/stats';
 import { Card, DataState, KpiStrip, PageHeader, SectionTitle, SegmentedToggle, StatCard } from '../components/ui';
@@ -14,6 +14,7 @@ import { cn } from '../lib/cn';
 import { formatCompact, formatMicroCompact, formatRatio } from '../lib/money';
 import { formatDateTime, formatRelative } from '../lib/time';
 import type { UsagePoint } from '../types';
+import { AgentActionButton, useAgentUsable } from './agent/components/AgentEmbeds';
 import { getChannelHealth } from '../api/catalog';
 
 // 工作台（UI_DESIGN.md §4）：今天有什么要处理？平台运转正常吗？钱赚得怎么样？
@@ -39,7 +40,12 @@ export default function DashboardPage() {
       <PageHeader
         title="工作台"
         description="今天有什么要处理？平台运转正常吗？钱赚得怎么样？"
-        actions={<SegmentedToggle options={RANGE_OPTIONS} value={range} onChange={setRange} />}
+        actions={
+          <>
+            <AgentActionButton playbook="channel_health" label="✦ 渠道健康巡检" />
+            <SegmentedToggle options={RANGE_OPTIONS} value={range} onChange={setRange} />
+          </>
+        }
       />
       <TodoStrip />
       <KpiSection from={bounds.from} to={bounds.to} />
@@ -69,6 +75,7 @@ interface Todo {
 
 function TodoStrip() {
   const c = useTodoCounts();
+  const agentUsable = useAgentUsable();
   const todos: Todo[] | null = c
     ? [
         {
@@ -99,13 +106,14 @@ function TodoStrip() {
         },
       ].filter((t) => t.n > 0)
     : null;
+  const hasAgent = (c?.agent_pending_approvals ?? 0) > 0 && agentUsable;
 
   return (
     <Card padding="p-4">
       <div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">待办</div>
       {todos === null ? (
         <div className="text-xs text-gray-400">正在加载待办…</div>
-      ) : todos.length === 0 ? (
+      ) : todos.length === 0 && !hasAgent ? (
         // 数量为 0 时明确告诉运营"真的没事"，而不是隐藏整块（§4）
         <div className="flex items-center gap-2 text-xs text-gray-600">
           <PartyPopper className="w-4 h-4 text-purple-600" />
@@ -113,6 +121,16 @@ function TodoStrip() {
         </div>
       ) : (
         <div className="flex flex-wrap gap-3">
+          {(c?.agent_pending_approvals ?? 0) > 0 && agentUsable && (
+            <Link
+              to="/agent/inbox"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-colors bg-white border-purple-300 text-purple-700 hover:border-purple-400"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span className="font-medium">智能体已预审 {c!.agent_pending_approvals} 条，待你审批</span>
+              <ArrowRight className="w-3 h-3" />
+            </Link>
+          )}
           {todos.map((t) => (
             <Link
               key={t.to}

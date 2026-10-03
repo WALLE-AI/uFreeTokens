@@ -77,7 +77,7 @@ func EnumValues() Enums {
 		GrantSources:        []string{"signup", "promotion", "compensation", "invite"},
 		SourceLevels:        []string{"L1", "L2", "L3", "L4", "L5"},
 		SourceKinds:         []string{"api", "html", "dataset", "billing", "manual"},
-		Fetchers:            []string{"html_table", "litellm_dataset", "openrouter_models", "modelsdev", "tabular", "offer_page", "manual"},
+		Fetchers:            []string{"html_table", "litellm_dataset", "openrouter_models", "modelsdev", "tabular", "offer_page", "fx_rate", "self_eval", "manual"},
 		SourceDomains:       []string{"price", "offer", "benchmark"},
 		OfferTypes:          []string{"free_model", "discount", "off_peak", "free_quota", "new_user_credit", "price_cut"},
 		OfferStatuses:       []string{"new", "confirmed", "ignored", "expired", "adopted"},
