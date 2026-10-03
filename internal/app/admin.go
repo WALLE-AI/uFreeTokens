@@ -164,6 +164,11 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, log *slog.Logger, e
 		httpx.WriteError(w, r, http.StatusBadGateway, "upstream_unavailable", "The upstream endpoint is unavailable or returned an unexpected response.")
 	case errors.Is(err, admin.ErrKEKNotConfigured):
 		httpx.WriteError(w, r, http.StatusServiceUnavailable, "kek_not_configured", "Server has no key-encryption key configured; upstream secrets are unavailable.")
+	case errors.Is(err, admin.ErrLLMNotConfigured):
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "llm_not_configured", "Server has no LLM configured (config datasync.llm_base_url / llm_model, env UFT_DATASYNC_LLM_API_KEY).")
+	case errors.Is(err, admin.ErrLLMUnavailable):
+		log.Warn("llm unavailable", "request_id", httpx.RequestIDFromContext(r.Context()), "error", err)
+		httpx.WriteError(w, r, http.StatusBadGateway, "llm_unavailable", "The LLM call failed or returned unusable output.")
 	case errors.Is(err, admin.ErrUnsafeUpstreamURL):
 		httpx.WriteError(w, r, http.StatusUnprocessableEntity, "unsafe_upstream_url", err.Error())
 	case errors.Is(err, admin.ErrVersionConflict):
@@ -631,6 +636,24 @@ func (h *adminHandlers) getVirtualModelByName(w http.ResponseWriter, r *http.Req
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, vm)
+}
+
+// suggestVirtualModelMetadata 是 GET /virtual-models/{id}/metadata/suggestion 的入口：
+// 按外部目录参数 / 模型名 / 能力给出展示元数据的建议值，只读不落库（后台「自动填充」用）。
+// ?llm=1 时介绍文案改由 LLM 生成（未配置 503，调用失败 502）。
+func (h *adminHandlers) suggestVirtualModelMetadata(w http.ResponseWriter, r *http.Request) {
+	vmID, ok := pathInt64(r, "virtualModelID")
+	if !ok {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid virtual model id")
+		return
+	}
+	useLLM := r.URL.Query().Get("llm") == "1" || r.URL.Query().Get("llm") == "true"
+	sug, err := h.svc.SuggestVirtualModelMetadata(r.Context(), vmID, admin.SuggestOptions{UseLLM: useLLM})
+	if err != nil {
+		writeAdminError(w, r, h.log, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, sug)
 }
 
 // setVirtualModelMetadata 是 PUT /virtual-models/{id}/metadata 的入口

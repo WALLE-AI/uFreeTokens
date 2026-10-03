@@ -108,3 +108,19 @@ func TestLoad_EnvOverridesFile(t *testing.T) {
 		t.Errorf("Gateway.Addr = %q, want :6060 (env should win over file)", cfg.Gateway.Addr)
 	}
 }
+
+// datasync.* 的环境变量名与早期直接读环境变量时一致（UFT_DATASYNC_LLM_BASE_URL 等），
+// 已配置好的部署不需要改名。
+func TestLoad_DataSyncLLM(t *testing.T) {
+	t.Setenv("UFT_DATASYNC_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+	t.Setenv("UFT_DATASYNC_LLM_MODEL", "deepseek/deepseek-chat")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := DataSyncConfig{LLMBaseURL: "http://127.0.0.1:8080/v1", LLMModel: "deepseek/deepseek-chat", LLMAPIKeyEnv: "UFT_DATASYNC_LLM_API_KEY"}
+	if cfg.DataSync != want {
+		t.Errorf("DataSync = %+v, want %+v", cfg.DataSync, want)
+	}
+}

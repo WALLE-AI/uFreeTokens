@@ -29,6 +29,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/adminauth"
 	"github.com/WALLE-AI/uFreeTokens/internal/app"
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
+	"github.com/WALLE-AI/uFreeTokens/internal/llm"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
@@ -108,6 +109,13 @@ func run() error {
 	if os.Getenv("UFT_ADMIN_ALLOW_PRIVATE_UPSTREAM") == "true" {
 		logger.Warn("upstream URL policy relaxed: http and private networks allowed (dev only)")
 		adminSvc.SetUpstreamURLPolicy(admin.PermissiveUpstreamURLPolicy())
+	}
+	// 展示元数据「AI 生成介绍」用的 LLM（可选，与 worker 的优惠抽取共用配置段 datasync.llm_*）。
+	if c, missing := llm.FromConfig(cfg.DataSync); c != nil {
+		adminSvc.SetDescriptionGenerator(admin.NewLLMDescriptionGenerator(c))
+		logger.Info("metadata AI description enabled", "llm_model", c.Model)
+	} else {
+		logger.Info("metadata AI description disabled: LLM not configured", "missing", missing)
 	}
 	priceSyncEngine := pricesync.NewEngine(pg, adminSvc)
 	authSvc := adminauth.New(pg, adminauth.Config{Box: box})

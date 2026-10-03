@@ -187,6 +187,7 @@ export default function ListingsPage() {
           toast.success(
             <span>
               已上架 {name}（模型 #{res.virtual_model_id}，渠道 #{res.channel_id}）
+              {res.metadata_created && '，已自动生成展示元数据'}
               <Link to={`/models/${res.virtual_model_id}`} className="underline ml-1 text-purple-200">
                 查看
               </Link>

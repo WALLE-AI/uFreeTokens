@@ -205,6 +205,7 @@ func TestEngine_PublishListing_CreatesVirtualModelChannelAndPrices(t *testing.T)
 	ingestResult, err := e.IngestUnmapped(ctx, UnmappedObservationInput{
 		ProviderID: provider.ID, SourceID: sourceID, Level: LevelL2, UpstreamModel: model,
 		Spec: PriceSpec{Currency: "CNY", Components: inputComponent(10)},
+		Meta: &ModelMeta{Name: "Acme: Test Model (free)", Description: "A **test** model.\n\nMore.", Source: "test_fetcher"},
 	})
 	if err != nil {
 		t.Fatalf("IngestUnmapped: %v", err)
@@ -222,6 +223,25 @@ func TestEngine_PublishListing_CreatesVirtualModelChannelAndPrices(t *testing.T)
 	}
 	if result.VirtualModelID == 0 || result.ChannelID == 0 || result.CostBookID == 0 || result.SellBookID == 0 {
 		t.Fatalf("PublishListing result has a zero ID: %+v", result)
+	}
+
+	// 新虚拟模型没有展示元数据：按观测到的外部目录参数自动生成一条，评分留空。
+	if !result.MetadataCreated {
+		t.Errorf("MetadataCreated = false, want true")
+	}
+	var displayName, providerDisplay, description string
+	var scoresNull bool
+	if err := pool.QueryRow(ctx,
+		`SELECT display_name, provider_display, description, scores IS NULL FROM virtual_model_metadata WHERE virtual_model_id = $1`, result.VirtualModelID,
+	).Scan(&displayName, &providerDisplay, &description, &scoresNull); err != nil {
+		t.Fatalf("query virtual_model_metadata: %v", err)
+	}
+	if displayName != "Test Model" || providerDisplay != "Acme" || description != "A test model." || !scoresNull {
+		t.Errorf("metadata = %q/%q/%q scoresNull=%v, want Test Model/Acme/A test model./true", displayName, providerDisplay, description, scoresNull)
+	}
+	// 已有元数据时不覆盖。
+	if created, err := adminSvc.EnsureVirtualModelMetadata(ctx, result.VirtualModelID); err != nil || created {
+		t.Errorf("second EnsureVirtualModelMetadata = %v, %v; want false, nil", created, err)
 	}
 
 	var channelUpstreamModel string

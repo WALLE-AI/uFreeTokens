@@ -83,10 +83,12 @@ func (h *adminHandlers) adminRouteTable() []AdminRoute {
 		// --- 虚拟模型 / 渠道 ---
 		{get, "/virtual-models", adminauth.PermCatalogRead, h.virtualModels},
 		{get, "/virtual-models/lookup", adminauth.PermCatalogRead, h.getVirtualModelByName},
+		{post, "/virtual-models/metadata/autofill", adminauth.PermCatalogWrite, h.autofillVirtualModelMetadata},
 		{post, "/virtual-models", adminauth.PermCatalogWrite, h.createVirtualModel},
 		{get, "/virtual-models/{virtualModelID}", adminauth.PermCatalogRead, h.getVirtualModel},
 		{patch, "/virtual-models/{virtualModelID}", adminauth.PermCatalogWrite, h.updateVirtualModel},
 		{put, "/virtual-models/{virtualModelID}/metadata", adminauth.PermCatalogWrite, h.setVirtualModelMetadata},
+		{get, "/virtual-models/{virtualModelID}/metadata/suggestion", adminauth.PermCatalogRead, h.suggestVirtualModelMetadata},
 		{get, "/virtual-models/{virtualModelID}/price-books", adminauth.PermPricingRead, h.listSellPriceBooks},
 		{post, "/virtual-models/{virtualModelID}/sell-price", adminauth.PermPricingWrite, h.setSellPrice},
 		{get, "/channels", adminauth.PermCatalogRead, h.channels},

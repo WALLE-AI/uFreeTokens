@@ -13,3 +13,6 @@ coverage.*
 
 # tools/devdb 本地开发用 PostgreSQL 的数据目录与日志（无需 Docker 时使用，见 README）
 /.data/
+
+# 本地配置（可能含本机 LLM 地址等），以 gateway.example.yaml 为模板复制
+config/gateway.yaml

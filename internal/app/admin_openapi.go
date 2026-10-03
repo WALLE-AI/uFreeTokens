@@ -61,6 +61,10 @@ type batchApproveResponse struct {
 	Results []batchApproveResult `json:"results"`
 }
 
+type autofillItemsResponse struct {
+	Results []autofillItemResult `json:"results"`
+}
+
 type batchItemsResponse struct {
 	Results []batchItemResult `json:"results"`
 }
@@ -137,6 +141,8 @@ var routeSchemas = map[string]routeSchema{
 	"GET /virtual-models/{virtualModelID}":                       {resp: admin.VirtualModelDetail{}},
 	"PATCH /virtual-models/{virtualModelID}":                     {req: admin.UpdateVirtualModelInput{}, resp: admin.VirtualModelDetail{}},
 	"PUT /virtual-models/{virtualModelID}/metadata":              {req: setMetadataRequest{}, resp: statusResponse{}},
+	"POST /virtual-models/metadata/autofill":                     {req: autofillMetadataRequest{}, resp: autofillItemsResponse{}},
+	"GET /virtual-models/{virtualModelID}/metadata/suggestion":   {resp: admin.MetadataSuggestion{}},
 	"GET /virtual-models/{virtualModelID}/price-books":           {resp: listData[admin.PriceBookInfo]{}},
 	"POST /virtual-models/{virtualModelID}/sell-price":           {req: setSellPriceRequest{}, resp: priceBookIDResponse{}, status: http.StatusCreated},
 	"GET /channels":                                              {resp: admin.Page[admin.ChannelSummary]{}},

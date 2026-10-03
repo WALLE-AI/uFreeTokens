@@ -118,6 +118,12 @@ type batchDismissRequest struct {
 	Reason string  `json:"reason"`
 }
 
+// autofillMetadataRequest 是 autofillVirtualModelMetadata 的请求体。
+type autofillMetadataRequest struct {
+	VirtualModelIDs []int64 `json:"virtual_model_ids"`
+	DryRun          bool    `json:"dry_run"` // true = 只预览将要写入的字段
+}
+
 // dismissListingRequest 是 dismissPendingModelListing 的请求体。
 type dismissListingRequest struct {
 	Reason string `json:"reason"`

@@ -78,6 +78,7 @@ func (f OpenRouterFetcher) Fetch(ctx context.Context, src Source) ([]Observation
 type openRouterModel struct {
 	ID            string                     `json:"id"`
 	Name          string                     `json:"name"`
+	Description   string                     `json:"description"`
 	ContextLength int                        `json:"context_length"`
 	Pricing       map[string]json.RawMessage `json:"pricing"`
 	Architecture  struct {
@@ -106,7 +107,7 @@ func (m openRouterModel) meta() *ModelMeta {
 			has("response_format") || has("structured_outputs"), has("reasoning") || has("include_reasoning"))
 	}
 	return metaOrNil(ModelMeta{
-		Name: m.Name, Type: typeFromModalities(m.Architecture.OutputModalities), ContextWindow: ctx,
+		Name: m.Name, Description: m.Description, Type: typeFromModalities(m.Architecture.OutputModalities), ContextWindow: ctx,
 		MaxOutput: m.TopProvider.MaxCompletionTokens, Capabilities: caps,
 		InputModalities: m.Architecture.InputModalities, OutputModalities: m.Architecture.OutputModalities,
 		Source: "openrouter_models",

@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -16,6 +13,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
+	"github.com/WALLE-AI/uFreeTokens/internal/llm"
 )
 
 // 定价页 / 公告页的优惠文案抽取（detection=llm_extract）。来源 config：
@@ -24,8 +22,8 @@ import (
 //	 "keywords": ["限时", "免费", ...],   // 可选，默认 DefaultKeywords
 //	 "max_chars": 12000}                  // 可选，单页送给 LLM 的最大字符数
 //
-// LLM 走 OpenAI 兼容接口（通常就是本平台网关），由 worker 的环境变量配置——密钥不能写进
-// 明文的来源 config：UFT_DATASYNC_LLM_BASE_URL、UFT_DATASYNC_LLM_API_KEY、UFT_DATASYNC_LLM_MODEL。
+// LLM 走 OpenAI 兼容接口（通常就是本平台网关），用进程配置的 datasync.llm_*（与 cmd/admin
+// 共用，见 config.DataSyncConfig）——密钥只放环境变量，不能写进明文的来源 config。
 // 未配置时这个来源跑空（记 detail.skipped），不算失败。
 //
 // LLM 的输出一律只作候选：必须带一句页面原文（evidence），原文在页面里找不到就丢弃；
@@ -66,7 +64,7 @@ type ExtractedOffer struct {
 // PageJob 是 fetcher=offer_page 的 datasync.Job。
 type PageJob struct {
 	Store *Store
-	LLM   LLM // nil = 从环境变量构造；仍为 nil 时跳过
+	LLM   LLM // nil = 未配置 LLM，跳过抽取
 }
 
 func (j PageJob) Run(ctx context.Context, env *datasync.Env, src datasync.Source) (datasync.Result, error) {
@@ -117,11 +115,8 @@ func (j PageJob) Run(ctx context.Context, env *datasync.Env, src datasync.Source
 
 	llm := j.LLM
 	if llm == nil {
-		llm = LLMFromEnv()
-	}
-	if llm == nil {
 		// 不写 ContentHash：配置好 LLM 之后下一次运行会真正抽取。
-		return datasync.Result{ItemsFetched: len(pages), Detail: map[string]any{"skipped": "UFT_DATASYNC_LLM_* not configured"}}, nil
+		return datasync.Result{ItemsFetched: len(pages), Detail: map[string]any{"skipped": "LLM not configured (datasync.llm_*)"}}, nil
 	}
 
 	var created, dropped int
@@ -287,18 +282,14 @@ func FilterLines(text string, keywords []string, maxChars int) string {
 
 // ---------- OpenAI 兼容的 LLM 客户端 ----------
 
-type openAILLM struct {
-	baseURL, apiKey, model string
-	client                 *http.Client
-}
+type openAILLM struct{ c *llm.Client }
 
-// LLMFromEnv 按 UFT_DATASYNC_LLM_* 构造客户端；未配置返回 nil。
-func LLMFromEnv() LLM {
-	base, key, model := os.Getenv("UFT_DATASYNC_LLM_BASE_URL"), os.Getenv("UFT_DATASYNC_LLM_API_KEY"), os.Getenv("UFT_DATASYNC_LLM_MODEL")
-	if base == "" || key == "" || model == "" {
+// NewLLM 用共享的 LLM 客户端（llm.FromConfig）构造抽取器；c 为 nil 时返回 nil（未配置）。
+func NewLLM(c *llm.Client) LLM {
+	if c == nil {
 		return nil
 	}
-	return &openAILLM{baseURL: strings.TrimRight(base, "/"), apiKey: key, model: model, client: &http.Client{Timeout: 2 * time.Minute}}
+	return &openAILLM{c: c}
 }
 
 const extractPrompt = `你是模型 API 价格情报分析员。下面是厂商 %s 的页面 %s 中与价格/优惠相关的文字片段。
@@ -309,52 +300,16 @@ const extractPrompt = `你是模型 API 价格情报分析员。下面是厂商 
 没有优惠时输出 {"offers":[]}。不要编造页面里没有的信息。`
 
 func (l *openAILLM) ExtractOffers(ctx context.Context, providerCode, pageURL, text string) ([]ExtractedOffer, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model":           l.model,
-		"temperature":     0,
-		"response_format": map[string]string{"type": "json_object"},
-		"messages": []map[string]string{
-			{"role": "system", "content": fmt.Sprintf(extractPrompt, providerCode, pageURL)},
-			{"role": "user", "content": text},
-		},
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.baseURL+"/chat/completions", bytes.NewReader(body))
+	content, err := l.c.ChatJSON(ctx, fmt.Sprintf(extractPrompt, providerCode, pageURL), text)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+l.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, truncate(string(data), 300))
-	}
-	var cr struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(data, &cr); err != nil || len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("llm: unexpected response: %s", truncate(string(data), 300))
-	}
-	return ParseExtraction(cr.Choices[0].Message.Content)
+	return ParseExtraction(content)
 }
 
 // ParseExtraction 解析 LLM 输出（容忍 ```json 代码块包裹）。
 func ParseExtraction(content string) ([]ExtractedOffer, error) {
-	s := strings.TrimSpace(content)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(strings.TrimSpace(s), "```")
+	s := llm.StripCodeFence(content)
 	var out struct {
 		Offers []ExtractedOffer `json:"offers"`
 	}

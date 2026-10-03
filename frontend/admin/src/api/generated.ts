@@ -152,6 +152,24 @@ export interface Auth {
   alternate_hosts?: string[] | null;
 }
 
+export interface AutofillItemResult {
+  id: number;
+  ok: boolean;
+  name?: string;
+  changes?: Record<string, unknown> | null;
+  applied: boolean;
+  error?: ApiError | null;
+}
+
+export interface AutofillItemsResponse {
+  results: AutofillItemResult[] | null;
+}
+
+export interface AutofillMetadataRequest {
+  virtual_model_ids: number[] | null;
+  dry_run: boolean;
+}
+
 export interface BatchApproveRequest {
   ids: number[] | null;
   reason: string;
@@ -1042,6 +1060,15 @@ export interface MetaEnumsResponse {
   permissions: string[] | null;
 }
 
+export interface MetadataSuggestion {
+  virtual_model_id: number;
+  display_name: SuggestedText;
+  provider_display: SuggestedText;
+  description: SuggestedText;
+  tags: SuggestedTags;
+  llm_available: boolean;
+}
+
 export interface MeterPrice {
   meter: string;
   unit: string;
@@ -1526,6 +1553,7 @@ export interface PublishListingResultDTO {
   channel_id: number;
   cost_book_id: number;
   sell_book_id: number;
+  metadata_created: boolean;
 }
 
 export interface ReferencePriceLookupRequest {
@@ -1692,6 +1720,17 @@ export interface StatsOverview {
 
 export interface StatusResponse {
   status: string;
+}
+
+export interface SuggestedTags {
+  value: string[] | null;
+  source?: string;
+}
+
+export interface SuggestedText {
+  value: string;
+  source?: string;
+  detail?: string;
 }
 
 export interface TOTPSetup {

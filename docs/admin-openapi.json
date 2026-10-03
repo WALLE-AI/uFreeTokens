@@ -694,6 +694,74 @@
         "required": [],
         "type": "object"
       },
+      "AutofillItemResult": {
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "changes": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "applied",
+          "id",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "AutofillItemsResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/AutofillItemResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "AutofillMetadataRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "virtual_model_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dry_run",
+          "virtual_model_ids"
+        ],
+        "type": "object"
+      },
       "BatchApproveRequest": {
         "properties": {
           "ids": {
@@ -5289,6 +5357,37 @@
         ],
         "type": "object"
       },
+      "MetadataSuggestion": {
+        "properties": {
+          "description": {
+            "$ref": "#/components/schemas/SuggestedText"
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/SuggestedText"
+          },
+          "llm_available": {
+            "type": "boolean"
+          },
+          "provider_display": {
+            "$ref": "#/components/schemas/SuggestedText"
+          },
+          "tags": {
+            "$ref": "#/components/schemas/SuggestedTags"
+          },
+          "virtual_model_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "description",
+          "display_name",
+          "llm_available",
+          "provider_display",
+          "tags",
+          "virtual_model_id"
+        ],
+        "type": "object"
+      },
       "MeterPrice": {
         "properties": {
           "meter": {
@@ -7772,6 +7871,9 @@
           "cost_book_id": {
             "type": "integer"
           },
+          "metadata_created": {
+            "type": "boolean"
+          },
           "sell_book_id": {
             "type": "integer"
           },
@@ -7782,6 +7884,7 @@
         "required": [
           "channel_id",
           "cost_book_id",
+          "metadata_created",
           "sell_book_id",
           "virtual_model_id"
         ],
@@ -8748,6 +8851,40 @@
         },
         "required": [
           "status"
+        ],
+        "type": "object"
+      },
+      "SuggestedTags": {
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "value": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "SuggestedText": {
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
         ],
         "type": "object"
       },
@@ -14264,6 +14401,44 @@
         "x-permission": "catalog:read"
       }
     },
+    "/virtual-models/metadata/autofill": {
+      "post": {
+        "operationId": "postVirtualModelsMetadataAutofill",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutofillMetadataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutofillItemsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:write"
+      }
+    },
     "/virtual-models/{virtualModelID}": {
       "get": {
         "operationId": "getVirtualModelsVirtualModelID",
@@ -14394,6 +14569,44 @@
           }
         },
         "x-permission": "catalog:write"
+      }
+    },
+    "/virtual-models/{virtualModelID}/metadata/suggestion": {
+      "get": {
+        "operationId": "getVirtualModelsVirtualModelIDMetadataSuggestion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "virtualModelID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataSuggestion"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "catalog:read"
       }
     },
     "/virtual-models/{virtualModelID}/price-books": {

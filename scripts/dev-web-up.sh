@@ -15,7 +15,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 : "${UFT_TEST_WEB_DIR:=frontend/test_web}"
 export UFT_KEK UFT_KEY_PEPPER UFT_ADMIN_TOKEN UFT_TEST_WEB_DIR
 
-CONFIG=config/gateway.example.yaml
+# 优先用本地配置 config/gateway.yaml（不入库），没有再用示例配置；UFT_CONFIG 可覆盖。
+CONFIG=${UFT_CONFIG:-config/gateway.example.yaml}
+[ -z "${UFT_CONFIG:-}" ] && [ -f config/gateway.yaml ] && CONFIG=config/gateway.yaml
 RUNDIR=tmp/dev-web
 mkdir -p "$RUNDIR"
 

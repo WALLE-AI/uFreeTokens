@@ -70,6 +70,12 @@
   - 熔断与冷却状态来自 Redis。cmd/admin 连不上 Redis 时 `runtime_state_known=false`。
   - 运营吊销或重新启用上游 Key 时，服务端会清除该 Key 的冷却记录。
 - **统计数据源**：统计接口响应里的 `source` 为 `raw`（直接统计请求日志）或 `rollup`（时间窗超过 48 小时，读小时汇总表）。
+- **展示元数据自动填充**：`GET /virtual-models/{id}/metadata/suggestion` 返回 `display_name` / `provider_display` / `description` / `tags` 的建议值，只读不落库。
+  - 每项带 `source`：`external`（外部目录，`detail` 是抓取器名，如 `openrouter_models`）、`vendor`（内置厂商表）、`derived`（由模型名、类型、能力推导）；没有建议时 `value` 为空。
+  - 介绍文案只取外部目录（目前是 OpenRouter 的 `description`），不编造；评分不在建议范围内，由评测榜单发布投影写入。
+  - `?llm=1`：介绍文案改由 LLM 结合模型事实与外部原文生成一两句中文（`source=llm`，`detail` 为所用模型）。LLM 与 worker 的优惠抽取共用配置段 `datasync`（`llm_base_url`、`llm_model`；密钥放在 `llm_api_key_env` 指向的环境变量里，默认 `UFT_DATASYNC_LLM_API_KEY`），cmd/admin 与 worker 读同一份配置文件，启动日志会说明是否启用；响应的 `llm_available` 表示是否可用。未配置返回 503 `llm_not_configured`，调用失败返回 502 `llm_unavailable`。
+  - 批量：`POST /virtual-models/metadata/autofill`，body `{"virtual_model_ids":[...], "dry_run":true}`（1–200 个）。只用确定性来源（不调 LLM），只补空字段，不碰评分；逐条独立事务并记审计 `virtual_model_metadata.autofill`，逐条返回 `changes`（将要/已经写入的字段）与 `applied`。
+  - 待上架候选一键上架（`POST /pending-model-listings/{id}/publish`）时，若虚拟模型还没有展示元数据，会按同样的建议值自动插入一条（评分留空），响应 `metadata_created=true`；已有记录一律不覆盖。
 - **基准测试与公开榜单**（docs/基准测试与排行榜数据服务技术方案.md）：
   - `PUT /virtual-models/{id}/metadata` 的 `scores` 按白名单校验，只接受数字型的 `intelligence_index`、`coding_index`、`agentic_index` 与嵌套对象 `design_arena.{code,ui_component,game_dev,data_viz,three_d,image,video,svg}`，其他键返回 400；允许的键也在 `GET /meta/enums` 的 `score_keys` / `design_arena_keys` 里。
   - 基准：`/benchmarks`（定义，PATCH 走 If-Match）、`POST /benchmarks/{id}/runs`（一次录入或批量导入整批结果，全部成功或全部回滚；`publish: true` 时立即发布）、`POST /benchmark-runs/{id}/publish`（同基准此前发布的 run 自动取消发布，保留为历史）、`DELETE /benchmark-runs/{id}`（只有从未发布过的 run 能删，否则 409）。公开接口只展示 `status=published` 的基准的最新已发布 run。
@@ -192,9 +198,11 @@
 | GET | /virtual-models | `catalog:read` |
 | POST | /virtual-models | `catalog:write` |
 | GET | /virtual-models/lookup | `catalog:read` |
+| POST | /virtual-models/metadata/autofill | `catalog:write` |
 | GET | /virtual-models/{virtualModelID} | `catalog:read` |
 | PATCH | /virtual-models/{virtualModelID} | `catalog:write` |
 | PUT | /virtual-models/{virtualModelID}/metadata | `catalog:write` |
+| GET | /virtual-models/{virtualModelID}/metadata/suggestion | `catalog:read` |
 | GET | /virtual-models/{virtualModelID}/price-books | `pricing:read` |
 | POST | /virtual-models/{virtualModelID}/sell-price | `pricing:write` |
 <!-- routes:end -->

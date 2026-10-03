@@ -10,7 +10,12 @@ export UFT_KEY_PEPPER="${UFT_KEY_PEPPER:-dev-pepper-change-me}"
 export UFT_ADMIN_TOKEN="${UFT_ADMIN_TOKEN:-dev-admin-token-change-me}"
 # 仅本地：允许 http 与内网上游（mock 上游跑在 127.0.0.1），生产环境不要开
 export UFT_ADMIN_ALLOW_PRIVATE_UPSTREAM=true
-export UFT_CONFIG=config/gateway.example.yaml
+# 优先用本地配置 config/gateway.yaml（不入库，放本机的 LLM 地址等），没有再用示例配置；
+# 也可以自己先 export UFT_CONFIG 指定。
+if [ -z "${UFT_CONFIG:-}" ]; then
+  if [ -f config/gateway.yaml ]; then UFT_CONFIG=config/gateway.yaml; else UFT_CONFIG=config/gateway.example.yaml; fi
+fi
+export UFT_CONFIG
 
 RUNDIR=tmp/dev-stack
 PGDATA_DIR=tmp/testpg

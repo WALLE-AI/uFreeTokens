@@ -293,6 +293,34 @@ export interface VirtualModelMetadata {
   updated_at: ISODateTime;
 }
 
+// admin.MetadataSuggestion：GET /virtual-models/{id}/metadata/suggestion，展示元数据的建议值（只读）。
+// source：external（外部目录，detail 为抓取器名）/ vendor（内置厂商表）/ derived（由模型名、类型、能力推导）
+// / llm（?llm=1 时由 LLM 生成的介绍，detail 为所用模型）
+export type MetadataSuggestionSource = 'external' | 'vendor' | 'derived' | 'llm';
+export interface SuggestedText {
+  value: string; // 空串 = 没有建议
+  source?: MetadataSuggestionSource;
+  detail?: string;
+}
+export interface MetadataSuggestion {
+  virtual_model_id: number;
+  display_name: SuggestedText;
+  provider_display: SuggestedText;
+  description: SuggestedText;
+  tags: { value: string[] | null; source?: MetadataSuggestionSource };
+  llm_available: boolean; // 服务端配置了 LLM，可用 ?llm=1 生成介绍
+}
+
+// POST /virtual-models/metadata/autofill 的单条结果（app.autofillItemResult）
+export interface AutofillItemResult {
+  id: number;
+  ok: boolean;
+  name?: string;
+  changes?: Partial<Record<'display_name' | 'provider_display' | 'description', string>> & { tags?: string[] };
+  applied: boolean;
+  error?: { code: string; message: string };
+}
+
 // admin.VirtualModelDetail
 export interface VirtualModelDetail extends VirtualModelSummary {
   metadata: VirtualModelMetadata | null;
@@ -660,6 +688,7 @@ export interface PublishListingResult {
   channel_id: number;
   cost_book_id: number;
   sell_book_id: number; // 挂到已有虚拟模型时为 0（售价不变）
+  metadata_created: boolean; // 虚拟模型原本没有展示元数据，这次按外部目录 / 模型名自动生成了一条
 }
 
 // POST /pricesync/reference-price-lookup 的返回（USD / 百万 token）

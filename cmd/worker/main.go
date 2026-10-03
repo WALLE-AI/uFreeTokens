@@ -44,6 +44,7 @@ import (
 	"github.com/WALLE-AI/uFreeTokens/internal/config"
 	"github.com/WALLE-AI/uFreeTokens/internal/datasync"
 	"github.com/WALLE-AI/uFreeTokens/internal/health"
+	"github.com/WALLE-AI/uFreeTokens/internal/llm"
 	"github.com/WALLE-AI/uFreeTokens/internal/observability"
 	"github.com/WALLE-AI/uFreeTokens/internal/offers"
 	"github.com/WALLE-AI/uFreeTokens/internal/pricesync"
@@ -158,7 +159,7 @@ func run() error {
 	jobs.run("health_events", healthEventsInterval, func(ctx context.Context) (map[string]any, error) {
 		return drainHealthEvents(ctx, pg, rdb)
 	})
-	scheduler := newDataSyncScheduler(pg, walletSvc, logger)
+	scheduler := newDataSyncScheduler(pg, walletSvc, cfg.DataSync, logger)
 	jobs.runWithTimeout("datasync_tick", dataSyncInterval, dataSyncTickTimeout, func(ctx context.Context) (map[string]any, error) {
 		res, err := scheduler.Tick(ctx)
 		return map[string]any{"ran": res.Ran, "failed": res.Failed, "skipped": res.Skipped}, err
@@ -262,16 +263,21 @@ func (j *jobRunner) runWithTimeout(name string, interval, timeout time.Duration,
 //
 // 环境变量：
 //   - UFT_DATASYNC_ALLOW_PRIVATE=true：允许访问内网地址（经内网代理出网、或本地联调）；
-//   - UFT_DATASYNC_LLM_BASE_URL / _API_KEY / _MODEL：优惠文案抽取用的 LLM（OpenAI 兼容）；
+//   - 优惠文案抽取用的 LLM 来自配置段 datasync.llm_*（与 cmd/admin 共用；环境变量
+//     UFT_DATASYNC_LLM_BASE_URL / _MODEL，密钥 UFT_DATASYNC_LLM_API_KEY）；
 //   - UFT_DATASYNC_AA_API_KEY 等：评测来源 config 里 auth_header_env 引用的密钥；
 //   - UFT_WORKER_METRICS_ADDR：非空时在该地址暴露 /metrics（uft_datasync_* 指标）。
-func newDataSyncScheduler(pg *pgxpool.Pool, walletSvc *wallet.Service, logger *slog.Logger) *datasync.Scheduler {
+func newDataSyncScheduler(pg *pgxpool.Pool, walletSvc *wallet.Service, llmCfg config.DataSyncConfig, logger *slog.Logger) *datasync.Scheduler {
 	// 采集只用到建基准 / 写榜单 / 发布成本价，不涉及上游密钥，所以不需要 secretbox 与 pepper。
 	adminSvc := admin.New(pg, walletSvc, nil, nil)
 	offerStore := offers.NewStore(pg)
 	priceJob := &pricesync.Job{Engine: pricesync.NewEngine(pg, adminSvc), Offers: offerStore}
 	registry := priceJob.Registry()
-	registry["offer_page"] = offers.PageJob{Store: offerStore}
+	llmClient, missing := llm.FromConfig(llmCfg)
+	if llmClient == nil {
+		logger.Info("datasync LLM not configured; offer_page sources will be skipped", "missing", missing)
+	}
+	registry["offer_page"] = offers.PageJob{Store: offerStore, LLM: offers.NewLLM(llmClient)}
 	registry["tabular"] = &benchsync.Job{Pool: pg, Publisher: adminSvc}
 
 	env := datasync.NewEnv(datasync.EnvOptions{AllowPrivateNetworks: os.Getenv("UFT_DATASYNC_ALLOW_PRIVATE") == "true"})

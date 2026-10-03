@@ -6,6 +6,8 @@ import type {
   PricingPreviewResult,
   ImportModelItemInput,
   ImportModelsResult,
+  AutofillItemResult,
+  MetadataSuggestion,
   ActiveStatus,
   Channel,
   ChannelDetail,
@@ -174,6 +176,23 @@ export function setVirtualModelMetadata(
   body: { display_name: string; description: string; provider_display: string; tags: string[]; scores: ModelScores | null },
 ) {
   return request<{ status: string }>(`/virtual-models/${id}/metadata`, { method: 'PUT', body });
+}
+
+// 展示元数据建议值（只读，不落库）：后台「自动填充」用。llm=true 时介绍文案由 LLM 生成
+// （未配置 503 llm_not_configured，调用失败 502 llm_unavailable）。
+export function getVirtualModelMetadataSuggestion(id: number, opts?: { llm?: boolean; signal?: AbortSignal }) {
+  return request<MetadataSuggestion>(`/virtual-models/${id}/metadata/suggestion`, {
+    query: opts?.llm ? { llm: 1 } : undefined,
+    signal: opts?.signal,
+  });
+}
+
+// 批量自动填充展示元数据的空字段（不用 LLM、不碰评分）；dryRun 只预览将要写入的字段
+export function autofillVirtualModelMetadata(ids: number[], dryRun: boolean) {
+  return request<{ results: AutofillItemResult[] }>('/virtual-models/metadata/autofill', {
+    method: 'POST',
+    body: { virtual_model_ids: ids, dry_run: dryRun },
+  });
 }
 
 // 售价：运行时每个模型只有一个生效售价，不区分 tier（接口方案 §1.3），所以这里不传 tier。

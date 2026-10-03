@@ -110,6 +110,62 @@ func (h *adminHandlers) batchDismissListings(w http.ResponseWriter, r *http.Requ
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
+// autofillItemResult 是批量自动填充展示元数据的单条结果。
+type autofillItemResult struct {
+	ID      int64          `json:"id"`
+	OK      bool           `json:"ok"`
+	Name    string         `json:"name,omitempty"`
+	Changes map[string]any `json:"changes,omitempty"` // 将要（dry_run）或已经写入的字段
+	Applied bool           `json:"applied"`
+	Error   *apiError      `json:"error,omitempty"`
+}
+
+// autofillVirtualModelMetadata 是 POST /virtual-models/metadata/autofill：用建议值批量补齐
+// 展示元数据的空字段（不用 LLM、不碰评分、不覆盖已有内容）。逐条独立事务 + 审计，部分失败
+// 不影响其余；dry_run 只返回将要写入的字段。
+func (h *adminHandlers) autofillVirtualModelMetadata(w http.ResponseWriter, r *http.Request) {
+	var body autofillMetadataRequest
+	if err := decodeJSON(r, &body); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if len(body.VirtualModelIDs) == 0 || len(body.VirtualModelIDs) > 200 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request", "virtual_model_ids must contain 1-200 items")
+		return
+	}
+	results := make([]autofillItemResult, 0, len(body.VirtualModelIDs))
+	for _, id := range body.VirtualModelIDs {
+		var res *admin.MetadataAutofillResult
+		var err error
+		if body.DryRun {
+			res, err = h.svc.AutofillVirtualModelMetadata(r.Context(), id, true)
+		} else {
+			res, err = audited(h, r, func(ctx context.Context) (*admin.MetadataAutofillResult, auditEntry, error) {
+				before, err := h.svc.GetVirtualModelMetadata(ctx, id)
+				if err != nil {
+					return nil, auditEntry{}, err
+				}
+				res, err := h.svc.AutofillVirtualModelMetadata(ctx, id, false)
+				if err != nil {
+					return nil, auditEntry{}, err
+				}
+				return res, auditEntry{"virtual_model_metadata.autofill", "virtual_model", idStr(id), before,
+					map[string]any{"changes": res.Changes, "batch": true}}, nil
+			})
+		}
+		if err != nil {
+			code := "internal_error"
+			if errors.Is(err, admin.ErrVirtualModelNotFound) {
+				code = "not_found"
+			}
+			results = append(results, autofillItemResult{ID: id, Error: &apiError{Code: code, Message: err.Error()}})
+			continue
+		}
+		results = append(results, autofillItemResult{ID: id, OK: true, Name: res.Name, Changes: res.Changes, Applied: res.Applied})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
 // channelHealth 是 GET /channels/health（方案 G9）：active 渠道最近 ?window_minutes=（默认 15，
 // 最长 1440）的请求量、错误率、P95，加上网关熔断与 Key 冷却状态和最近的健康事件。
 func (h *adminHandlers) channelHealth(w http.ResponseWriter, r *http.Request) {

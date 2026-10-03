@@ -22,6 +22,7 @@ type ListingPublisher interface {
 	CreateVirtualModel(ctx context.Context, in admin.CreateVirtualModelInput) (*admin.VirtualModel, error)
 	CreateChannel(ctx context.Context, in admin.CreateChannelInput) (*admin.Channel, error)
 	SetSellPrice(ctx context.Context, in admin.SetSellPriceInput) (int64, error)
+	EnsureVirtualModelMetadata(ctx context.Context, vmID int64) (bool, error)
 }
 
 // UnmappedObservationInput 描述一条还不知道该挂到哪个渠道的观测——技术方案
@@ -345,6 +346,8 @@ type PublishListingResult struct {
 	ChannelID      int64
 	CostBookID     int64
 	SellBookID     int64
+	// MetadataCreated：虚拟模型原本没有展示元数据，这次按外部目录 / 模型名自动生成了一条。
+	MetadataCreated bool
 }
 
 // PublishListing 把一条待上架候选变成真实可用的配置：新建虚拟模型 -> 新建渠道
@@ -443,6 +446,11 @@ func (e *Engine) publishListingTx(ctx context.Context, listingID int64, in Publi
 	}
 
 	result := &PublishListingResult{VirtualModelID: vmID, ChannelID: ch.ID, CostBookID: costBookID}
+	// 展示元数据还没有时按建议值补一条（名称、厂商、介绍、标签），省得上架后再手工录入；
+	// 已有的（运营录过的）一律不动。
+	if result.MetadataCreated, err = e.publisher.EnsureVirtualModelMetadata(ctx, vmID); err != nil {
+		return nil, fmt.Errorf("pricesync: ensure virtual model metadata: %w", err)
+	}
 	if !reuse {
 		if result.SellBookID, err = e.publishMarkupSellPrice(ctx, vmID, costComponents, costToCNY, in.SellMarkup); err != nil {
 			return nil, err

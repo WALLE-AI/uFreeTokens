@@ -43,10 +43,12 @@ type publishListingResultDTO struct {
 	ChannelID      int64 `json:"channel_id"`
 	CostBookID     int64 `json:"cost_book_id"`
 	SellBookID     int64 `json:"sell_book_id"`
+	// MetadataCreated：本次上架为虚拟模型自动生成了展示元数据（原本没有）。
+	MetadataCreated bool `json:"metadata_created"`
 }
 
 func toPublishListingResultDTO(r pricesync.PublishListingResult) publishListingResultDTO {
-	return publishListingResultDTO{VirtualModelID: r.VirtualModelID, ChannelID: r.ChannelID, CostBookID: r.CostBookID, SellBookID: r.SellBookID}
+	return publishListingResultDTO{VirtualModelID: r.VirtualModelID, ChannelID: r.ChannelID, CostBookID: r.CostBookID, SellBookID: r.SellBookID, MetadataCreated: r.MetadataCreated}
 }
 
 // walletAdjustDTO 是人工调账的回执。wallet.Adjust 复用了计费回执结构，

@@ -26,7 +26,8 @@ type Service struct {
 	wallet    *wallet.Service
 	box       *secretbox.Box
 	pepper    []byte
-	urlPolicy UpstreamURLPolicy // 零值 = 最严格（生产）策略，见 urlpolicy.go
+	urlPolicy UpstreamURLPolicy    // 零值 = 最严格（生产）策略，见 urlpolicy.go
+	descGen   DescriptionGenerator // nil = 不能用 LLM 生成模型介绍，见 metadata_llm.go
 }
 
 func New(pool *pgxpool.Pool, walletSvc *wallet.Service, box *secretbox.Box, pepper []byte) *Service {

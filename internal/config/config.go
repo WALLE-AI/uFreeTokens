@@ -27,6 +27,17 @@ type Config struct {
 	Console  ConsoleConfig  `koanf:"console"`
 	Public   PublicConfig   `koanf:"public"`
 	Relay    RelayConfig    `koanf:"relay"`
+	DataSync DataSyncConfig `koanf:"datasync"`
+}
+
+// DataSyncConfig 是后台辅助任务共用的 LLM（OpenAI 兼容，通常就是本平台网关）：worker 的
+// 优惠文案抽取与 cmd/admin 的展示元数据「AI 生成介绍」读同一份配置。环境变量
+// UFT_DATASYNC_LLM_BASE_URL / UFT_DATASYNC_LLM_MODEL；密钥不进配置文件，只写环境变量名
+// （默认 UFT_DATASYNC_LLM_API_KEY），由进程启动时读取。三者缺一即视为未配置。
+type DataSyncConfig struct {
+	LLMBaseURL   string `koanf:"llm_base_url"`
+	LLMModel     string `koanf:"llm_model"`
+	LLMAPIKeyEnv string `koanf:"llm_api_key_env"`
 }
 
 // RelayConfig 是数据面转发的可调开关（多模态技术方案 §4、§11）。环境变量
@@ -154,6 +165,9 @@ func defaults() *koanf.Koanf {
 		"public.rankings_enabled":       true,
 		"public.rankings_show_absolute": false,
 		"public.rankings_min_accounts":  3,
+		"datasync.llm_base_url":         "",
+		"datasync.llm_model":            "",
+		"datasync.llm_api_key_env":      "UFT_DATASYNC_LLM_API_KEY",
 	}, "."), nil)
 	return k
 }

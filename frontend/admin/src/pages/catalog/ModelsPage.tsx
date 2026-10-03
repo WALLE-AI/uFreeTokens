@@ -1,13 +1,18 @@
+import { useEffect, useState } from 'react';
+import { Wand2 } from 'lucide-react';
 import { ChipToggleGroup } from '../../components/ui/index';
+import { Can } from '../../components/ui/Can';
 import { useNavigate } from 'react-router';
 import { getCatalogCounts, listVirtualModels } from '../../api/catalog';
-import { DataState, DataTable, FilterBar, KpiStrip, PageHeader, Pagination, Select, StatCard, StatusBadge, type ActiveFilter, type Column } from '../../components/ui';
+import { Button, DataState, DataTable, FilterBar, KpiStrip, PageHeader, Pagination, Select, StatCard, StatusBadge, type ActiveFilter, type Column } from '../../components/ui';
 import { useAsync } from '../../hooks/useAsync';
 import { useQueryParams } from '../../hooks/useQueryState';
 import type { VirtualModelSummary } from '../../types';
+import { MetadataAutofillModal } from './MetadataAutofillModal';
 import { MarginText, MODEL_STATUS_OPTIONS, MODEL_TYPE_OPTIONS, PriceBriefCell, TIER_OPTIONS, formatContext } from './shared';
 
 // 虚拟模型列表（UI_DESIGN.md §3.1）：KPI 异常计数可点击 = 一键加上对应筛选。
+// 勾选模型后可批量自动填充展示元数据（先预览、确认后写入，只补空字段）。
 
 const MISSING_LABELS: Record<string, string> = {
   sell_price: '缺售价',
@@ -21,6 +26,8 @@ export default function ModelsPage() {
   const page = Number(qp.page || 1);
   const pageSize = Number(qp.page_size || 20);
   const statuses = qp.status ? qp.status.split(',') : [];
+  const [selected, setSelected] = useState<Set<string | number>>(new Set());
+  const [autofillIds, setAutofillIds] = useState<number[] | null>(null);
 
   const list = useAsync(
     (signal) =>
@@ -40,6 +47,9 @@ export default function ModelsPage() {
       ),
     [qp.q, qp.status, qp.type, qp.tier, qp.missing, qp.margin, qp.sort, page, pageSize],
   );
+
+  // 翻页 / 改筛选后清空勾选，避免批量操作作用到看不见的行
+  useEffect(() => setSelected(new Set()), [list.data]);
 
   // KPI：一次请求取全部计数（GET /catalog/counts）
   const kpi = useAsync(async (signal) => {
@@ -154,12 +164,29 @@ export default function ModelsPage() {
         onClearAll={() => setQP({ q: null, status: null, type: null, tier: null, missing: null, sort: null })}
       />
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-2 text-xs mb-2">
+          <span className="text-gray-700 font-medium">{selected.size} 项已选</span>
+          <Can perm="catalog:write">
+            <Button size="sm" icon={<Wand2 className="w-3.5 h-3.5" />} onClick={() => setAutofillIds([...selected].map(Number))}>
+              自动填充展示元数据
+            </Button>
+          </Can>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+            取消选择
+          </Button>
+        </div>
+      )}
+
       <DataState loading={list.loading} error={list.error} onRetry={list.reload}>
         {list.data && (
           <DataTable
             columns={columns}
             rows={list.data.data}
             rowKey={(m) => m.id}
+            selectable
+            selected={selected}
+            onSelectedChange={setSelected}
             onRowClick={(m) => navigate(`/models/${m.id}`)}
             sort={qp.sort}
             onSortChange={(s) => setQP({ sort: s || null })}
@@ -176,6 +203,17 @@ export default function ModelsPage() {
           />
         )}
       </DataState>
+
+      <MetadataAutofillModal
+        ids={autofillIds}
+        onClose={() => setAutofillIds(null)}
+        onDone={() => {
+          setAutofillIds(null);
+          setSelected(new Set());
+          list.reload();
+          kpi.reload();
+        }}
+      />
     </div>
   );
 }

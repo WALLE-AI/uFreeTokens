@@ -124,8 +124,9 @@ type Observation struct {
 // ModelMeta 是来源接口里与价格一起给出的模型基础参数（OpenRouter / models.dev / LiteLLM 都有）。
 // 零值字段表示来源没给。Type / Capabilities 已映射到本平台的枚举（admin.EnumValues）。
 type ModelMeta struct {
-	Name             string   `json:"name,omitempty"` // 来源里的展示名
-	Type             string   `json:"type,omitempty"` // chat / embedding / image / audio / rerank
+	Name             string   `json:"name,omitempty"`        // 来源里的展示名
+	Description      string   `json:"description,omitempty"` // 来源里的模型介绍（预填展示元数据用）
+	Type             string   `json:"type,omitempty"`        // chat / embedding / image / audio / rerank
 	ContextWindow    int      `json:"context_window,omitempty"`
 	MaxOutput        int      `json:"max_output,omitempty"`
 	Capabilities     []string `json:"capabilities,omitempty"`
@@ -136,7 +137,7 @@ type ModelMeta struct {
 
 // metaOrNil：一个字段都没有时返回 nil，免得存一条空对象。
 func metaOrNil(m ModelMeta) *ModelMeta {
-	if m.Name == "" && m.Type == "" && m.ContextWindow == 0 && m.MaxOutput == 0 && len(m.Capabilities) == 0 &&
+	if m.Name == "" && m.Description == "" && m.Type == "" && m.ContextWindow == 0 && m.MaxOutput == 0 && len(m.Capabilities) == 0 &&
 		len(m.InputModalities) == 0 && len(m.OutputModalities) == 0 {
 		return nil
 	}

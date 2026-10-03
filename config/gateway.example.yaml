@@ -50,6 +50,14 @@ public:
   rankings_show_absolute: false # 是否公开绝对 token 数；默认只公开份额与排名
   rankings_min_accounts: 3      # 统计期内独立账户数低于该值的模型/作者/应用不单独上榜
 
+# 后台辅助任务共用的 LLM（OpenAI 兼容，可直接指向本平台网关）：worker 的优惠文案抽取、
+# cmd/admin 的展示元数据「AI 生成介绍」都读这里。留空 = 不启用这两项功能。
+# 也可用环境变量 UFT_DATASYNC_LLM_BASE_URL / UFT_DATASYNC_LLM_MODEL 覆盖。
+datasync:
+  llm_base_url: ""                          # 例：http://127.0.0.1:8080/v1
+  llm_model: ""                             # 例：deepseek/deepseek-chat
+  llm_api_key_env: UFT_DATASYNC_LLM_API_KEY # 密钥只放环境变量，这里写变量名
+
 # 数据面转发开关（Gateway 多模态接口补全与缺陷修复技术实施方案）
 relay:
   enforce_vision: false         # true 时带图片的对话请求只路由到具备 vision 能力的渠道
