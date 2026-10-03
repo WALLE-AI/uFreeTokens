@@ -455,7 +455,9 @@ func (s *Service) Usage(ctx context.Context, in UsageInput) (*UsageResult, error
 		var tzParam string
 		tzParam, seriesArgs = tzArg(seriesArgs)
 		bucketExpr = fmt.Sprintf(bucketExpr, tzParam)
-		rows, err := s.db(ctx).Query(ctx, fmt.Sprintf("SELECT %s AS bucket, %s AS grp, %s %s %s GROUP BY bucket, grp ORDER BY bucket, grp",
+		// 按序号分组：汇总表 usage_hourly 自带 bucket 列，GROUP BY bucket 会被 Postgres 解析成输入列（按小时），
+		// 而不是这里的输出别名（按天），导致同一天出现多行。
+		rows, err := s.db(ctx).Query(ctx, fmt.Sprintf("SELECT %s AS bucket, %s AS grp, %s %s %s GROUP BY 1, 2 ORDER BY 1, 2",
 			bucketExpr, seriesGroup, src.metrics, src.from, where), seriesArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("admin: query usage series: %w", err)

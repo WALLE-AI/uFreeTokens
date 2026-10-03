@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { agentHref } from '../../agent/brand';
 import { ActionMenu, DataState, Field, FormModal, Input, PageHeader, Switch, useToast } from '../../components/ui';
 import { listAgentJobs, runAgentJob, updateAgentJob, type AgentJob } from '../../api/agent';
 import { errorMessage } from '../../api/errors';
@@ -146,7 +147,7 @@ export default function JobsPage() {
                         items={[
                           { label: '立即运行', onClick: () => void run(j) },
                           { label: '编辑调度与预算', onClick: () => openEdit(j) },
-                          ...(j.last_session_id ? [{ label: '查看最近运行', onClick: () => navigate(`/agent/${j.last_session_id}`) }] : []),
+                          ...(j.last_session_id ? [{ label: '查看最近运行', onClick: () => navigate(agentHref(j.last_session_id!)) }] : []),
                           broken
                             ? { label: '解除熔断并启用', onClick: () => void toggle({ ...j, enabled: false }) }
                             : { label: j.enabled ? '停用' : '启用', onClick: () => void toggle(j) },

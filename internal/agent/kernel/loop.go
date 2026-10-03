@@ -108,8 +108,13 @@ func (l *Loop) Run(ctx context.Context, st *RunState) (Outcome, error) {
 		if l.Hooks.TransformContext != nil {
 			msgs = l.Hooks.TransformContext(msgs)
 		}
-		turn, err := l.Model.Stream(ctx, Request{Model: st.Model, Messages: msgs, Tools: specs}, func(s string) {
-			l.emit("text_delta", map[string]any{"text": s})
+		turn, err := l.Model.Stream(ctx, Request{Model: st.Model, Messages: msgs, Tools: specs}, func(d Delta) {
+			if d.Reasoning != "" {
+				l.emit("reasoning_delta", map[string]any{"text": d.Reasoning})
+			}
+			if d.Text != "" {
+				l.emit("text_delta", map[string]any{"text": d.Text})
+			}
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -131,7 +136,7 @@ func (l *Loop) Run(ctx context.Context, st *RunState) (Outcome, error) {
 		for i := range turn.ToolCalls {
 			turn.ToolCalls[i].ID = fmt.Sprintf("%s_%d_%d", st.Env.RunID, out.Turns, i)
 		}
-		asst := Message{Role: RoleAssistant, Content: turn.Text, ToolCalls: turn.ToolCalls}
+		asst := Message{Role: RoleAssistant, Content: turn.Text, ToolCalls: turn.ToolCalls, Reasoning: turn.Reasoning}
 		if err := l.Store.AppendMessage(ctx, st.Env.SessionID, &asst); err != nil {
 			return out, err
 		}

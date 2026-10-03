@@ -20,7 +20,7 @@ type Model struct {
 
 func New(c *llm.Client) *Model { return &Model{Client: c, MaxTokens: 4096} }
 
-func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(string)) (*kernel.Turn, error) {
+func (m *Model) Stream(ctx context.Context, req kernel.Request, onDelta func(kernel.Delta)) (*kernel.Turn, error) {
 	msgs := make([]llm.Message, 0, len(req.Messages))
 	for _, km := range req.Messages {
 		lm := llm.Message{Role: km.Role, Content: km.Content, ToolCallID: km.ToolCallID}
@@ -40,8 +40,8 @@ func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(stri
 		tools = append(tools, llm.ToolDef{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 	}
 	var onEvent func(llm.StreamEvent)
-	if onText != nil {
-		onEvent = func(e llm.StreamEvent) { onText(e.TextDelta) }
+	if onDelta != nil {
+		onEvent = func(e llm.StreamEvent) { onDelta(kernel.Delta{Text: e.TextDelta, Reasoning: e.ReasoningDelta}) }
 	}
 	opt := llm.ChatOptions{Model: req.Model, MaxTokens: req.MaxTokens, NoStream: m.noStream.Load()}
 	if opt.MaxTokens == 0 {
@@ -57,7 +57,7 @@ func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(stri
 	if err != nil {
 		return nil, err
 	}
-	turn := &kernel.Turn{Text: out.Content, Usage: kernel.Usage{In: out.Usage.PromptTokens, Out: out.Usage.CompletionTokens}}
+	turn := &kernel.Turn{Text: out.Content, Reasoning: out.Reasoning, Usage: kernel.Usage{In: out.Usage.PromptTokens, Out: out.Usage.CompletionTokens}}
 	for _, tc := range out.ToolCalls {
 		turn.ToolCalls = append(turn.ToolCalls, kernel.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
 	}

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import {
   cancelAgentSession,
   createAgentSession,
@@ -9,16 +10,21 @@ import {
   type AgentSessionDetail,
   type ContextRef,
   type DecideResult,
+  type PageContext,
 } from '../api/agent';
 import { useCan } from '../api/auth';
 import { emitMutated } from './agentEvents';
-import { ctxKey, loadAgentMeta, useAgentMeta, usePageContext } from './agentStore';
+import { ctxKey, loadAgentMeta, snapshotPage, useAgentMeta, useCurrentPage, usePageContext } from './agentStore';
 
 // AgentProvider：Dock 开关、当前会话、上下文芯片与 SSE 连接的持有者（设计 §19.2、实施方案 M1-F02）。
 // 挂在 AdminLayout 上，<Outlet/> 之外——切换路由不卸载，运行中切页面流不中断。
 // 运行状态机：idle → streaming → awaiting_approval → done / error。
 
 export type Phase = 'idle' | 'streaming' | 'awaiting_approval' | 'done' | 'error';
+
+// Dock 尺寸：标准 / 宽屏（读报表、图表）/ 全屏覆盖；页签：对话 / 历史会话 / 报表。
+export type DockSize = 'normal' | 'wide' | 'full';
+export type DockTab = 'chat' | 'history' | 'reports';
 
 export interface ApprovalData {
   id: string;
@@ -37,6 +43,7 @@ export interface ApprovalData {
 }
 
 export type LiveItem =
+  | { kind: 'thinking'; text: string }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; tool: string; args: unknown; risk: string; status: string; summary?: string; http_status?: number; duration_ms?: number }
   | { kind: 'approval'; data: ApprovalData; status: string };
@@ -52,8 +59,17 @@ interface AgentContextValue {
   dockOpen: boolean;
   setDockOpen: (open: boolean) => void;
   toggleDock: () => void;
+  dockSize: DockSize;
+  setDockSize: (size: DockSize) => void;
+  dockTab: DockTab;
+  setDockTab: (tab: DockTab) => void;
   sessionId: number | null;
   selectSession: (id: number | null) => void;
+  // openSession 选中会话并打开 Dock 的对话页签（收件箱、作业、审计等处的会话链接）。
+  openSession: (id: number) => void;
+  // reportId 是「报表」页签里正在查看的报表（null = 报表列表）；openReport 打开 Dock 并切到该报表。
+  reportId: number | null;
+  openReport: (id: number | null) => void;
   detail: AgentSessionDetail | null;
   detailError: unknown;
   reload: () => Promise<void>;
@@ -62,8 +78,13 @@ interface AgentContextValue {
   pendingUser: string | null;
   lastError: string | null;
   usage: { tokens_in: number; tokens_out: number; turns: number } | null;
+  // runStartedAt 是当前流式请求开始的时间戳（ms），用于运行中的计时；空闲时为 null。
+  runStartedAt: number | null;
   chips: ContextRef[];
   dismissChip: (c: ContextRef) => void;
+  // page 是下一条消息会带上的当前页面（用户可以对当前页面关掉，切换页面后恢复）。
+  page: PageContext | null;
+  dismissPage: () => void;
   send: (text: string) => Promise<void>;
   start: (input: StartInput) => Promise<void>;
   decide: (callId: string, decision: 'approve' | 'reject', opts?: { note?: string; args?: unknown; sessionId?: number }) => Promise<DecideResult | null>;
@@ -73,6 +94,7 @@ interface AgentContextValue {
 const Ctx = createContext<AgentContextValue | null>(null);
 
 const DOCK_KEY = 'uft_agent_dock';
+const SIZE_KEY = 'uft_agent_dock_size';
 const SESSION_KEY = 'uft_agent_session';
 
 function readNum(key: string): number | null {
@@ -90,6 +112,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   }, [allowed]);
 
   const [dockOpen, setDockOpenState] = useState(() => localStorage.getItem(DOCK_KEY) === '1');
+  const [dockSize, setDockSizeState] = useState<DockSize>(() => {
+    const v = localStorage.getItem(SIZE_KEY);
+    return v === 'wide' || v === 'full' ? v : 'normal';
+  });
+  const [dockTab, setDockTab] = useState<DockTab>('chat');
+  const [reportId, setReportId] = useState<number | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(() => readNum(SESSION_KEY));
   const [detail, setDetail] = useState<AgentSessionDetail | null>(null);
   const [detailError, setDetailError] = useState<unknown>(null);
@@ -98,6 +126,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [usage, setUsage] = useState<AgentContextValue['usage']>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef(sessionId);
@@ -108,6 +137,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(DOCK_KEY, open ? '1' : '0');
   }, []);
   const toggleDock = useCallback(() => setDockOpen(localStorage.getItem(DOCK_KEY) !== '1'), [setDockOpen]);
+  const setDockSize = useCallback((size: DockSize) => {
+    setDockSizeState(size);
+    localStorage.setItem(SIZE_KEY, size);
+  }, []);
 
   const loadDetail = useCallback(async (id: number | null) => {
     if (!id) {
@@ -120,6 +153,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       setDetail(d);
       setDetailError(null);
       const st = d.session.status;
+      // 流式请求进行中时阶段由 SSE 事件驱动：新建会话后的首次拉取可能晚于流开始返回（状态还是 idle）。
+      if (abortRef.current) return;
       setPhase(st === 'running' ? 'streaming' : st === 'awaiting_approval' ? 'awaiting_approval' : st === 'failed' ? 'error' : st === 'idle' ? 'idle' : 'done');
     } catch (err) {
       if (sessionRef.current === id) {
@@ -150,6 +185,42 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     [loadDetail],
   );
 
+  const openSession = useCallback(
+    (id: number) => {
+      selectSession(id);
+      setDockTab('chat');
+      setDockOpen(true);
+    },
+    [selectSession, setDockOpen],
+  );
+
+  const openReport = useCallback(
+    (id: number | null) => {
+      setReportId(id);
+      setDockTab('reports');
+      setDockOpen(true);
+    },
+    [setDockOpen],
+  );
+
+  // ?agent=<id> / ?report=<id> 深链：在任意页面打开 Dock 并定位到会话或报表，随后从 URL 中去掉该参数。
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const rawSession = params.get('agent');
+    const rawReport = params.get('report');
+    if (rawSession == null && rawReport == null) return;
+    const sid = Number(rawSession);
+    const rid = Number(rawReport);
+    if (rawSession != null && Number.isFinite(sid) && sid > 0) openSession(sid);
+    if (rawReport != null && Number.isFinite(rid) && rid > 0) openReport(rid);
+    params.delete('agent');
+    params.delete('report');
+    const qs = params.toString();
+    navigate({ pathname: location.pathname, search: qs ? `?${qs}` : '', hash: location.hash }, { replace: true });
+  }, [location.search, location.pathname, location.hash, navigate, openSession, openReport]);
+
   useEffect(() => {
     if (enabled && sessionId) void loadDetail(sessionId);
     // 只在启用状态变化时恢复一次
@@ -169,13 +240,17 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       case 'run_started':
         setPhase('streaming');
         break;
-      case 'text_delta':
+      case 'reasoning_delta':
+      case 'text_delta': {
+        // 连续同类增量合并为一段；思考与正文交替时各自成段。
+        const kind = e.event === 'reasoning_delta' ? 'thinking' : 'text';
         setLive((items) => {
           const last = items[items.length - 1];
-          if (last?.kind === 'text') return [...items.slice(0, -1), { kind: 'text', text: last.text + String(d.text ?? '') }];
-          return [...items, { kind: 'text', text: String(d.text ?? '') }];
+          if (last?.kind === kind) return [...items.slice(0, -1), { kind, text: last.text + String(d.text ?? '') }];
+          return [...items, { kind, text: String(d.text ?? '') }];
         });
         break;
+      }
       case 'tool_call':
         setLive((items) => [
           ...items,
@@ -230,6 +305,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       abortRef.current = controller;
       setLastError(null);
       setPhase('streaming');
+      setRunStartedAt(Date.now());
       try {
         await fn(controller.signal);
       } catch (err) {
@@ -238,7 +314,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           setPhase('error');
         }
       } finally {
-        if (abortRef.current === controller) abortRef.current = null;
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setRunStartedAt(null);
+        }
         if (sessionRef.current === id) {
           await loadDetail(id);
           setLive([]);
@@ -253,17 +332,28 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const chips = useMemo(() => pageCtx.filter((c) => !dismissed.has(ctxKey(c))), [pageCtx, dismissed]);
   const dismissChip = useCallback((c: ContextRef) => setDismissed((s) => new Set(s).add(ctxKey(c))), []);
 
+  const currentPage = useCurrentPage();
+  const [pageOff, setPageOff] = useState<string | null>(null);
+  const page = currentPage && currentPage.path !== pageOff ? currentPage : null;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const dismissPage = useCallback(() => setPageOff(currentPage?.path ?? null), [currentPage]);
+  // pageForSend 在发送时取页面快照（含 useAgentPageState 登记的状态）；用户关掉页面芯片时不带。
+  const pageForSend = useCallback(() => (pageRef.current ? snapshotPage() : null), []);
+
   const start = useCallback(
     async (input: StartInput) => {
       setDockOpen(true);
+      setDockTab('chat');
       const sess = await createAgentSession({ title: input.title ?? '', playbook: input.playbook ?? '', context_ref: input.context_ref });
       selectSession(sess.id);
       if (input.message) {
         setPendingUser(input.message);
-        await runStream(sess.id, (signal) => sendAgentMessage(sess.id, input.message!, onEvent, signal));
+        const pg = pageForSend();
+        await runStream(sess.id, (signal) => sendAgentMessage(sess.id, input.message!, onEvent, signal, pg));
       }
     },
-    [onEvent, runStream, selectSession, setDockOpen],
+    [onEvent, pageForSend, runStream, selectSession, setDockOpen],
   );
 
   const send = useCallback(
@@ -276,9 +366,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       }
       setPendingUser(text);
       const sid = id;
-      await runStream(sid, (signal) => sendAgentMessage(sid, text, onEvent, signal));
+      const pg = pageForSend();
+      await runStream(sid, (signal) => sendAgentMessage(sid, text, onEvent, signal, pg));
     },
-    [chips, detail?.read_only, onEvent, runStream, selectSession],
+    [chips, detail?.read_only, onEvent, pageForSend, runStream, selectSession],
   );
 
   const decide = useCallback<AgentContextValue['decide']>(
@@ -321,8 +412,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       dockOpen: enabled && dockOpen,
       setDockOpen,
       toggleDock,
+      dockSize,
+      setDockSize,
+      dockTab,
+      setDockTab,
       sessionId,
       selectSession,
+      openSession,
+      reportId,
+      openReport,
       detail,
       detailError,
       reload,
@@ -331,14 +429,17 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       pendingUser,
       lastError,
       usage,
+      runStartedAt,
       chips,
       dismissChip,
+      page,
+      dismissPage,
       send,
       start,
       decide,
       cancel,
     }),
-    [enabled, dockOpen, setDockOpen, toggleDock, sessionId, selectSession, detail, detailError, reload, phase, live, pendingUser, lastError, usage, chips, dismissChip, send, start, decide, cancel],
+    [enabled, dockOpen, setDockOpen, toggleDock, dockSize, setDockSize, dockTab, sessionId, selectSession, openSession, reportId, openReport, detail, detailError, reload, phase, live, pendingUser, lastError, usage, runStartedAt, chips, dismissChip, page, dismissPage, send, start, decide, cancel],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

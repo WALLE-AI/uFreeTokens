@@ -52,14 +52,17 @@ type ChatOptions struct {
 	NoStream bool
 }
 
-// StreamEvent 是流式过程中的增量事件。
+// StreamEvent 是流式过程中的增量事件；一次只有一个字段非空。
 type StreamEvent struct {
 	TextDelta string
+	// ReasoningDelta 是推理模型的思考增量（reasoning_content / reasoning 字段或 <think>…</think> 段）。
+	ReasoningDelta string
 }
 
 // Completion 是一轮调用的完整结果。
 type Completion struct {
 	Content      string
+	Reasoning    string // 推理模型的思考内容（不含在 Content 里）
 	ToolCalls    []ToolCall
 	Usage        Usage
 	FinishReason string
@@ -116,7 +119,8 @@ func toWire(msgs []Message) []wireMessage {
 }
 
 // ChatTools 发一轮带工具定义的对话。流式模式下每段文本增量通过 onEvent 回调（可为 nil）；
-// 推理模型的 reasoning_content 与 <think>…</think> 段被丢弃。返回完整的文本、工具调用与用量。
+// 推理模型的 reasoning_content 与 <think>…</think> 段与正文分开，通过 ReasoningDelta 回调并放进 Completion.Reasoning。
+// 返回完整的文本、思考、工具调用与用量。
 func (c *Client) ChatTools(ctx context.Context, msgs []Message, tools []ToolDef, opt ChatOptions, onEvent func(StreamEvent)) (*Completion, error) {
 	model := opt.Model
 	if model == "" {
@@ -195,8 +199,10 @@ func parseNonStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error)
 	var cr struct {
 		Choices []struct {
 			Message struct {
-				Content   string         `json:"content"`
-				ToolCalls []wireToolCall `json:"tool_calls"`
+				Content          string         `json:"content"`
+				ReasoningContent string         `json:"reasoning_content"`
+				Reasoning        string         `json:"reasoning"`
+				ToolCalls        []wireToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -206,12 +212,22 @@ func parseNonStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error)
 		return nil, fmt.Errorf("llm: unexpected response: %s", Truncate(string(data), 300))
 	}
 	ch := cr.Choices[0]
-	out := &Completion{FinishReason: ch.FinishReason, Content: StripThink(ch.Message.Content)}
+	f := &thinkFilter{}
+	text, inline := f.feed(ch.Message.Content)
+	tailText, tailThink := f.flush()
+	out := &Completion{
+		FinishReason: ch.FinishReason,
+		Content:      text + tailText,
+		Reasoning:    ch.Message.ReasoningContent + ch.Message.Reasoning + inline + tailThink,
+	}
 	for _, tc := range ch.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
 	if cr.Usage != nil {
 		out.Usage = *cr.Usage
+	}
+	if onEvent != nil && out.Reasoning != "" {
+		onEvent(StreamEvent{ReasoningDelta: out.Reasoning})
 	}
 	if onEvent != nil && out.Content != "" {
 		onEvent(StreamEvent{TextDelta: out.Content})
@@ -227,9 +243,19 @@ type partialCall struct {
 func parseStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error) {
 	out := &Completion{}
 	calls := map[int]*partialCall{}
-	var text strings.Builder
+	var text, reasoning strings.Builder
 	think := &thinkFilter{}
-	emit := func(s string) {
+	emitReasoning := func(s string) {
+		if s == "" {
+			return
+		}
+		reasoning.WriteString(s)
+		if onEvent != nil {
+			onEvent(StreamEvent{ReasoningDelta: s})
+		}
+	}
+	emit := func(s, thought string) {
+		emitReasoning(thought)
 		if s == "" {
 			return
 		}
@@ -254,8 +280,10 @@ func parseStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string         `json:"content"`
-					ToolCalls []wireToolCall `json:"tool_calls"`
+					Content          string         `json:"content"`
+					ReasoningContent string         `json:"reasoning_content"`
+					Reasoning        string         `json:"reasoning"`
+					ToolCalls        []wireToolCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -274,6 +302,7 @@ func parseStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error) {
 			out.Usage = *chunk.Usage
 		}
 		for _, ch := range chunk.Choices {
+			emitReasoning(ch.Delta.ReasoningContent + ch.Delta.Reasoning)
 			emit(think.feed(ch.Delta.Content))
 			for i, tc := range ch.Delta.ToolCalls {
 				idx := i
@@ -306,6 +335,7 @@ func parseStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error) {
 	}
 	emit(think.flush())
 	out.Content = text.String()
+	out.Reasoning = reasoning.String()
 	idxs := make([]int, 0, len(calls))
 	for i := range calls {
 		idxs = append(idxs, i)
@@ -324,10 +354,12 @@ func parseStream(r io.Reader, onEvent func(StreamEvent)) (*Completion, error) {
 // StripThink 去掉推理模型输出中的 <think>…</think> 段。
 func StripThink(s string) string {
 	f := &thinkFilter{}
-	return f.feed(s) + f.flush()
+	text, _ := f.feed(s)
+	tail, _ := f.flush()
+	return text + tail
 }
 
-// thinkFilter 在流式文本里丢弃 <think>…</think> 段；标签可能被切在两个增量之间，
+// thinkFilter 在流式文本里把 <think>…</think> 段与正文分开；标签可能被切在两个增量之间，
 // 所以末尾可能是标签前缀的几个字符先扣住，等下一段再判断。
 type thinkFilter struct {
 	inThink bool
@@ -339,19 +371,20 @@ const (
 	thinkClose = "</think>"
 )
 
-func (f *thinkFilter) feed(s string) string {
+// feed 返回这段增量里的正文与思考内容。
+func (f *thinkFilter) feed(s string) (string, string) {
 	s = f.pending + s
 	f.pending = ""
-	var out strings.Builder
+	var out, thought strings.Builder
 	for s != "" {
 		tag := thinkOpen
+		dst := &out
 		if f.inThink {
 			tag = thinkClose
+			dst = &thought
 		}
 		if i := strings.Index(s, tag); i >= 0 {
-			if !f.inThink {
-				out.WriteString(s[:i])
-			}
+			dst.WriteString(s[:i])
 			f.inThink = !f.inThink
 			s = s[i+len(tag):]
 			continue
@@ -364,20 +397,19 @@ func (f *thinkFilter) feed(s string) string {
 				break
 			}
 		}
-		if !f.inThink {
-			out.WriteString(s[:len(s)-keep])
-		}
+		dst.WriteString(s[:len(s)-keep])
 		f.pending = s[len(s)-keep:]
 		break
 	}
-	return out.String()
+	return out.String(), thought.String()
 }
 
-func (f *thinkFilter) flush() string {
+// flush 返回扣住的尾部（未闭合的 <think> 段算作思考）。
+func (f *thinkFilter) flush() (string, string) {
 	p := f.pending
 	f.pending = ""
 	if f.inThink {
-		return ""
+		return "", p
 	}
-	return p
+	return p, ""
 }

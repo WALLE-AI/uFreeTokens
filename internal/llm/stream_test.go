@@ -40,7 +40,7 @@ func TestChatTools_TextStream(t *testing.T) {
 		`: ping`,
 		`data: {"choices":[{"delta":{"content":"<thi"}}]}`,
 		`data: {"choices":[{"delta":{"content":"nk>hidden</think>你好"}}]}`,
-		`data: {"choices":[{"delta":{"reasoning_content":"ignored","content":"，世界"},"finish_reason":"stop"}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":"，再想想","content":"，世界"},"finish_reason":"stop"}]}`,
 		`data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5}}`,
 		`data: [DONE]`,
 	}, func(p map[string]any) {
@@ -51,9 +51,10 @@ func TestChatTools_TextStream(t *testing.T) {
 			t.Errorf("stream_options = %v", p["stream_options"])
 		}
 	})
-	var deltas []string
+	var deltas, thoughts []string
 	out, err := c.ChatTools(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, ChatOptions{}, func(e StreamEvent) {
 		deltas = append(deltas, e.TextDelta)
+		thoughts = append(thoughts, e.ReasoningDelta)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +64,9 @@ func TestChatTools_TextStream(t *testing.T) {
 	}
 	if strings.Join(deltas, "") != out.Content {
 		t.Errorf("deltas = %q", deltas)
+	}
+	if out.Reasoning != "hidden，再想想" || strings.Join(thoughts, "") != out.Reasoning {
+		t.Errorf("Reasoning = %q, thoughts = %q", out.Reasoning, thoughts)
 	}
 	if out.Usage.PromptTokens != 12 || out.Usage.CompletionTokens != 5 || out.FinishReason != "stop" {
 		t.Errorf("usage/finish = %+v %q", out.Usage, out.FinishReason)

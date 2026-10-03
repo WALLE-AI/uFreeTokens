@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/agent/kernel"
+	"github.com/WALLE-AI/uFreeTokens/internal/agent/tools/analytics"
 	"github.com/WALLE-AI/uFreeTokens/internal/agent/tools/research"
 	"github.com/WALLE-AI/uFreeTokens/internal/agent/tools/routes"
 )
@@ -17,6 +18,10 @@ type AgentToolDeps struct {
 	Fetch research.Fetcher
 	// AllowDomains 返回 fetch_page 的出站白名单。
 	AllowDomains func(ctx context.Context) ([]string, error)
+	// Datasets 存放 query_analytics 的结果；nil 时结果只返回给模型、不落库，也不提供图表与报表工具。
+	Datasets analytics.Store
+	// Reports 存放 create_report 的报表；nil 时不提供 create_report。
+	Reports analytics.ReportStore
 }
 
 // BuildAgentTools 构建全部工具：绑定路由的读/写工具 + 研究工具。任何工具声明与路由表不一致都返回错误
@@ -36,6 +41,13 @@ func BuildAgentTools(d AgentToolDeps) ([]kernel.Tool, error) {
 		tools = append(tools, t)
 	}
 	tools = append(tools, &research.SearchCatalog{Dispatcher: disp})
+	tools = append(tools, &analytics.QueryAnalytics{Dispatcher: disp, Store: d.Datasets})
+	if d.Datasets != nil {
+		tools = append(tools, &analytics.GetDataset{Store: d.Datasets}, &analytics.RenderChart{Store: d.Datasets})
+		if d.Reports != nil {
+			tools = append(tools, &analytics.CreateReport{Store: d.Datasets, Reports: d.Reports})
+		}
+	}
 	if d.Fetch != nil && d.AllowDomains != nil {
 		tools = append(tools, &research.FetchPage{Env: d.Fetch, AllowDomains: d.AllowDomains})
 	}

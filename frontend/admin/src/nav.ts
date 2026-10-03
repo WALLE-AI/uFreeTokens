@@ -2,7 +2,6 @@ import type { LucideIcon } from 'lucide-react';
 import {
   AppWindow,
   ArrowLeftRight,
-  Bot,
   Inbox,
   Timer,
   BarChart3,
@@ -69,8 +68,7 @@ export const NAV_ITEMS: NavItem[] = [
     badge: (c) => ({ count: c.offers_new ?? 0, alert: false }),
   },
 
-  // 智能体（位于"待办"之后：提案本质上也是待办，设计 §19.4）
-  { path: '/agent', label: '运营助手', icon: Bot, group: '智能体', gotoKey: 'i', perm: 'agent:use', requires: 'agent' },
+  // 智能体（位于"待办"之后：提案本质上也是待办，设计 §19.4）。助手本身没有独立页面，入口是全局 Dock（⌘J / G I）。
   {
     path: '/agent/inbox',
     label: '提案收件箱',

@@ -4,6 +4,7 @@ package memstore
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/WALLE-AI/uFreeTokens/internal/agent/kernel"
 )
@@ -30,6 +31,7 @@ func (s *Store) AppendMessage(_ context.Context, sid int64, m *kernel.Message) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m.Seq = len(s.Messages[sid]) + 1
+	m.CreatedAt = time.Now()
 	s.Messages[sid] = append(s.Messages[sid], *m)
 	return nil
 }

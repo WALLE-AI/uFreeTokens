@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
+import { agentHref } from '../../agent/brand';
 import { MessagesSquare, Timer } from 'lucide-react';
 import { Button, DataState, PageHeader, Pills, useToast } from '../../components/ui';
 import { decideToolCall, listAgentProposals, type AgentProposal } from '../../api/agent';
@@ -238,7 +239,7 @@ export default function InboxPage() {
                 <span>·</span>
                 <span>{pbTitle(current.playbook)}</span>
                 <span>·</span>
-                <Link to={`/agent/${current.session_id}`} className="text-purple-700 hover:underline">
+                <Link to={agentHref(current.session_id)} className="text-purple-700 hover:underline">
                   {current.job_id ? '⏱ 来自作业会话' : '💬 查看会话'}：{current.session_title || `#${current.session_id}`}
                 </Link>
               </div>

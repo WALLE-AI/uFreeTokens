@@ -2,12 +2,16 @@ import { buildHeaders, buildURL, handleUnauthorized, request } from './client';
 import { ApiError } from './errors';
 import type {
   AgentMetaResponse,
+  AgentReportDetail,
   AgentSessionDetail,
   CreateSessionInput,
+  CursorPage_Report,
   CursorPage_Session,
+  Dataset,
   DecideInput,
   DecideResult,
   Job,
+  PageContext,
   Proposal,
   Session,
   UpdateInput,
@@ -20,8 +24,12 @@ export type {
   AgentMetaResponse,
   AgentSessionDetail,
   DecideResult,
+  AgentReportDetail,
+  Dataset as AgentDataset,
+  Report as AgentReport,
   Job as AgentJob,
   Message as AgentMessage,
+  PageContext,
   Proposal as AgentProposal,
   Session as AgentSession,
   ToolCallView as AgentToolCall,
@@ -158,10 +166,55 @@ export async function streamAgent(path: string, body: unknown, onEvent: (e: Agen
   parser.end();
 }
 
-export function sendAgentMessage(sessionId: number, content: string, onEvent: (e: AgentEvent) => void, signal?: AbortSignal) {
-  return streamAgent(`/agent/sessions/${sessionId}/messages`, { content }, onEvent, signal);
+// page 是发送时所在的后台页面（全局助手据此理解「这个」「当前筛选」），只作用于本次运行。
+export function sendAgentMessage(sessionId: number, content: string, onEvent: (e: AgentEvent) => void, signal?: AbortSignal, page?: PageContext | null) {
+  return streamAgent(`/agent/sessions/${sessionId}/messages`, page ? { content, page } : { content }, onEvent, signal);
 }
 
 export function decideToolCallStream(sessionId: number, callId: string, body: DecideInput, onEvent: (e: AgentEvent) => void, signal?: AbortSignal) {
   return streamAgent(`/agent/sessions/${sessionId}/tool-calls/${encodeURIComponent(callId)}/decision?stream=1`, body, onEvent, signal);
+}
+
+// ---------- 数据集与报表（《运营后台全局助手执行方案》P2/P3） ----------
+
+const datasetCache = new Map<number, Promise<Dataset>>();
+
+// getAgentDataset 读取助手数据集（写入后不再修改，按 ID 缓存）。
+export function getAgentDataset(id: number): Promise<Dataset> {
+  let p = datasetCache.get(id);
+  if (!p) {
+    p = request<Dataset>(`/agent/datasets/${id}`);
+    p.catch(() => datasetCache.delete(id));
+    datasetCache.set(id, p);
+  }
+  return p;
+}
+
+export function listAgentReports(query: { scope?: 'mine' | 'all'; q?: string; before?: string; limit?: number } = {}, signal?: AbortSignal): Promise<CursorPage_Report> {
+  return request('/agent/reports', { query, signal });
+}
+
+export function getAgentReport(id: number, signal?: AbortSignal): Promise<AgentReportDetail> {
+  return request(`/agent/reports/${id}`, { signal });
+}
+
+export function updateAgentReport(id: number, body: { title?: string; visibility?: 'private' | 'shared' }) {
+  return request(`/agent/reports/${id}`, { method: 'PATCH', body });
+}
+
+export function deleteAgentReport(id: number): Promise<void> {
+  return request(`/agent/reports/${id}`, { method: 'DELETE' });
+}
+
+// downloadAgentFile 带会话令牌下载导出文件（报表 xlsx / md、数据集 csv）。
+export async function downloadAgentFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(buildURL(path), { headers: buildHeaders(), credentials: 'same-origin' });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw await ApiError.fromResponse(res);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

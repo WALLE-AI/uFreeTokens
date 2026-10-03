@@ -119,12 +119,12 @@ export const router = createBrowserRouter([
           { path: 'admin-users', handle: crumb('管理员与角色'), lazy: page(() => import('./pages/system/AdminUsersPage')) },
           {
             path: 'agent',
-            handle: crumb('运营助手'),
+            handle: crumb('智能体'),
             children: [
-              { index: true, lazy: page(() => import('./pages/agent/AgentPage')) },
+              { index: true, lazy: page(() => import('./pages/agent/AgentRedirect')) },
               { path: 'inbox', handle: crumb('提案收件箱'), lazy: page(() => import('./pages/agent/InboxPage')) },
               { path: 'jobs', handle: crumb('智能作业'), lazy: page(() => import('./pages/agent/JobsPage')) },
-              { path: ':sessionId', handle: crumb((p) => `会话 #${p.sessionId}`), lazy: page(() => import('./pages/agent/AgentPage')) },
+              { path: ':sessionId', lazy: page(() => import('./pages/agent/AgentRedirect')) },
             ],
           },
           { path: '*', handle: crumb('页面不存在'), Component: NotFoundPage },

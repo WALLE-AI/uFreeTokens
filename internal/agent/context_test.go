@@ -81,11 +81,32 @@ func TestSystemPrompt_IncludesBoundariesPlaybookAndContext(t *testing.T) {
 	s := buildSystemPrompt(promptInput{
 		Principal: &adminauth.Principal{AdminID: 3, Name: "alice", Roles: []string{"pricing"}, Permissions: []adminauth.Permission{"pricing:read"}},
 		Playbook:  pb, Context: []ContextRef{{Type: "price_change_request", ID: "88", Label: "调价 #88"}},
+		Page: &PageContext{Path: "/analytics", Title: "用量分析", State: map[string]string{"range": "7d", "group_by": "virtual_model"}},
 	})
-	for _, want := range []string{"trusted=\"false\"", "alice", "pricing:read", "调价审批预审", "调价 #88"} {
+	for _, want := range []string{"trusted=\"false\"", "alice", "pricing:read", "调价审批预审", "调价 #88", AssistantName, "用量分析（/analytics）", "group_by=virtual_model；range=7d"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("system prompt missing %q", want)
 		}
+	}
+}
+
+func TestPageContextValidate(t *testing.T) {
+	var nilPage *PageContext
+	if err := nilPage.Validate(); err != nil {
+		t.Errorf("nil page: %v", err)
+	}
+	if err := (&PageContext{Path: "/logs", State: map[string]string{"status": "error"}}).Validate(); err != nil {
+		t.Errorf("valid page: %v", err)
+	}
+	if err := (&PageContext{Title: "no path"}).Validate(); err == nil {
+		t.Error("missing path accepted")
+	}
+	big := map[string]string{}
+	for i := 0; i < 31; i++ {
+		big[strings.Repeat("k", i+1)] = "v"
+	}
+	if err := (&PageContext{Path: "/", State: big}).Validate(); err == nil {
+		t.Error("too many state keys accepted")
 	}
 }
 

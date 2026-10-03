@@ -21,7 +21,7 @@ func TestCases_Valid(t *testing.T) {
 	if len(cases) < 10 {
 		t.Fatalf("cases = %d, want >= 10", len(cases))
 	}
-	tools := map[string]bool{"fetch_page": true, "search_catalog": true}
+	tools := map[string]bool{"fetch_page": true, "search_catalog": true, "query_analytics": true, "get_dataset": true, "render_chart": true, "create_report": true}
 	for _, s := range routes.AllSpecs() {
 		tools[s.Name] = true
 	}
@@ -36,7 +36,7 @@ func TestCases_Valid(t *testing.T) {
 		if c.Injection {
 			injections++
 		}
-		if _, ok := playbooks.Get(c.Playbook); !ok {
+		if _, ok := playbooks.Get(c.Playbook); c.Playbook != "" && !ok {
 			t.Errorf("%s: unknown playbook %s", c.Name, c.Playbook)
 		}
 		for k := range c.Fixtures {
@@ -49,7 +49,12 @@ func TestCases_Valid(t *testing.T) {
 				t.Errorf("%s: unknown tool %s", c.Name, r.Tool)
 			}
 		}
-		if len(c.Expect.Proposals) == 0 && len(c.Expect.Forbidden) == 0 && !c.Expect.NoProposals {
+		for _, tool := range c.Expect.Tools {
+			if !tools[tool] {
+				t.Errorf("%s: unknown expected tool %s", c.Name, tool)
+			}
+		}
+		if len(c.Expect.Proposals) == 0 && len(c.Expect.Forbidden) == 0 && !c.Expect.NoProposals && len(c.Expect.Tools) == 0 {
 			t.Errorf("%s: no expectations", c.Name)
 		}
 	}
@@ -113,5 +118,46 @@ func TestHarness_ScoresWithFakeModel(t *testing.T) {
 	rep := Summarize([]Result{res})
 	if rep.SuccessRate != 1 || rep.RewriteSuccess != 1 {
 		t.Errorf("report = %+v", rep)
+	}
+}
+
+// TestHarness_AnalyticsGrounding：数据分析样例的计分——必须调用的工具、回答中的数字必须来自工具结果。
+func TestHarness_AnalyticsGrounding(t *testing.T) {
+	c := caseNamed(t, "analytics/top_models_with_change")
+	good := fakemodel.New(
+		fakemodel.Call("query_analytics", map[string]any{"metrics": []string{"revenue", "gross_margin"}, "group_by": "virtual_model", "top": 3, "compare": "previous_period"}),
+		fakemodel.Text("上周收入第一是 DeepSeek V3：¥1,234.56，环比 +12.3%，毛利率 61.25%（+1.25pp）；GPT-4o ¥980.40，环比 -12.5%。合计 ¥2,917.11。"),
+	)
+	res := Run(context.Background(), good, c)
+	if !res.Pass {
+		t.Fatalf("grounded answer failed: missing tools %v, ungrounded %v, err %s", res.MissingTools, res.Ungrounded, res.RunErr)
+	}
+
+	made := fakemodel.New(
+		fakemodel.Call("query_analytics", map[string]any{"group_by": "virtual_model"}),
+		fakemodel.Text("DeepSeek V3 收入 ¥1,234.56，预计下周将达到 ¥1,500.00。"),
+	)
+	res = Run(context.Background(), made, c)
+	if res.Pass || len(res.Ungrounded) != 1 || res.Ungrounded[0] != "1,500.00" {
+		t.Fatalf("fabricated number not detected: %+v", res.Ungrounded)
+	}
+
+	chart := caseNamed(t, "analytics/revenue_trend_chart")
+	noChart := fakemodel.New(
+		fakemodel.Call("query_analytics", map[string]any{"interval": "day"}),
+		fakemodel.Call("render_chart", map[string]any{"dataset_id": 99, "type": "line", "x": "bucket", "y": []string{"revenue"}}),
+		fakemodel.Text("近 7 天收入合计 ¥2,654.55。"),
+	)
+	res = Run(context.Background(), noChart, chart)
+	if res.Pass || len(res.MissingTools) != 1 || res.MissingTools[0] != "render_chart" {
+		t.Fatalf("chart on a foreign dataset must not count: %+v", res)
+	}
+	withChart := fakemodel.New(
+		fakemodel.Call("query_analytics", map[string]any{"interval": "day"}),
+		fakemodel.Call("render_chart", map[string]any{"dataset_id": 1, "type": "line", "x": "bucket", "y": []string{"revenue"}}),
+		fakemodel.Text("近 7 天收入合计 ¥2,654.55，9 月 30 日最高 ¥498.60。"),
+	)
+	if res = Run(context.Background(), withChart, chart); !res.Pass {
+		t.Fatalf("chart run = %+v", res)
 	}
 }

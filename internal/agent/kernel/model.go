@@ -8,6 +8,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // 消息角色。summary 是上下文压缩生成的摘要，发给模型时作为 user 消息；report 是批处理运行报告。
@@ -28,6 +29,10 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Compacted  bool       `json:"compacted,omitempty"`
+	// Reasoning 是 assistant 这一轮的思考内容：只用于展示，不再发回给模型。
+	Reasoning string `json:"reasoning,omitempty"`
+	// CreatedAt 由存储层回填（读取时），用于前端计算运行耗时。
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ToolCall 是模型发起的一次工具调用；Arguments 是模型生成的 JSON 文本（未必合法）。
@@ -54,13 +59,20 @@ type Request struct {
 // Turn 是模型一轮的输出。
 type Turn struct {
 	Text      string
+	Reasoning string
 	ToolCalls []ToolCall
 	Usage     Usage
 }
 
-// Model 是 LLM 的抽象。onText 收到流式文本增量（可能为 nil）。
+// Delta 是一次流式增量；Text 与 Reasoning 一次只有一个非空。
+type Delta struct {
+	Text      string
+	Reasoning string
+}
+
+// Model 是 LLM 的抽象。onDelta 收到流式正文 / 思考增量（可能为 nil）。
 type Model interface {
-	Stream(ctx context.Context, req Request, onText func(string)) (*Turn, error)
+	Stream(ctx context.Context, req Request, onDelta func(Delta)) (*Turn, error)
 }
 
 // ToolSpec 是发给模型的工具声明 + 内核需要的元数据。
@@ -83,4 +95,6 @@ type Risk string
 const (
 	RiskRead  Risk = "read"
 	RiskWrite Risk = "write"
+	// RiskArtifact：只产出助手自己的成果物（报表），不改业务数据——直接执行、不走审批，但会落库。
+	RiskArtifact Risk = "artifact"
 )

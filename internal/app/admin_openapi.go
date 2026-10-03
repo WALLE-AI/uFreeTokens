@@ -83,10 +83,11 @@ type referencePriceLookupResponse struct {
 }
 
 type routeSchema struct {
-	req    any  // nil = 无请求体
-	resp   any  // nil = 无响应体（204）或未登记
-	status int  // 成功状态码，0 = 200
-	sse    bool // 响应为 text/event-stream（resp 描述单个事件）
+	req    any    // nil = 无请求体
+	resp   any    // nil = 无响应体（204）或未登记
+	status int    // 成功状态码，0 = 200
+	sse    bool   // 响应为 text/event-stream（resp 描述单个事件）
+	file   string // 非空时响应是下载文件，值为 Content-Type（resp 不用）
 }
 
 // routeSchemas 按 "METHOD pattern" 登记请求/响应类型；TestAdminOpenAPI_EveryRouteDocumented
@@ -203,6 +204,7 @@ var routeSchemas = map[string]routeSchema{
 	"POST /pending-model-listings/batch-dismiss":                 {req: batchDismissRequest{}, resp: batchItemsResponse{}},
 	"GET /stats/overview":                                        {resp: admin.StatsOverview{}},
 	"GET /stats/usage":                                           {resp: admin.UsageResult{}},
+	"POST /analytics/query":                                      {req: admin.AnalyticsQuery{}, resp: admin.AnalyticsDataset{}},
 	"GET /request-logs":                                          {resp: cursorPage[admin.RequestLogItem]{}},
 	"GET /request-logs/{requestID}":                              {resp: admin.RequestLogDetail{}},
 	"GET /audit-logs":                                            {resp: cursorPage[admin.AuditLogEntry]{}},
@@ -220,6 +222,13 @@ var routeSchemas = map[string]routeSchema{
 	"POST /agent/sessions/{sessionID}/cancel":                       {resp: statusResponse{}},
 	"POST /agent/sessions/{sessionID}/tool-calls/{callID}/decision": {req: agent.DecideInput{}, resp: agent.DecideResult{}},
 	"GET /agent/proposals":                                          {resp: agentProposalsResponse{}},
+	"GET /agent/datasets/{datasetID}":                               {resp: pgstore.Dataset{}},
+	"GET /agent/datasets/{datasetID}/export":                        {file: "text/csv"},
+	"GET /agent/reports":                                            {resp: cursorPage[pgstore.Report]{}},
+	"GET /agent/reports/{reportID}":                                 {resp: agentReportDetail{}},
+	"PATCH /agent/reports/{reportID}":                               {req: agentUpdateReportRequest{}, resp: pgstore.Report{}},
+	"DELETE /agent/reports/{reportID}":                              {status: http.StatusNoContent},
+	"GET /agent/reports/{reportID}/export":                          {file: "application/octet-stream"},
 	"GET /agent/jobs":                                               {resp: listData[jobs.Job]{}},
 	"PATCH /agent/jobs/{jobID}":                                     {req: jobs.UpdateInput{}, resp: jobs.Job{}},
 	"POST /agent/jobs/{jobID}/run":                                  {resp: jobs.Job{}, status: http.StatusAccepted},
@@ -228,8 +237,9 @@ var routeSchemas = map[string]routeSchema{
 // ---------- 反射 → JSON Schema ----------
 
 type schemaGen struct {
-	defs  map[string]any          // components.schemas
-	types map[string]reflect.Type // 名字 → 类型（生成 TS 用）
+	defs      map[string]any          // components.schemas
+	types     map[string]reflect.Type // 名字 → 类型（生成 TS 用）
+	conflicts []string                // 同名不同类型的 schema
 }
 
 var (
@@ -295,6 +305,10 @@ func (g *schemaGen) schema(t reflect.Type) any {
 			return map[string]any{"type": "object", "properties": props, "required": required}
 		}
 		name := schemaName(t)
+		if prev, ok := g.types[name]; ok && prev != t {
+			// 不同包的同名类型会互相覆盖（前端只拿到其中一个的形状）：生成直接失败，改名后再生成。
+			g.conflicts = append(g.conflicts, fmt.Sprintf("%s: %s vs %s", name, prev, t))
+		}
 		if _, ok := g.defs[name]; !ok {
 			g.defs[name] = nil // 先占位，处理递归类型
 			g.types[name] = t
@@ -394,6 +408,9 @@ func buildOpenAPI() (map[string]any, *schemaGen, error) {
 			status = http.StatusOK
 		}
 		resp := map[string]any{"description": http.StatusText(status)}
+		if rs.file != "" {
+			resp["content"] = map[string]any{rs.file: map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}
+		}
 		if rs.resp != nil {
 			ct := "application/json"
 			if rs.sse {
@@ -421,6 +438,10 @@ func buildOpenAPI() (map[string]any, *schemaGen, error) {
 		"security":   []any{map[string]any{"bearer": []any{}}},
 		"paths":      paths,
 		"components": map[string]any{"schemas": g.defs, "securitySchemes": map[string]any{"bearer": map[string]any{"type": "http", "scheme": "bearer"}}},
+	}
+	if len(g.conflicts) > 0 {
+		sort.Strings(g.conflicts)
+		return nil, nil, fmt.Errorf("admin openapi: schema name conflicts (rename one of the types): %s", strings.Join(g.conflicts, "; "))
 	}
 	return doc, g, nil
 }

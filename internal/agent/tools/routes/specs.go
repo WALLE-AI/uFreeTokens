@@ -168,6 +168,55 @@ func ReadSpecs() []Spec {
 			Description: "已有的应用榜治理规则（屏蔽/合并/改名）。"},
 		{Name: "get_benchmark_run", Risk: kernel.RiskRead, Method: get, Pattern: "/benchmark-runs/{runID}",
 			Description: "读取一次基准测试导入运行的详情（行数、分数、是否被发布闸门扣留）。"},
+		{Name: "list_benchmarks", Risk: kernel.RiskRead, Method: get, Pattern: "/benchmarks",
+			Query:       map[string]Param{"category": {Type: "string"}, "status": {Type: "string"}},
+			Description: "列出基准测试（榜单）定义：类别、状态、最近一次运行。"},
+
+		// 全局助手（《运营后台全局助手执行方案》P1）：供给、用户与财务、审计的只读工具。
+		// 结果统一经 Redact 剔除密钥类字段、邮箱/手机号打码；写操作（调账、赠金、吊销密钥）一律不暴露。
+		{Name: "list_providers", Risk: kernel.RiskRead, Method: get, Pattern: "/providers",
+			Query: merge(pageParams, map[string]Param{
+				"q": {Type: "string", Description: "供应商名称或代码关键词"}, "status": {Type: "string"},
+				"protocol": {Type: "string"}, "sort": {Type: "string"},
+			}),
+			Description: "列出上游供应商（名称、代码、协议、状态、渠道数）。"},
+		{Name: "get_provider", Risk: kernel.RiskRead, Method: get, Pattern: "/providers/{providerID}",
+			Description: "读取供应商详情（不含上游密钥）。"},
+		{Name: "list_accounts", Risk: kernel.RiskRead, Method: get, Pattern: "/accounts",
+			Query: merge(pageParams, map[string]Param{
+				"q": {Type: "string", Description: "账户名、邮箱或 ID 关键词"}, "status": {Type: "string"},
+				"tier": {Type: "string"}, "type": {Type: "string"}, "sort": {Type: "string", Description: "如 -balance、-created_at"},
+			}),
+			Description: "列出用户账户（余额、赠金余额、等级、状态）。邮箱、手机号已打码。"},
+		{Name: "get_account", Risk: kernel.RiskRead, Method: get, Pattern: "/accounts/{accountID}",
+			Description: "读取账户详情：钱包余额、赠金余额、等级、限额、成员数、API Key 数。"},
+		{Name: "list_account_ledger", Risk: kernel.RiskRead, Method: get, Pattern: "/accounts/{accountID}/ledger",
+			Query: merge(rangeParams, map[string]Param{
+				"type": {Type: "string", Description: "流水类型，如 topup / usage / adjust / grant"}, "balance_kind": {Type: "string"},
+				"before": {Type: "string", Description: "分页游标"}, "limit": {Type: "integer"},
+			}),
+			Description: "账户钱包流水（充值、消费、调账、赠金），用于核对余额变化与充值情况。"},
+		{Name: "list_account_credit_grants", Risk: kernel.RiskRead, Method: get, Pattern: "/accounts/{accountID}/credit-grants",
+			Query:       map[string]Param{"active": {Type: "boolean", Description: "只看未用完、未过期的赠金"}},
+			Description: "账户的赠金发放记录（金额、剩余、过期时间）。"},
+		{Name: "get_account_usage", Risk: kernel.RiskRead, Method: get, Pattern: "/accounts/{accountID}/usage",
+			Query: merge(rangeParams, map[string]Param{
+				"group_by": {Type: "string", Description: "virtual_model / channel / provider / api_key"},
+				"interval": {Type: "string", Description: "hour / day"}, "top": {Type: "integer"}, "order_by": {Type: "string"},
+			}),
+			Description: "单个账户的用量趋势与构成（请求数、Token、消费、错误率）。"},
+		{Name: "search_api_keys", Risk: kernel.RiskRead, Method: get, Pattern: "/api-keys",
+			Query: merge(pageParams, map[string]Param{
+				"q": {Type: "string", Description: "Key 名称或前缀"}, "account_id": {Type: "integer"}, "status": {Type: "string"},
+			}),
+			Description: "检索 API Key（名称、前缀、所属账户、状态、限额、最近使用时间；不含密钥本身）。"},
+		{Name: "search_audit_logs", Risk: kernel.RiskRead, Method: get, Pattern: "/audit-logs",
+			Query: merge(rangeParams, map[string]Param{
+				"target_type": {Type: "string"}, "target_id": {Type: "string"}, "actor_name": {Type: "string"},
+				"actor_id": {Type: "integer"}, "action": {Type: "string", Description: "如 price_change.approve、wallet.adjust"},
+				"before": {Type: "string", Description: "分页游标"}, "limit": {Type: "integer"},
+			}),
+			Description: "检索审计日志：谁在什么时候对哪个对象做了什么（含经由智能体执行的操作）。"},
 		// 以下两个是 POST，但不写库（只读例外，见 TestAgentTools_BoundToRoutes 的白名单）。
 		{Name: "dry_run_price_source", Risk: kernel.RiskRead, Method: post, Pattern: "/price-sources/dry-run", Body: true,
 			Required: []string{"fetcher", "url"}, Source: "web_page",

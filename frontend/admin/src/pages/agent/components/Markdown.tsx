@@ -1,5 +1,6 @@
 import { Fragment, memo, type ReactNode } from 'react';
 import { Link } from 'react-router';
+import { reportHref } from '../../../agent/brand';
 
 // 轻量 Markdown（实施方案 M1-F04：不引入 react-markdown，避免包体增长）：段落、标题、列表、
 // 粗体、行内代码、代码块、表格；对象引用「调价 #88」「渠道 #41」等渲染为主区导航链接。
@@ -15,9 +16,10 @@ const OBJECT_LINKS: Array<{ re: RegExp; href: (id: string) => string }> = [
   { re: /^账户$/, href: (id) => `/accounts/${id}` },
   { re: /^供应商$/, href: (id) => `/providers/${id}` },
   { re: /^基准运行$/, href: () => `/benchmarks` },
+  { re: /^报表$/, href: (id) => reportHref(id) },
 ];
 
-const OBJ_RE = /(调价|待上架|优惠|虚拟模型|模型|渠道|数据源|账户|供应商|基准运行)\s?#(\d+)/g;
+const OBJ_RE = /(调价|待上架|优惠|虚拟模型|模型|渠道|数据源|账户|供应商|基准运行|报表)\s?#(\d+)/g;
 
 // linkify 把文本中的对象引用替换为 <Link>（在左侧主区导航，Dock 保持打开）。
 export function linkify(text: string, keyPrefix = ''): ReactNode[] {

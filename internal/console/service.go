@@ -222,9 +222,20 @@ func (s *Service) SetPublicStatsOptOut(ctx context.Context, accountID, userID in
 	return nil
 }
 
-// ListKeys 返回该账户名下的全部 API Key（不含明文/HMAC）。
+// ListKeys 返回该账户名下未吊销的 API Key（不含明文/HMAC）。
 func (s *Service) ListKeys(ctx context.Context, accountID int64) ([]admin.APIKey, error) {
-	return s.admin.ListAPIKeys(ctx, accountID)
+	keys, err := s.admin.ListAPIKeys(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	// 吊销是控制台里的"删除"：已吊销的 Key 不再返回，否则刷新后又会出现在列表里。
+	out := keys[:0]
+	for _, k := range keys {
+		if k.Status != "revoked" {
+			out = append(out, k)
+		}
+	}
+	return out, nil
 }
 
 // CreateKey 给该账户建一把新 Key，created_by 记为发起操作的用户。明文只在

@@ -74,6 +74,8 @@ type agentUpdateSessionRequest struct {
 
 type agentMessageRequest struct {
 	Content string `json:"content"`
+	// Page 是发送时所在的后台页面（全局助手据此理解指代），只作用于本次运行。
+	Page *agent.PageContext `json:"page,omitempty"`
 }
 
 type agentProposalsResponse struct {
@@ -325,7 +327,7 @@ func (h *adminHandlers) sendAgentMessage(w http.ResponseWriter, r *http.Request)
 	}
 	sse := newSSEWriter(w, r)
 	defer sse.close()
-	_, err := h.agent.Send(context.WithoutCancel(r.Context()), actor(r), sess, in.Content, sse)
+	_, err := h.agent.Send(context.WithoutCancel(r.Context()), actor(r), sess, in.Content, in.Page, sse)
 	if err != nil && !sse.started() {
 		writeAgentError(w, r, h, err)
 	}

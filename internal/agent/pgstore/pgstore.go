@@ -241,10 +241,10 @@ func (s *Store) AppendMessage(ctx context.Context, sessionID int64, m *kernel.Me
 			return fmt.Errorf("agent: lock session: %w", err)
 		}
 		if err := s.db(ctx).QueryRow(ctx,
-			`INSERT INTO agent_messages (session_id, seq, role, content, tool_calls, tool_call_id, compacted)
-			 SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4, $5, $6 FROM agent_messages WHERE session_id = $1
-			 RETURNING seq`,
-			sessionID, m.Role, m.Content, calls, callID, m.Compacted).Scan(&m.Seq); err != nil {
+			`INSERT INTO agent_messages (session_id, seq, role, content, tool_calls, tool_call_id, compacted, reasoning)
+			 SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4, $5, $6, $7 FROM agent_messages WHERE session_id = $1
+			 RETURNING seq, created_at`,
+			sessionID, m.Role, m.Content, calls, callID, m.Compacted, m.Reasoning).Scan(&m.Seq, &m.CreatedAt); err != nil {
 			return fmt.Errorf("agent: append message: %w", err)
 		}
 		return nil
@@ -329,7 +329,8 @@ func (s *Store) CancelRequested(ctx context.Context, sessionID int64) (bool, err
 // Messages 返回会话的全部消息（按 seq）。
 func (s *Store) Messages(ctx context.Context, sessionID int64) ([]kernel.Message, error) {
 	rows, err := s.db(ctx).Query(ctx,
-		`SELECT seq, role, content, tool_calls, COALESCE(tool_call_id, ''), compacted FROM agent_messages WHERE session_id = $1 ORDER BY seq`, sessionID)
+		`SELECT seq, role, content, tool_calls, COALESCE(tool_call_id, ''), compacted, reasoning, created_at
+		 FROM agent_messages WHERE session_id = $1 ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +339,7 @@ func (s *Store) Messages(ctx context.Context, sessionID int64) ([]kernel.Message
 	for rows.Next() {
 		var m kernel.Message
 		var calls []byte
-		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &calls, &m.ToolCallID, &m.Compacted); err != nil {
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &calls, &m.ToolCallID, &m.Compacted, &m.Reasoning, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {

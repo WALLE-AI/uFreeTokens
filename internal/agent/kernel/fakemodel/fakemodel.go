@@ -20,6 +20,7 @@ type Step struct {
 	Err       error
 	Delay     time.Duration
 	TextParts []string // 非空时按片段流式回调（模拟增量）；否则整段回调 Text
+	Reasoning string   // 思考内容，在正文之前整段回调
 }
 
 // Text 构造一轮纯文本回复。
@@ -75,7 +76,7 @@ func (m *Model) Remaining() int {
 	return len(m.steps)
 }
 
-func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(string)) (*kernel.Turn, error) {
+func (m *Model) Stream(ctx context.Context, req kernel.Request, onDelta func(kernel.Delta)) (*kernel.Turn, error) {
 	m.mu.Lock()
 	m.Requests = append(m.Requests, req)
 	if len(m.steps) == 0 {
@@ -96,7 +97,10 @@ func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(stri
 	if st.Err != nil {
 		return nil, st.Err
 	}
-	if onText != nil {
+	if onDelta != nil {
+		if st.Reasoning != "" {
+			onDelta(kernel.Delta{Reasoning: st.Reasoning})
+		}
 		parts := st.TextParts
 		if len(parts) == 0 && st.Text != "" {
 			parts = []string{st.Text}
@@ -105,7 +109,7 @@ func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(stri
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			onText(p)
+			onDelta(kernel.Delta{Text: p})
 		}
 	}
 	text := st.Text
@@ -115,5 +119,5 @@ func (m *Model) Stream(ctx context.Context, req kernel.Request, onText func(stri
 		}
 	}
 	calls := append([]kernel.ToolCall(nil), st.Calls...)
-	return &kernel.Turn{Text: text, ToolCalls: calls, Usage: st.Usage}, nil
+	return &kernel.Turn{Text: text, Reasoning: st.Reasoning, ToolCalls: calls, Usage: st.Usage}, nil
 }

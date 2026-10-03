@@ -60,3 +60,25 @@ input[type=range]::-webkit-slider-runnable-track {
   background: #d1d5db;
 }
 
+
+/* 助手报表打印为 PDF：只打印挂到 body 下的 .print-root（ReportsPanel），其余界面隐藏。 */
+@media print {
+  body:has(.print-root) > *:not(.print-root) {
+    display: none !important;
+  }
+  .print-root {
+    max-width: none;
+    padding: 0;
+  }
+  .print-root .break-inside-avoid {
+    break-inside: avoid;
+  }
+}
+@media screen {
+  .print-root {
+    position: fixed;
+    left: -10000px;
+    top: 0;
+    width: 960px;
+  }
+}

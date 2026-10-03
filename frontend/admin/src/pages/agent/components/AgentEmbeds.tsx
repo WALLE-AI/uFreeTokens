@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
+import { agentHref } from '../../../agent/brand';
 import { Sparkles } from 'lucide-react';
 import { Button, Modal, useToast } from '../../../components/ui';
 import { useCan } from '../../../api/auth';
@@ -90,7 +91,7 @@ export function ProposalModal({ proposal, onClose, onDone }: { proposal: AgentPr
       <ApprovalCard
         view={proposalView(proposal)}
         showSessionLink={
-          <Link to={`/agent/${proposal.session_id}`} className="text-[11px] text-purple-700 hover:underline">
+          <Link to={agentHref(proposal.session_id)} onClick={onClose} className="text-[11px] text-purple-700 hover:underline">
             查看完整会话 →
           </Link>
         }
@@ -170,7 +171,7 @@ export function AgentOpinionCard({
       {proposal.rationale && <p className="text-gray-700">{proposal.rationale}</p>}
       {extra}
       <div className="flex items-center gap-2 pt-0.5">
-        <Link to={`/agent/${proposal.session_id}`} className="text-[11px] text-purple-700 hover:underline">
+        <Link to={agentHref(proposal.session_id)} className="text-[11px] text-purple-700 hover:underline">
           查看完整会话
         </Link>
         {agent && (

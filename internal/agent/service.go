@@ -174,7 +174,8 @@ func (s *Service) Create(ctx context.Context, p *adminauth.Principal, in CreateS
 
 // Send 追加一条用户消息并运行（同步执行，事件经 sink 推出）。会话处于等待审批时，未处理的提案
 // 作废（superseded），并在历史中注明“用户继续了对话”。
-func (s *Service) Send(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, text string, sink kernel.Sink) (kernel.Outcome, error) {
+// page 是用户所在的后台页面（可为空），只进入本次运行的系统提示。
+func (s *Service) Send(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, text string, page *PageContext, sink kernel.Sink) (kernel.Outcome, error) {
 	if !s.Enabled() {
 		return kernel.Outcome{}, ErrDisabled
 	}
@@ -188,7 +189,10 @@ func (s *Service) Send(ctx context.Context, p *adminauth.Principal, sess *pgstor
 	if text == "" || len(text) > 20000 {
 		return kernel.Outcome{}, fmt.Errorf("%w: message must be 1-20000 bytes", ErrInvalidInput)
 	}
-	return s.run(ctx, p, sess, sink, func(ctx context.Context) error {
+	if err := page.Validate(); err != nil {
+		return kernel.Outcome{}, err
+	}
+	return s.run(ctx, p, sess, page, sink, func(ctx context.Context) error {
 		if err := s.supersedePending(ctx, sess.ID, "用户发送了新消息，该提案未审批即作废。"); err != nil {
 			return err
 		}
@@ -206,7 +210,7 @@ func (s *Service) RunBatch(ctx context.Context, p *adminauth.Principal, sess *pg
 	if !s.Enabled() {
 		return kernel.Outcome{}, ErrDisabled
 	}
-	out, err := s.run(ctx, p, sess, kernel.NopSink, func(ctx context.Context) error {
+	out, err := s.run(ctx, p, sess, nil, kernel.NopSink, func(ctx context.Context) error {
 		return s.Store.AppendMessage(ctx, sess.ID, &kernel.Message{Role: kernel.RoleUser, Content: instruction})
 	})
 	report := fmt.Sprintf("运行报告：状态 %s%s；轮数 %d；Token %d/%d；生成提案 %d 条（已进入提案收件箱，等待人工审批）。",
@@ -245,7 +249,7 @@ func (s *Service) Cancel(ctx context.Context, sessionID int64) error {
 }
 
 // run 占用运行位 → prepare（追加用户消息等）→ 循环 → 写回状态。
-func (s *Service) run(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, sink kernel.Sink, prepare func(ctx context.Context) error) (kernel.Outcome, error) {
+func (s *Service) run(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, page *PageContext, sink kernel.Sink, prepare func(ctx context.Context) error) (kernel.Outcome, error) {
 	runID := strings.ToLower(ulid.Make().String())
 	timeout := s.Cfg.RunTimeout
 	if timeout <= 0 {
@@ -287,7 +291,7 @@ func (s *Service) run(ctx context.Context, p *adminauth.Principal, sess *pgstore
 			return finish(kernel.Outcome{}, err)
 		}
 	}
-	st, err := s.state(ctx, p, sess, runID)
+	st, err := s.state(ctx, p, sess, runID, page)
 	if err != nil {
 		return finish(kernel.Outcome{}, err)
 	}
@@ -311,7 +315,7 @@ func (s *Service) run(ctx context.Context, p *adminauth.Principal, sess *pgstore
 }
 
 // state 由会话构造一次运行的输入。
-func (s *Service) state(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, runID string) (*kernel.RunState, error) {
+func (s *Service) state(ctx context.Context, p *adminauth.Principal, sess *pgstore.Session, runID string, page *PageContext) (*kernel.RunState, error) {
 	var pb *playbooks.Playbook
 	if sess.Playbook != nil && *sess.Playbook != "" {
 		pb, _ = playbooks.Get(*sess.Playbook)
@@ -345,7 +349,7 @@ func (s *Service) state(ctx context.Context, p *adminauth.Principal, sess *pgsto
 	}
 	return &kernel.RunState{
 		Env: env, Model: model, History: history, Tools: tools, Budget: budget,
-		System: buildSystemPrompt(promptInput{Principal: p, Playbook: pb, Context: refs, Mode: mode, Tools: tools, Now: s.now(), Loc: s.Cfg.Location}),
+		System: buildSystemPrompt(promptInput{Principal: p, Playbook: pb, Context: refs, Page: page, Mode: mode, Tools: tools, Now: s.now(), Loc: s.Cfg.Location}),
 	}, nil
 }
 

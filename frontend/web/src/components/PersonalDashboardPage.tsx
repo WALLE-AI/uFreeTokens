@@ -134,6 +134,29 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
   const [searchKeyQuery, setSearchKeyQuery] = useState<string>('');
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
   const [actionMenuKeyId, setActionMenuKeyId] = useState<string | null>(null);
+  // 操作菜单用 fixed 定位：表格容器是 overflow-hidden/overflow-x-auto，absolute
+  // 菜单在最后一行（或只有一把 Key）时会被裁掉，导致"吊销密钥"点不到。
+  const [actionMenuPos, setActionMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!actionMenuKeyId) return;
+    const close = () => setActionMenuKeyId(null);
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (actionMenuRef.current?.contains(target)) return;
+      if ((target as Element).closest?.('[data-key-action-toggle]')) return;
+      close();
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [actionMenuKeyId]);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
 
   // api-keys tab 的真实数据（迭代4：/console/api-keys，需要控制台登录态，
@@ -834,16 +857,27 @@ export const PersonalDashboardPage: React.FC<PersonalDashboardPageProps> = ({
                             </td>
                             <td className="py-3 px-3 text-right relative">
                               <button
-                                onClick={() =>
-                                  setActionMenuKeyId(actionMenuKeyId === k.id ? null : k.id)
-                                }
+                                data-key-action-toggle
+                                onClick={(e) => {
+                                  if (actionMenuKeyId === k.id) {
+                                    setActionMenuKeyId(null);
+                                    return;
+                                  }
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setActionMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                                  setActionMenuKeyId(k.id);
+                                }}
                                 className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 cursor-pointer"
                               >
                                 <MoreVertical className="w-4 h-4" />
                               </button>
 
-                              {actionMenuKeyId === k.id && (
-                                <div className="absolute right-3 top-8 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20 w-32 text-xs">
+                              {actionMenuKeyId === k.id && actionMenuPos && (
+                                <div
+                                  ref={actionMenuRef}
+                                  style={{ top: actionMenuPos.top, right: actionMenuPos.right }}
+                                  className="fixed bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-50 w-32 text-xs"
+                                >
                                   {k.fullKey && (
                                     <button
                                       onClick={() => {

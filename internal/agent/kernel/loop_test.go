@@ -75,7 +75,7 @@ func newHarness(model kernel.Model, perms []adminauth.Permission, tools ...kerne
 func (h *harness) eventTypes() []string {
 	var out []string
 	for _, e := range h.events {
-		if e.Type != "text_delta" && e.Type != "usage" {
+		if e.Type != "text_delta" && e.Type != "reasoning_delta" && e.Type != "usage" {
 			out = append(out, e.Type)
 		}
 	}
@@ -112,6 +112,28 @@ func TestLoop_ReadThenAnswer(t *testing.T) {
 	}
 	if got := strings.Join(h.eventTypes(), ","); got != "tool_call,tool_result" {
 		t.Errorf("events = %s", got)
+	}
+}
+
+func TestLoop_ReasoningStreamedAndPersisted(t *testing.T) {
+	step := fakemodel.Text("答案")
+	step.Reasoning = "先想一想"
+	h := newHarness(fakemodel.New(step), nil)
+	if _, err := h.loop.Run(context.Background(), h.state); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, e := range h.events {
+		if e.Type == "reasoning_delta" || e.Type == "text_delta" {
+			seq = append(seq, e.Type+":"+e.Data.(map[string]any)["text"].(string))
+		}
+	}
+	if got := strings.Join(seq, ","); got != "reasoning_delta:先想一想,text_delta:答案" {
+		t.Errorf("deltas = %s", got)
+	}
+	hist := h.store.History(1)
+	if len(hist) != 1 || hist[0].Reasoning != "先想一想" || hist[0].Content != "答案" {
+		t.Fatalf("history = %+v", hist)
 	}
 }
 

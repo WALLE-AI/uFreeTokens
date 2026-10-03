@@ -44,7 +44,8 @@ func NewAgentService(s AgentSetup) (*agent.Service, error) {
 	if s.Fetch != nil {
 		fetch = s.Fetch
 	}
-	tools, err := BuildAgentTools(AgentToolDeps{Handler: NewAdminToolHandler(deps), Fetch: fetch, AllowDomains: domains.Domains})
+	st := pgstore.New(s.Pool)
+	tools, err := BuildAgentTools(AgentToolDeps{Handler: NewAdminToolHandler(deps), Fetch: fetch, AllowDomains: domains.Domains, Datasets: st, Reports: st})
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +60,7 @@ func NewAgentService(s AgentSetup) (*agent.Service, error) {
 			Enabled: ac.Enabled, Model: model, BatchModel: ac.BatchModel, RunTimeout: ac.RunTimeout, Location: s.Location,
 			Budget: kernel.Budget{MaxTurns: ac.MaxTurns, MaxToolCalls: ac.MaxToolCalls, MaxTokens: ac.MaxTokens},
 		},
-		Store: pgstore.New(s.Pool), Tools: tools, Logger: s.Logger, Missing: []string{},
+		Store: st, Tools: tools, Logger: s.Logger, Missing: []string{},
 	}
 	if !ac.Enabled {
 		svc.Missing = append(svc.Missing, "agent.enabled (UFT_AGENT_ENABLED=true)")

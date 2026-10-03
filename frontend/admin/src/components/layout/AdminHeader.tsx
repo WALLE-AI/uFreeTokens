@@ -7,6 +7,7 @@ import { SecurityModal } from './SecurityModal';
 import { cn } from '../../lib/cn';
 import { ADMIN_ENV } from '../../lib/env';
 import { useDismiss } from '../../hooks/useDismiss';
+import { ASSISTANT_NAME } from '../../agent/brand';
 
 // 路由 handle.crumb：字符串，或根据 params 生成（如 "账户 #1234"）
 export interface RouteHandle {
@@ -56,14 +57,14 @@ function AgentButton({ agent, isMac }: { agent: NonNullable<AdminHeaderProps['ag
     <button
       type="button"
       onClick={agent.onToggle}
-      title={`智能体（${isMac ? '⌘J' : 'Ctrl+J'}）`}
+      title={`${ASSISTANT_NAME}（${isMac ? '⌘J' : 'Ctrl+J'}）`}
       className={cn(
         'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border cursor-pointer',
         agent.open ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50',
       )}
     >
       <Sparkles className="w-3.5 h-3.5" />
-      <span className="hidden md:inline">智能体</span>
+      <span className="hidden md:inline">{ASSISTANT_NAME}</span>
       <span className={cn('w-1.5 h-1.5 rounded-full', dot)} />
     </button>
   );

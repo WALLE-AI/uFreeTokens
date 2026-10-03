@@ -90,12 +90,17 @@
   - 提案收件箱：`GET /agent/proposals?status=pending&target_type=&target_ids=1,2,3&mine=1`（列表页一次请求取回所有行的建议；`mine=1` 默认只返回我有权限处理的）；`GET /todo-counts` 的 `agent_pending_approvals` 是我可处理的待审提案数。目标对象已被人工处理的提案自动标为 `superseded`。
   - 后台作业（`agent:admin`）：`GET /agent/jobs`、`PATCH /agent/jobs/{id}`（启停 / 调度 / 每日 Token 预算 / 单次对象数 / 模型；重新启用清除熔断）、`POST /agent/jobs/{id}/run`（worker 下一次 tick 执行）。作业以只读服务主体 `agent-bot` 运行，只产生提案；最近 50 条已处理提案拒绝率 > 40%（至少 10 条）自动熔断停用。
   - 数据源试运行 / 优惠抽取预览（不写库，`pricing:write`）：`POST /price-sources/dry-run` `{fetcher, url, config, sample_size}` 返回 `count` / `sample` / `warnings`（解析失败放在 `error`）；`POST /offer-pages/extract-preview` `{url, provider_code, keywords?}` 返回抽取结果与是否通过证据校验。
-- **智能体 SSE 事件协议**：`POST /agent/sessions/{id}/messages`（body `{"content":"…"}`）与流式审批的响应为 `text/event-stream`，每个事件一行 `event:` + 一行 `data:`（JSON），每 15 秒一条 `: ping` 注释保活。客户端断开不影响后端运行（运行 ctx 与请求分离，受 `agent.run_timeout` 约束），重连后 `GET /agent/sessions/{id}` 拉全量（`status=running` 时轮询，一期不做断点续流）。同一会话同时只允许一个运行（409 `session_busy`）。
+  - 全局助手「小U」（《运营后台全局助手（数据分析与报表）执行方案》）：发送消息可带 `page: {path, title, state}`（用户所在的后台页面，`state` 为字符串键值，最多 30 个），只进入本次运行的系统提示、不落库。
+  - 数据分析 `POST /analytics/query`（`observe:read`；`subject=wallet` / `balance` 另需 `account:read`）：`{subject, metrics[], group_by, interval, from, to, tz, filters{virtual_model, channel_id, provider_id, account_id, api_key_id}, compare: "previous_period", top, order_by}`，返回数据集 `{title, columns[{key,label,type}], rows, totals, previous, notes}`。金额单位为元，`percent` 为 0~1 小数，`pp` 为百分点差；usage 最长 90 天（>48 小时读小时汇总表），wallet 最长 400 天且不含 `consume` 流水，balance 为当前余额快照。
+  - 助手数据集：`query_analytics` 工具的完整结果存入 `agent_datasets`，模型只拿到 `dataset_id` 与前 30 行。`GET /agent/datasets/{id}` 读取、`GET /agent/datasets/{id}/export` 下载 CSV（UTF-8 BOM，比率格式化为百分数）；可见性与所属会话相同（本人，或有 `audit:read`）。
+  - 助手报表：`render_chart` 只校验并在对话中渲染图表（不落库）；`create_report`（risk=`artifact`：只写报表、不改业务数据，不走审批）把 markdown 与图表/表格/指标卡（只能引用本会话数据集）存入 `agent_reports`。`GET /agent/reports?scope=mine|all&q=&before=&limit=`（默认返回我的 + 共享的；`all` 需 `audit:read`）、`GET /agent/reports/{id}`（含引用的数据集与 `can_edit`）、`PATCH /agent/reports/{id}` `{title?, visibility?: private|shared}`、`DELETE /agent/reports/{id}`（本人；后台作业生成的报表由 `agent:admin` 管理）、`GET /agent/reports/{id}/export?format=md|xlsx`（xlsx：「报表」工作表 + 每个数据集一张工作表，金额/比率带数字格式）。私有报表对他人返回 404。后台作业 `daily_ops_report`（运营日报）、`weekly_revenue_report`（经营周报）默认停用。
+- **智能体 SSE 事件协议**：`POST /agent/sessions/{id}/messages`（body `{"content":"…","page":{…}}`，`page` 可省略）与流式审批的响应为 `text/event-stream`，每个事件一行 `event:` + 一行 `data:`（JSON），每 15 秒一条 `: ping` 注释保活。客户端断开不影响后端运行（运行 ctx 与请求分离，受 `agent.run_timeout` 约束），重连后 `GET /agent/sessions/{id}` 拉全量（`status=running` 时轮询，一期不做断点续流）。同一会话同时只允许一个运行（409 `session_busy`）。
 
   | event | data |
   |---|---|
   | `run_started` | `{"run_id","session_id"}` |
-  | `text_delta` | `{"text"}` 模型输出增量（推理段已过滤） |
+  | `reasoning_delta` | `{"text"}` 推理模型的思考增量（`reasoning_content` / `<think>` 段），落库到消息的 `reasoning` 字段，不再发回模型 |
+  | `text_delta` | `{"text"}` 模型正文输出增量（不含思考） |
   | `tool_call` | `{"id","tool","args","risk"}` |
   | `tool_result` | `{"id","status","http_status","summary","duration_ms"}`；审批执行后还带 `target_type` / `target_id` / `decided_by` |
   | `approval_required` | `{"id","proposal_id","tool","args","summary","before","after","permission","rationale","confidence","evidence","target_type","target_id"}` |
@@ -135,11 +140,18 @@
 | GET | /admin-users | `admin_user:manage` |
 | POST | /admin-users | `admin_user:manage` |
 | PATCH | /admin-users/{adminUserID} | `admin_user:manage` |
+| GET | /agent/datasets/{datasetID} | `agent:use` |
+| GET | /agent/datasets/{datasetID}/export | `agent:use` |
 | GET | /agent/jobs | `agent:admin` |
 | PATCH | /agent/jobs/{jobID} | `agent:admin` |
 | POST | /agent/jobs/{jobID}/run | `agent:admin` |
 | GET | /agent/meta | `agent:use` |
 | GET | /agent/proposals | `agent:use` |
+| GET | /agent/reports | `agent:use` |
+| DELETE | /agent/reports/{reportID} | `agent:use` |
+| GET | /agent/reports/{reportID} | `agent:use` |
+| PATCH | /agent/reports/{reportID} | `agent:use` |
+| GET | /agent/reports/{reportID}/export | `agent:use` |
 | GET | /agent/sessions | `agent:use` |
 | POST | /agent/sessions | `agent:use` |
 | GET | /agent/sessions/{sessionID} | `agent:use` |
@@ -147,6 +159,7 @@
 | POST | /agent/sessions/{sessionID}/cancel | `agent:use` |
 | POST | /agent/sessions/{sessionID}/messages | `agent:use` |
 | POST | /agent/sessions/{sessionID}/tool-calls/{callID}/decision | `agent:use` |
+| POST | /analytics/query | `observe:read` |
 | GET | /api-keys | `account:read` |
 | PATCH | /api-keys/{apiKeyID} | `account:write` |
 | POST | /api-keys/{apiKeyID}/revoke | `account:write` |

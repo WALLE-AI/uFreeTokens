@@ -215,7 +215,7 @@ func TestAdminRoutes_EveryRouteHasPermission(t *testing.T) {
 			t.Errorf("route %s uses unknown permission %q", key, rt.Permission)
 		}
 		if strings.HasSuffix(string(rt.Permission), ":read") && rt.Method != http.MethodGet && rt.Pattern != "/pricing/preview" && rt.Pattern != "/pricesync/reference-price-lookup" &&
-			rt.Pattern != "/provider-accounts/{providerAccountID}/import-models" {
+			rt.Pattern != "/provider-accounts/{providerAccountID}/import-models" && rt.Pattern != "/analytics/query" {
 			t.Errorf("write route %s only requires read permission %q", key, rt.Permission)
 		}
 	}

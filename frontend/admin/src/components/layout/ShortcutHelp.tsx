@@ -1,9 +1,11 @@
 import { Modal } from '../ui';
 import { NAV_ITEMS } from '../../nav';
+import { ASSISTANT_NAME } from '../../agent/brand';
 
 const GENERAL: Array<[string, string]> = [
   ['⌘K / Ctrl+K', '命令面板：跳转页面、按 ID 定位对象、常用操作'],
-  ['⌘J / Ctrl+J', '打开 / 收起智能体侧边坞'],
+  ['⌘J / Ctrl+J', `打开 / 收起${ASSISTANT_NAME}（全局助手）`],
+  ['G 然后 I', `打开${ASSISTANT_NAME}`],
   ['/', '聚焦当前页搜索框'],
   ['?', '显示本帮助'],
   ['Esc', '关闭抽屉 / 弹窗 / 菜单'],

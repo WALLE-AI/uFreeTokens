@@ -127,6 +127,7 @@ export interface AdoptOfferResponse {
 
 export interface AgentMessageRequest {
   content: string;
+  page?: PageContext | null;
 }
 
 export interface AgentMetaResponse {
@@ -156,6 +157,12 @@ export interface AgentProposalsResponse {
   next_cursor: string;
 }
 
+export interface AgentReportDetail {
+  report: Report;
+  datasets: Dataset[] | null;
+  can_edit: boolean;
+}
+
 export interface AgentSSEEvent {
   event: string;
   data: unknown;
@@ -175,9 +182,59 @@ export interface AgentToolInfo {
   permission: string;
 }
 
+export interface AgentUpdateReportRequest {
+  title?: string | null;
+  visibility?: string | null;
+}
+
 export interface AgentUpdateSessionRequest {
   title: string | null;
   archived: boolean | null;
+}
+
+export interface AnalyticsColumn {
+  key: string;
+  label: string;
+  type: string;
+}
+
+export interface AnalyticsDataset {
+  title: string;
+  subject: string;
+  source: string;
+  from?: string | null;
+  to?: string | null;
+  interval: string;
+  group_by: string;
+  compare?: string;
+  currency: string;
+  columns: AnalyticsColumn[] | null;
+  rows: (Record<string, unknown> | null)[] | null;
+  totals: Record<string, unknown> | null;
+  previous?: Record<string, unknown> | null;
+  notes: string[] | null;
+}
+
+export interface AnalyticsFilters {
+  virtual_model?: string;
+  channel_id?: number;
+  provider_id?: number;
+  account_id?: number;
+  api_key_id?: number;
+}
+
+export interface AnalyticsQuery {
+  subject?: string;
+  metrics?: string[] | null;
+  group_by?: string;
+  interval?: string;
+  from?: string;
+  to?: string;
+  tz?: string;
+  filters?: AnalyticsFilters;
+  compare?: string;
+  top?: number;
+  order_by?: string;
 }
 
 export interface ApiError {
@@ -755,6 +812,11 @@ export interface CursorPage_LedgerEntry {
   next_cursor: string;
 }
 
+export interface CursorPage_Report {
+  data: Report[] | null;
+  next_cursor: string;
+}
+
 export interface CursorPage_RequestLogItem {
   data: RequestLogItem[] | null;
   next_cursor: string;
@@ -775,6 +837,21 @@ export interface DataSourceRun {
   items_changed: number | null;
   error: string | null;
   detail: unknown;
+}
+
+export interface Dataset {
+  id: number;
+  session_id: number;
+  tool_call_id: string;
+  title: string;
+  query: unknown;
+  columns: unknown;
+  rows: unknown;
+  totals: unknown;
+  previous: unknown;
+  notes: unknown;
+  row_count: number;
+  created_at: string;
 }
 
 export interface DecideChangeRequestBody {
@@ -1158,6 +1235,8 @@ export interface Message {
   tool_calls?: ToolCall[] | null;
   tool_call_id?: string;
   compacted?: boolean;
+  reasoning?: string;
+  created_at: string;
 }
 
 export interface MetaCodecsResponse {
@@ -1297,6 +1376,12 @@ export interface Outcome {
   turns: number;
   pending: number;
   proposals: number;
+}
+
+export interface PageContext {
+  path: string;
+  title?: string;
+  state?: Record<string, string> | null;
 }
 
 export interface Page_APIKeyListItem {
@@ -1786,6 +1871,22 @@ export interface ReferencePriceLookupResult {
   source?: string;
   input?: string;
   output?: string;
+}
+
+export interface Report {
+  id: number;
+  session_id: number;
+  tool_call_id: string;
+  owner_admin_id: number;
+  owner_name: string;
+  job_id: number | null;
+  title: string;
+  summary: string;
+  sections: unknown;
+  dataset_ids: number[] | null;
+  visibility: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RequestLogDetail {

@@ -5,13 +5,14 @@ import { AdminHeader } from './AdminHeader';
 import { AdminSidebar } from './AdminSidebar';
 import { ShortcutHelp } from './ShortcutHelp';
 import { CommandPalette, DataState, type Command } from '../ui';
-import { visibleNavItems } from '../../nav';
+import { findNavItem, visibleNavItems } from '../../nav';
 import { useAuth } from '../../api/auth';
 import { useGlobalHotkeys } from '../../hooks/useHotkeys';
 import { useTodoCounts } from '../../hooks/useTodoCounts';
 import { AgentProvider, useAgent } from '../../agent/AgentProvider';
-import { useAgentEnabled } from '../../agent/agentStore';
+import { currentPageStore, useAgentEnabled } from '../../agent/agentStore';
 import { AgentDock } from '../../pages/agent/AgentDock';
+import { ASSISTANT_NAME } from '../../agent/brand';
 
 // AdminLayout：Header + Sidebar + <Outlet/>（+ 右侧智能体 Dock），结构对齐 web App.tsx
 // （min-h-screen flex flex-col；主区 flex-1 overflow-y-auto h-[calc(100vh-3rem)]）。
@@ -38,6 +39,12 @@ function AdminShell() {
     setMobileNavOpen(false);
   }, [location.pathname]);
 
+  // 全局助手的「当前页面」：路径带上查询参数（列表筛选、时间范围多数在 URL 里）。
+  useEffect(() => {
+    const path = `${location.pathname}${location.search}`.slice(0, 300);
+    currentPageStore.set({ path, title: findNavItem(location.pathname)?.label ?? '工作台' });
+  }, [location.pathname, location.search]);
+
   // ⌘K / Ctrl+K：输入框聚焦时也要能打开，所以不走 useGlobalHotkeys
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -54,6 +61,7 @@ function AdminShell() {
   const agentEnabled = useAgentEnabled();
   const agent = useAgent();
   const toggleDock = agent.toggleDock;
+  const setDockOpen = agent.setDockOpen;
   const startAgent = agent.start;
 
   // ⌘J / Ctrl+J 开关智能体 Dock（与 ⌘K 一样在输入框聚焦时也生效）
@@ -71,6 +79,11 @@ function AdminShell() {
 
   useGlobalHotkeys({
     onGoto: (key) => {
+      // G I：打开全局助手（没有独立页面）
+      if (key === 'i' && agentEnabled) {
+        setDockOpen(true);
+        return;
+      }
       const item = visibleNavItems(authMe, agentEnabled).find((i) => i.gotoKey === key);
       if (item) navigate(item.path);
     },
@@ -127,9 +140,9 @@ function AdminShell() {
   const dynamicCommands = useCallback(
     (q: string): Command[] => {
       const enc = encodeURIComponent(q);
-      // 输入不匹配任何跳转时也能“问智能体”：执行即打开 Dock 新建会话（设计 §19.2）。
+      // 输入不匹配任何跳转时也能“问助手”：执行即打开 Dock 新建会话（设计 §19.2）。
       const ask: Command[] = agentEnabled
-        ? [{ id: `agent:${q}`, group: '智能体', label: `✦ 问智能体：${q}`, icon: <Sparkles className="w-3.5 h-3.5" />, run: () => void startAgent({ message: q }) }]
+        ? [{ id: `agent:${q}`, group: '智能体', label: `✦ 问${ASSISTANT_NAME}：${q}`, icon: <Sparkles className="w-3.5 h-3.5" />, run: () => void startAgent({ message: q }) }]
         : [];
       if (/^\d+$/.test(q)) {
         return [

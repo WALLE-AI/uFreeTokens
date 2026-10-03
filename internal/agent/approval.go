@@ -163,13 +163,13 @@ func (s *Service) Decide(ctx context.Context, approver *adminauth.Principal, ses
 	if background {
 		res.Resumed = true
 		go func() {
-			if _, err := s.run(context.WithoutCancel(ctx), approver, sess, kernel.NopSink, nil); err != nil && !errors.Is(err, pgstore.ErrBusy) {
+			if _, err := s.run(context.WithoutCancel(ctx), approver, sess, nil, kernel.NopSink, nil); err != nil && !errors.Is(err, pgstore.ErrBusy) {
 				s.logger().Error("agent: background resume failed", "session_id", sess.ID, "error", err)
 			}
 		}()
 		return res, nil
 	}
-	out, err := s.run(ctx, approver, sess, sink, nil)
+	out, err := s.run(ctx, approver, sess, nil, sink, nil)
 	if errors.Is(err, pgstore.ErrBusy) {
 		return res, nil
 	}

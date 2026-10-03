@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
+import { agentHref } from '../../agent/brand';
 import { ChevronDown, ChevronRight, FileClock, Loader2 } from 'lucide-react';
 import { listAuditLogs, type ListAuditLogsParams } from '../../api/audit';
 import { errorMessage } from '../../api/errors';
@@ -244,7 +245,7 @@ function AuditRow({ e }: { e: AuditLogEntry }) {
         )}
         {e.agent_session_id ? (
           <Link
-            to={`/agent/${e.agent_session_id}`}
+            to={agentHref(e.agent_session_id)}
             onClick={(ev) => ev.stopPropagation()}
             title="该操作由运营智能体提案、经人工审批后以审批人身份执行"
             className="shrink-0 px-1.5 py-0.5 rounded border border-purple-200 bg-purple-50 text-purple-700 text-[10px] hover:border-purple-300"

@@ -613,6 +613,16 @@
         "properties": {
           "content": {
             "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -728,6 +738,28 @@
         ],
         "type": "object"
       },
+      "AgentReportDetail": {
+        "properties": {
+          "can_edit": {
+            "type": "boolean"
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/Dataset"
+            },
+            "type": "array"
+          },
+          "report": {
+            "$ref": "#/components/schemas/Report"
+          }
+        },
+        "required": [
+          "can_edit",
+          "datasets",
+          "report"
+        ],
+        "type": "object"
+      },
       "AgentSSEEvent": {
         "properties": {
           "data": {},
@@ -793,6 +825,32 @@
         ],
         "type": "object"
       },
+      "AgentUpdateReportRequest": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
       "AgentUpdateSessionRequest": {
         "properties": {
           "archived": {
@@ -820,6 +878,175 @@
           "archived",
           "title"
         ],
+        "type": "object"
+      },
+      "AnalyticsColumn": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "type"
+        ],
+        "type": "object"
+      },
+      "AnalyticsDataset": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsColumn"
+            },
+            "type": "array"
+          },
+          "compare": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_by": {
+            "type": "string"
+          },
+          "interval": {
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "previous": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "columns",
+          "currency",
+          "group_by",
+          "interval",
+          "notes",
+          "rows",
+          "source",
+          "subject",
+          "title",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "AnalyticsFilters": {
+        "properties": {
+          "account_id": {
+            "type": "integer"
+          },
+          "api_key_id": {
+            "type": "integer"
+          },
+          "channel_id": {
+            "type": "integer"
+          },
+          "provider_id": {
+            "type": "integer"
+          },
+          "virtual_model": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "AnalyticsQuery": {
+        "properties": {
+          "compare": {
+            "type": "string"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/AnalyticsFilters"
+          },
+          "from": {
+            "type": "string"
+          },
+          "group_by": {
+            "type": "string"
+          },
+          "interval": {
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "order_by": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "top": {
+            "type": "integer"
+          },
+          "tz": {
+            "type": "string"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "ApiError": {
@@ -3838,6 +4065,24 @@
         ],
         "type": "object"
       },
+      "CursorPage_Report": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Report"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "CursorPage_RequestLogItem": {
         "properties": {
           "data": {
@@ -3942,6 +4187,50 @@
           "source_id",
           "started_at",
           "status"
+        ],
+        "type": "object"
+      },
+      "Dataset": {
+        "properties": {
+          "columns": {},
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "notes": {},
+          "previous": {},
+          "query": {},
+          "row_count": {
+            "type": "integer"
+          },
+          "rows": {},
+          "session_id": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "totals": {}
+        },
+        "required": [
+          "columns",
+          "created_at",
+          "id",
+          "notes",
+          "previous",
+          "query",
+          "row_count",
+          "rows",
+          "session_id",
+          "title",
+          "tool_call_id",
+          "totals"
         ],
         "type": "object"
       },
@@ -5650,6 +5939,13 @@
           "content": {
             "type": "string"
           },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
           "role": {
             "type": "string"
           },
@@ -5668,6 +5964,7 @@
         },
         "required": [
           "content",
+          "created_at",
           "role",
           "seq"
         ],
@@ -6484,6 +6781,26 @@
           "status",
           "turns",
           "usage"
+        ],
+        "type": "object"
+      },
+      "PageContext": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
         ],
         "type": "object"
       },
@@ -8861,6 +9178,75 @@
         },
         "required": [
           "matched"
+        ],
+        "type": "object"
+      },
+      "Report": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dataset_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner_admin_id": {
+            "type": "integer"
+          },
+          "owner_name": {
+            "type": "string"
+          },
+          "sections": {},
+          "session_id": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_at",
+          "dataset_ids",
+          "id",
+          "job_id",
+          "owner_admin_id",
+          "owner_name",
+          "sections",
+          "session_id",
+          "summary",
+          "title",
+          "tool_call_id",
+          "updated_at",
+          "visibility"
         ],
         "type": "object"
       },
@@ -12445,6 +12831,83 @@
         "x-permission": "admin_user:manage"
       }
     },
+    "/agent/datasets/{datasetID}": {
+      "get": {
+        "operationId": "getAgentDatasetsDatasetID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "datasetID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dataset"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/datasets/{datasetID}/export": {
+      "get": {
+        "operationId": "getAgentDatasetsDatasetIDExport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "datasetID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
     "/agent/jobs": {
       "get": {
         "operationId": "getAgentJobs",
@@ -12596,6 +13059,186 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentProposalsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/reports": {
+      "get": {
+        "operationId": "getAgentReports",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_Report"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/reports/{reportID}": {
+      "delete": {
+        "operationId": "deleteAgentReportsReportID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reportID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      },
+      "get": {
+        "operationId": "getAgentReportsReportID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reportID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentReportDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      },
+      "patch": {
+        "operationId": "patchAgentReportsReportID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reportID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdateReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "agent:use"
+      }
+    },
+    "/agent/reports/{reportID}/export": {
+      "get": {
+        "operationId": "getAgentReportsReportIDExport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reportID",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
                 }
               }
             },
@@ -12903,6 +13546,44 @@
           }
         },
         "x-permission": "agent:use"
+      }
+    },
+    "/analytics/query": {
+      "post": {
+        "operationId": "postAnalyticsQuery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyticsQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsDataset"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "x-permission": "observe:read"
       }
     },
     "/api-keys": {
